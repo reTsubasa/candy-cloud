@@ -355,6 +355,27 @@ impl SegmentGenerationPublisher for ControlRoutePublisher {
         &self,
         snapshot: &SegmentControlSnapshot,
     ) -> std::result::Result<PublishedGeneration, PublicationFailure> {
+        let publication_id = stable_uuid(
+            snapshot.tenant_id,
+            snapshot.segment_id,
+            snapshot.desired_revision,
+        );
+        if let Some((generation, content_hash)) = self
+            .routes
+            .published_generation(snapshot.tenant_id, snapshot.segment_id, publication_id)
+            .await
+            .map_err(classify_publish_error)?
+        {
+            if generation != snapshot.desired_revision {
+                return Err(PublicationFailure::Permanent {
+                    code: "ROUTE_REPLAY_GENERATION_MISMATCH".into(),
+                });
+            }
+            return Ok(PublishedGeneration {
+                generation,
+                content_hash,
+            });
+        }
         let input = self
             .build_input(snapshot)
             .await

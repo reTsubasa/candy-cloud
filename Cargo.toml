@@ -34,7 +34,7 @@ uuid = { version = "1", features = ["serde", "v4", "v7"] }
 x509-parser = { version = "0.18", features = ["verify"] }
 
 [workspace.metadata.candy]
-core_version = "0.3.9"
-core_revision = "ac3b598"
+core_version = "0.3.10"
+core_revision = "42b2ffd"
 wire_line = "0.3"
 auth_profile = "cloud_grant_v1"

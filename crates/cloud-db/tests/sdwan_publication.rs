@@ -193,6 +193,20 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         repository.publish(&write).await.unwrap(),
         PublicationOutcome::Replayed
     );
+    assert_eq!(
+        repository
+            .published_generation(tenant_id, segment_id, write.publication_id)
+            .await
+            .unwrap(),
+        Some((1, [7_u8; 32]))
+    );
+    assert_eq!(
+        repository
+            .published_generation(tenant_id, segment_id, Uuid::new_v4())
+            .await
+            .unwrap(),
+        None
+    );
     let expansion_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM segment_expansion_publications WHERE segment_publication_id = ?",
     )

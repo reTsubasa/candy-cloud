@@ -465,6 +465,34 @@ impl SdwanRepository {
         self.current_head(tenant_id, segment_id).await
     }
 
+    pub async fn published_generation(
+        &self,
+        tenant_id: Uuid,
+        segment_id: Uuid,
+        publication_id: Uuid,
+    ) -> Result<Option<(u64, [u8; 32])>, SdwanError> {
+        if tenant_id.is_nil() || segment_id.is_nil() || publication_id.is_nil() {
+            return Err(SdwanError::InvalidScope);
+        }
+        let row = sqlx::query(
+            "SELECT generation, content_hash FROM segment_route_publications WHERE id = ? AND tenant_id = ? AND segment_id = ?",
+        )
+        .bind(publication_id)
+        .bind(tenant_id)
+        .bind(segment_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let generation = row.try_get("generation")?;
+        let hash = decode_hash(&row.try_get::<Vec<u8>, _>("content_hash")?)?;
+        if generation == 0 || hash == [0; 32] {
+            return Err(SdwanError::InvalidContentHash);
+        }
+        Ok(Some((generation, hash)))
+    }
+
     pub async fn projection_head(
         &self,
         tenant_id: Uuid,
