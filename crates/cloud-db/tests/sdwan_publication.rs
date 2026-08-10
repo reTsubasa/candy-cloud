@@ -283,6 +283,28 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         (2, [17_u8; 32])
     );
 
+    let mut projection_gap = second.clone();
+    projection_gap.publication_id = Uuid::new_v4();
+    projection_gap.audit_event_id = Uuid::new_v4();
+    projection_gap.expected_previous_hash = [17_u8; 32];
+    projection_gap.generation = 3;
+    projection_gap.snapshot = signed(37);
+    projection_gap.projections[0].publication_id = Uuid::new_v4();
+    projection_gap.projections[0].segment_generation = 3;
+    projection_gap.projections[0].segment_content_hash = projection_gap.snapshot.content_hash;
+    projection_gap.projections[0].projection_generation = 3;
+    projection_gap.projections[0].previous_hash = [0x44_u8; 32];
+    projection_gap.projections[0].object = signed(38);
+    projection_gap.expansions[0].publication_id = Uuid::new_v4();
+    projection_gap.expansions[0].generation = 3;
+    projection_gap.expansions[0].segment_generation = 3;
+    projection_gap.expansions[0].segment_content_hash = projection_gap.snapshot.content_hash;
+    projection_gap.expansions[0].object = signed(39);
+    assert!(matches!(
+        repository.publish(&projection_gap).await,
+        Err(SdwanError::GenerationGap)
+    ));
+
     let mut divergent = write.clone();
     divergent.expansions[0].object.signed_envelope.push(1);
     assert!(matches!(
