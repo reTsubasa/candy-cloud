@@ -115,11 +115,10 @@ impl AuthorizationRepository {
             let policies = sqlx::query(
                 "SELECT seg.id AS segment_id, a.id AS attachment_id, a.site_id, p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, seg.current_generation AS segment_generation, seg.current_content_hash AS segment_content_hash \
                  FROM segment_attachments a \
-                 JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.hub_node_pool_id = ? AND seg.state = 'ACTIVE' \
+                 JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' \
                  JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = seg.current_generation AND p.segment_content_hash = seg.current_content_hash \
                  WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE', 'STANDBY') FOR SHARE",
             )
-            .bind(lookup.node_pool_id)
             .bind(lookup.tenant_id)
             .bind(lookup.device_id)
             .bind(lookup.device_key_id)

@@ -1,8 +1,29 @@
-:80 {
+:443 {
+  tls /run/secrets/cloud_tls_certificate /run/secrets/cloud_tls_key {
+    client_auth {
+      mode request
+      trust_pool file {
+        pem_file /run/secrets/cloud_device_ca_certificate
+      }
+    }
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    -Server
+  }
+
   handle_path /api/* {
     reverse_proxy cloud-api:8080
   }
+
   handle_path /auth/* {
-    reverse_proxy cloud-auth:8081
+    reverse_proxy cloud-auth:8081 {
+      header_up -X-Candy-Verified-Device-Certificate-Der
+      header_up X-Candy-Verified-Device-Certificate-Der {tls_client_certificate_der_base64}
+    }
   }
+
+  respond 404
 }

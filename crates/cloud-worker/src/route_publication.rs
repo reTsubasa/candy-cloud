@@ -6,9 +6,9 @@ use candy_proto::{
     ip_tunnel::AttachmentId,
     mesh_contract::MeshMembershipProjectionV1,
     route_contract::{
-        AllowedHubNodeV1, AttachmentPrincipalV1, AttachmentState, FailoverPolicyV1, Ipv4PrefixV1,
-        PacketResourcePolicyV1, RemoteRouteV1, SegmentAttachmentV1, SegmentRouteSnapshotV1,
-        SegmentRouteV1, SiteRouteProjectionV1,
+        AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1, Ipv4PrefixV1,
+        PacketResourcePolicyV1, PathSelectionPolicyV1, PeerPathCandidateV1, RemoteRouteV1,
+        SegmentAttachmentV1, SegmentRouteSnapshotV1, SegmentRouteV1, SiteRouteProjectionV1,
     },
     shared_hub_contract::SharedHubAdmissionPolicyV1,
 };
@@ -37,6 +37,10 @@ impl RouteSigner {
             key_id: key_id.into().into_bytes(),
             signing_key,
         }
+    }
+
+    pub fn ready(&self) -> bool {
+        !self.key_id.is_empty() && self.key_id.len() <= 64
     }
 
     pub fn sign_shared_hub_admission(
@@ -91,9 +95,10 @@ pub struct DeviceProjectionInput {
     pub projection_id: PolicyId,
     pub projection_generation: u64,
     pub previous_hash: [u8; 32],
-    pub allowed_hub_nodes: Vec<AllowedHubNodeV1>,
+    pub path_policy: PathSelectionPolicyV1,
+    pub peer_paths: Vec<PeerPathCandidateV1>,
+    pub coherent_manifest: CoherentPolicyManifestV1,
     pub max_inner_mtu: u16,
-    pub failover: FailoverPolicyV1,
     pub resources: PacketResourcePolicyV1,
 }
 
@@ -106,7 +111,6 @@ pub struct RoutePublicationInput {
     pub segment_id: candy_proto::ip_tunnel::SegmentId,
     pub generation: u64,
     pub previous_hash: [u8; 32],
-    pub hub_node_pool_id: candy_proto::cloud_grant::NodePoolId,
     pub segment_overlay_prefix: Ipv4PrefixV1,
     pub attachments: Vec<SegmentAttachmentV1>,
     pub not_before: u64,
@@ -337,10 +341,6 @@ pub enum RoutePublicationError {
     ProjectionAttachmentMismatch,
     #[error("expansion object does not bind the selected Segment publication")]
     ExpansionScopeMismatch,
-    #[error("at least one active diagnostic NodeAttachment is required")]
-    MissingDiagnosticHub,
-    #[error("projection Hub identity differs from the Segment NodeAttachment")]
-    HubIdentityMismatch,
     #[error("every device projection requires a reverse route")]
     MissingReverseRoute,
     #[error("Core route contract rejected the publication")]
@@ -366,7 +366,6 @@ pub fn build_route_publication(
     let mut attachments = input.attachments.clone();
     attachments.sort_unstable_by_key(|attachment| attachment.attachment_id.0);
     let routes = compile_routes(&attachments)?;
-    let expected_hubs = diagnostic_hubs(&attachments)?;
     let device_attachments: Vec<&SegmentAttachmentV1> = attachments
         .iter()
         .filter(|attachment| {
@@ -383,7 +382,6 @@ pub fn build_route_publication(
             tenant_id: input.tenant_id,
             segment_id: input.segment_id,
             segment_generation: input.generation,
-            hub_node_pool_id: input.hub_node_pool_id,
             segment_overlay_prefix: input.segment_overlay_prefix,
             attachments: attachments.clone(),
             routes: routes.clone(),
@@ -414,11 +412,6 @@ pub fn build_route_publication(
             .ok_or(RoutePublicationError::ProjectionAttachmentMismatch)?;
         if plan.publication_id.is_nil() {
             return Err(RoutePublicationError::ProjectionAttachmentMismatch);
-        }
-        let mut hubs = plan.allowed_hub_nodes.clone();
-        hubs.sort_unstable_by_key(hub_key);
-        if hubs != expected_hubs {
-            return Err(RoutePublicationError::HubIdentityMismatch);
         }
         let (device_id, device_key_id) = match attachment.principal {
             AttachmentPrincipalV1::Device {
@@ -461,9 +454,10 @@ pub fn build_route_publication(
                 overlay_router_ipv4: attachment.overlay_router_ipv4,
                 local_prefixes: attachment.local_prefixes.clone(),
                 remote_routes,
-                allowed_hub_nodes: hubs,
+                path_policy: plan.path_policy,
+                peer_paths: plan.peer_paths.clone(),
+                coherent_manifest: plan.coherent_manifest.clone(),
                 max_inner_mtu: plan.max_inner_mtu,
-                failover: plan.failover,
                 resources: plan.resources,
                 epoch_floor: attachment.epoch_floor,
                 not_before: input.not_before,
@@ -536,41 +530,6 @@ fn compile_routes(
             .sort_unstable_by_key(|attachment| attachment.0);
     }
     Ok(routes)
-}
-
-fn diagnostic_hubs(
-    attachments: &[SegmentAttachmentV1],
-) -> Result<Vec<AllowedHubNodeV1>, RoutePublicationError> {
-    let mut hubs = Vec::new();
-    for attachment in attachments {
-        if attachment.state != AttachmentState::Active || attachment.site_id.is_some() {
-            continue;
-        }
-        if let AttachmentPrincipalV1::Node {
-            node_id,
-            node_key_id,
-        } = attachment.principal
-        {
-            hubs.push(AllowedHubNodeV1 {
-                node_id,
-                node_key_id,
-                diagnostic_attachment_id: attachment.attachment_id,
-            });
-        }
-    }
-    if hubs.is_empty() {
-        return Err(RoutePublicationError::MissingDiagnosticHub);
-    }
-    hubs.sort_unstable_by_key(hub_key);
-    Ok(hubs)
-}
-
-fn hub_key(hub: &AllowedHubNodeV1) -> ([u8; 16], [u8; 16], [u8; 16]) {
-    (
-        hub.node_id.0,
-        hub.node_key_id.0,
-        hub.diagnostic_attachment_id.0,
-    )
 }
 
 fn uuid(bytes: [u8; 16]) -> Uuid {

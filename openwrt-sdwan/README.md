@@ -1,6 +1,13 @@
 # Candy SD-WAN OpenWrt integration
 
-This directory is the OpenWrt productization slice of the Candy SD-WAN
+> **Archived compatibility snapshot.** This directory is not a deployable
+> release source and is intentionally blocked by the package Makefile. Use
+> `reTsubasa/candy-runtime/openwrt/client/packages` as the only OpenWrt
+> source of truth. The snapshot requires legacy Core packages that are no
+> longer present in the current repositories and does not provide the
+> Runtime 0.4.x IPv6/provider/fail-open contract.
+
+This directory is the historical OpenWrt productization slice of the Candy SD-WAN
 project. It is intentionally kept separate from the Cloud control plane while
 sharing the same signed route-contract and `cloud_grant_v1` delivery contract.
 

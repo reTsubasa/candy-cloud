@@ -23,7 +23,6 @@ services:
       context: .
       dockerfile: docker/rust-service.Dockerfile
       args: { PACKAGE: cloud-db, BINARY: cloud-db-migrate }
-    profiles: ["ops"]
     environment:
       DATABASE_URL: mysql://cloud_migrator:${MYSQL_MIGRATOR_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
     depends_on:
@@ -35,7 +34,14 @@ services:
     environment:
       DATABASE_URL: mysql://cloud_api:${MYSQL_API_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       CLOUD_API_BIND: 0.0.0.0:8080
-    depends_on: { mysql: { condition: service_healthy } }
+      CLOUD_API_AUTH_PUBLIC_KEY_FILE: /run/secrets/cloud_api_auth_public_key
+      CLOUD_API_AUTH_ISSUER: ${CLOUD_API_AUTH_ISSUER:?set CLOUD_API_AUTH_ISSUER}
+      CLOUD_API_AUTH_AUDIENCE: ${CLOUD_API_AUTH_AUDIENCE:?set CLOUD_API_AUTH_AUDIENCE}
+    secrets:
+      - cloud_api_auth_public_key
+    depends_on:
+      mysql: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
     networks: [candy-cloud-internal]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health/ready"]
@@ -49,6 +55,9 @@ services:
       DATABASE_URL: mysql://cloud_auth:${MYSQL_AUTH_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       CLOUD_AUTH_BIND: 0.0.0.0:8081
       CLOUD_SIGNING_KEY_FILE: /run/secrets/cloud_signing_key
+      CLOUD_SIGNING_KEY_ID: ${CLOUD_SIGNING_KEY_ID:?set CLOUD_SIGNING_KEY_ID}
+      CLOUD_ISSUER_ID: ${CLOUD_ISSUER_ID:?set CLOUD_ISSUER_ID}
+      CLOUD_ENVIRONMENT_ID: ${CLOUD_ENVIRONMENT_ID:?set CLOUD_ENVIRONMENT_ID}
       CLOUD_DEVICE_CA_CERT_FILE: /run/secrets/cloud_device_ca_certificate
       CLOUD_DEVICE_CA_KEY_FILE: /run/secrets/cloud_device_ca_key
       CLOUD_DEVICE_CA_KEY_ID: ${CLOUD_DEVICE_CA_KEY_ID:-device-ca-1}
@@ -63,7 +72,9 @@ services:
       - source: cloud_device_ca_key
         target: cloud_device_ca_key
         mode: 0400
-    depends_on: { mysql: { condition: service_healthy } }
+    depends_on:
+      mysql: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
     networks: [candy-cloud-internal]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health/ready"]
@@ -75,15 +86,27 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: mysql://cloud_worker:${MYSQL_WORKER_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
-    depends_on: { mysql: { condition: service_healthy } }
+    depends_on:
+      mysql: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
     networks: [candy-cloud-internal]
   reverse-proxy:
     image: caddy:2.9-alpine
     restart: unless-stopped
-    ports: ["80:80", "443:443"]
+    ports: ["443:443"]
     volumes:
       - ./docker/reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on: { cloud-api: { condition: service_healthy }, cloud-auth: { condition: service_healthy } }
+    secrets:
+      - source: cloud_tls_certificate
+        target: cloud_tls_certificate
+        mode: 0444
+      - source: cloud_tls_key
+        target: cloud_tls_key
+        mode: 0400
+      - source: cloud_device_ca_certificate
+        target: cloud_device_ca_certificate
+        mode: 0444
     networks: [candy-cloud-internal]
 
 volumes:
@@ -100,3 +123,9 @@ secrets:
     file: ${CLOUD_DEVICE_CA_CERT_FILE:-./secrets/device-ca.pem}
   cloud_device_ca_key:
     file: ${CLOUD_DEVICE_CA_KEY_FILE:-./secrets/device-ca.key}
+  cloud_api_auth_public_key:
+    file: ${CLOUD_API_AUTH_PUBLIC_KEY_FILE:?set CLOUD_API_AUTH_PUBLIC_KEY_FILE}
+  cloud_tls_certificate:
+    file: ${CLOUD_TLS_CERTIFICATE_FILE:?set CLOUD_TLS_CERTIFICATE_FILE}
+  cloud_tls_key:
+    file: ${CLOUD_TLS_KEY_FILE:?set CLOUD_TLS_KEY_FILE}

@@ -745,15 +745,11 @@ assert_contains "$nodes" 'unique_section_id\("group"\)'
 assert_contains "$nodes" 'self\.map:set\(id, nil, self\.sectiontype\)'
 assert_contains "$nodes" 'self\.map:set\(id, "type", "round-robin"\)'
 assert_contains "$nodes" 's:option\(Value, "name", translate\("Group name"\)\)'
-for algorithm in round-robin consistent-hash fallback url-test; do
+for algorithm in select load-balance round-robin consistent-hash fallback url-test; do
 	assert_contains "$nodes" "o:value\(\"$algorithm\""
 done
-assert_contains "$nodes" 'value == "select"'
-assert_contains "$nodes" 'return "fallback"'
-assert_contains "$nodes" 'value == "load-balance"'
-assert_contains "$nodes" 'return "round-robin"'
-assert_not_contains "$nodes" 'o:value\("select"'
-assert_not_contains "$nodes" 'o:value\("load-balance"'
+assert_not_contains "$nodes" 'value == "select"'
+assert_not_contains "$nodes" 'value == "load-balance"'
 assert_not_contains "$nodes" 'self\.map:set\(id, "name", id\)'
 assert_not_contains "$nodes" 'self\.map:set\(id, "key_id", id\)'
 assert_not_contains "$nodes" 's:option\(DummyValue, "__policy_name"'

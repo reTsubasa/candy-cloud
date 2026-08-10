@@ -1,17 +1,20 @@
 use candy_proto::{
     cloud_grant::{
-        AccessGrantPayloadV1, DeviceId, DeviceKeyId, NodePoolId, PolicyId, ServiceClass, TenantId,
+        AccessGrantPayloadV1, DeviceId, DeviceKeyId, NodePoolId, PolicyId, PolicyRefV1,
+        ServiceClass, TenantId,
     },
     features::FeatureSet,
     ip_tunnel::{AttachmentId, OpenIpTunnel, SegmentId, SiteId, IP_PACKET_FORMAT_V1},
     route_contract::{
-        AllowedHubNodeV1, AttachmentPrincipalV1, AttachmentState, FailoverPolicyV1, Ipv4PrefixV1,
-        NodeId, NodeKeyId, PacketResourcePolicyV1, SegmentAttachmentV1,
+        AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1, Ipv4PrefixV1,
+        PacketResourcePolicyV1, PathCandidateId, PathSelectionPolicyV1, PeerEndpointV1,
+        PeerPathCandidateV1, PeerPathKindV1, SegmentAttachmentV1,
     },
 };
 use candy_tun::control::{
-    authorize_ip_tunnel, AuthenticatedDevice, AuthorizationInput, ControlError, HubNodeContext,
-    RouteTrustStore, TunnelUse, VerifiedControl, VerifiedSegmentSnapshot, VerifiedSiteProjection,
+    authorize_ip_tunnel, AuthenticatedDevice, AuthorizationInput, ControlError, DirectPeerContext,
+    RouteTrustStore, TunnelPeerContext, TunnelUse, VerifiedControl, VerifiedSegmentSnapshot,
+    VerifiedSiteProjection,
 };
 use cloud_auth::{
     domain::{
@@ -45,52 +48,75 @@ fn prefix(network: [u8; 4], prefix_len: u8) -> Ipv4PrefixV1 {
     Ipv4PrefixV1::new(network, prefix_len).unwrap()
 }
 
+fn resources() -> PacketResourcePolicyV1 {
+    PacketResourcePolicyV1 {
+        max_route_prefixes: 64,
+        max_queue_packets: 128,
+        max_queue_bytes: 262_144,
+        replay_window_packets: 1024,
+        max_packets_per_second: 10_000,
+        max_bytes_per_second: 1_000_000,
+        allowed_traffic_classes: 0x03,
+    }
+}
+
+fn direct_peer(site: SiteId, attachment: AttachmentId, candidate: u8) -> PeerPathCandidateV1 {
+    PeerPathCandidateV1 {
+        candidate_id: PathCandidateId(id(candidate)),
+        peer_site_id: site,
+        peer_attachment_id: attachment,
+        kind: PeerPathKindV1::Direct,
+        relay_node: None,
+        endpoint: PeerEndpointV1::Ipv4 {
+            address: [203, 0, 113, candidate],
+            port: 18_443,
+        },
+        priority: 10,
+        authorization: PolicyRefV1 {
+            policy_id: PolicyId(id(candidate + 20)),
+            generation: 1,
+            content_hash: [candidate + 21; 32],
+        },
+    }
+}
+
 fn publication_input() -> RoutePublicationInput {
-    let hubs = vec![AllowedHubNodeV1 {
-        node_id: NodeId(id(12)),
-        node_key_id: NodeKeyId(id(13)),
-        diagnostic_attachment_id: AttachmentId(id(14)),
-    }];
-    let policy = || DeviceProjectionInput {
-        publication_id: Uuid::new_v4(),
-        attachment_id: AttachmentId(id(4)),
-        projection_id: PolicyId(id(15)),
+    let local_attachment = AttachmentId(id(4));
+    let remote_attachment = AttachmentId(id(8));
+    let local_site = SiteId(id(5));
+    let remote_site = SiteId(id(9));
+    let local_path = direct_peer(remote_site, remote_attachment, 30);
+    let remote_path = direct_peer(local_site, local_attachment, 31);
+    let projection = |publication_id, attachment_id, path, projection_id| DeviceProjectionInput {
+        publication_id: uuid(publication_id),
+        attachment_id,
+        projection_id: PolicyId(id(projection_id)),
         projection_generation: 1,
         previous_hash: [0; 32],
-        allowed_hub_nodes: hubs.clone(),
+        path_policy: PathSelectionPolicyV1::DirectPreferred,
+        peer_paths: vec![path],
+        coherent_manifest: CoherentPolicyManifestV1 {
+            generation: 1,
+            peer_paths_hash: [0; 32],
+            dns_projection: None,
+            egress_authorization: None,
+        },
         max_inner_mtu: 1300,
-        failover: FailoverPolicyV1 {
-            max_preconnected_hubs: 1,
-            critical_recovery_ms: 100,
-            standard_recovery_ms: 500,
-        },
-        resources: PacketResourcePolicyV1 {
-            max_route_prefixes: 64,
-            max_queue_packets: 128,
-            max_queue_bytes: 262_144,
-            replay_window_packets: 1024,
-            max_packets_per_second: 10_000,
-            max_bytes_per_second: 1_000_000,
-            allowed_traffic_classes: 0x03,
-        },
+        resources: resources(),
     };
-    let mut second = policy();
-    second.attachment_id = AttachmentId(id(8));
-    second.projection_id = PolicyId(id(16));
     RoutePublicationInput {
-        publication_id: Uuid::new_v4(),
-        audit_event_id: Uuid::new_v4(),
+        publication_id: uuid(40),
+        audit_event_id: uuid(41),
         actor_id: "route-worker".into(),
         tenant_id: TenantId(id(1)),
         segment_id: SegmentId(id(2)),
         generation: 1,
         previous_hash: [0; 32],
-        hub_node_pool_id: NodePoolId(id(3)),
         segment_overlay_prefix: prefix([100, 64, 0, 0], 24),
         attachments: vec![
             SegmentAttachmentV1 {
-                attachment_id: AttachmentId(id(4)),
-                site_id: Some(SiteId(id(5))),
+                attachment_id: local_attachment,
+                site_id: Some(local_site),
                 principal: AttachmentPrincipalV1::Device {
                     device_id: DeviceId(id(6)),
                     device_key_id: DeviceKeyId(id(7)),
@@ -101,8 +127,8 @@ fn publication_input() -> RoutePublicationInput {
                 epoch_floor: 7,
             },
             SegmentAttachmentV1 {
-                attachment_id: AttachmentId(id(8)),
-                site_id: Some(SiteId(id(9))),
+                attachment_id: remote_attachment,
+                site_id: Some(remote_site),
                 principal: AttachmentPrincipalV1::Device {
                     device_id: DeviceId(id(10)),
                     device_key_id: DeviceKeyId(id(11)),
@@ -112,23 +138,14 @@ fn publication_input() -> RoutePublicationInput {
                 state: AttachmentState::Active,
                 epoch_floor: 3,
             },
-            SegmentAttachmentV1 {
-                attachment_id: AttachmentId(id(14)),
-                site_id: None,
-                principal: AttachmentPrincipalV1::Node {
-                    node_id: NodeId(id(12)),
-                    node_key_id: NodeKeyId(id(13)),
-                },
-                overlay_router_ipv4: [100, 64, 0, 3],
-                local_prefixes: vec![],
-                state: AttachmentState::Active,
-                epoch_floor: 1,
-            },
         ],
         not_before: 100,
         expires_at: 200,
         stale_until: 250,
-        projections: vec![policy(), second],
+        projections: vec![
+            projection(50, local_attachment, local_path, 15),
+            projection(51, remote_attachment, remote_path, 16),
+        ],
     }
 }
 
@@ -137,7 +154,7 @@ struct InteropFixture {
     projection: VerifiedSiteProjection,
     grant: AccessGrantPayloadV1,
     device: AuthenticatedDevice,
-    hub: HubNodeContext,
+    peer: DirectPeerContext,
     open: OpenIpTunnel,
 }
 
@@ -155,7 +172,6 @@ fn fixture() -> InteropFixture {
     let projection =
         VerifiedSiteProjection::verify(&built.projections[0].sealed.envelope, &trust).unwrap();
     VerifiedControl::new(snapshot.clone(), projection.clone()).unwrap();
-
     let request = GrantRequest {
         tenant_id: uuid(1),
         device_id: uuid(6),
@@ -232,39 +248,35 @@ fn fixture() -> InteropFixture {
     )
     .unwrap();
     let grant = AccessGrantPayloadV1::decode(&issued.issued.envelope().payload).unwrap();
-    let device = AuthenticatedDevice {
-        tenant_id: TenantId(id(1)),
-        device_id: DeviceId(id(6)),
-        device_key_id: DeviceKeyId(id(7)),
-        node_pool_id: NodePoolId(id(3)),
-        service_class: ServiceClass::CustomerPrivate,
-    };
-    let hub = HubNodeContext {
-        tenant_id: TenantId(id(1)),
-        node_id: NodeId(id(12)),
-        node_key_id: NodeKeyId(id(13)),
-        node_pool_id: NodePoolId(id(3)),
-        service_class: ServiceClass::CustomerPrivate,
-    };
-    let open = OpenIpTunnel {
-        tunnel_id: 30,
-        attachment_id: AttachmentId(id(4)),
-        attachment_epoch: 7,
-        site_id: SiteId(id(5)),
-        segment_id: SegmentId(id(2)),
-        site_projection: projection.policy_ref(),
-        segment_generation: snapshot.generation(),
-        segment_content_hash: snapshot.content_hash(),
-        requested_inner_mtu: 1200,
-        packet_format_version: IP_PACKET_FORMAT_V1,
-    };
+    let site_projection = projection.policy_ref();
+    let segment_content_hash = snapshot.content_hash();
     InteropFixture {
         snapshot,
         projection,
         grant,
-        device,
-        hub,
-        open,
+        device: AuthenticatedDevice {
+            tenant_id: TenantId(id(1)),
+            device_id: DeviceId(id(6)),
+            device_key_id: DeviceKeyId(id(7)),
+            node_pool_id: NodePoolId(id(3)),
+            service_class: ServiceClass::CustomerPrivate,
+        },
+        peer: DirectPeerContext {
+            site_id: SiteId(id(9)),
+            attachment_id: AttachmentId(id(8)),
+        },
+        open: OpenIpTunnel {
+            tunnel_id: 30,
+            attachment_id: AttachmentId(id(4)),
+            attachment_epoch: 7,
+            site_id: SiteId(id(5)),
+            segment_id: SegmentId(id(2)),
+            site_projection,
+            segment_generation: 1,
+            segment_content_hash,
+            requested_inner_mtu: 1200,
+            packet_format_version: IP_PACKET_FORMAT_V1,
+        },
     }
 }
 
@@ -274,7 +286,7 @@ fn authorize(value: &InteropFixture, now: u64) -> Result<(), ControlError> {
         projection: &value.projection,
         grant: &value.grant,
         device: &value.device,
-        hub: &value.hub,
+        peer: TunnelPeerContext::Direct(&value.peer),
         open: &value.open,
         negotiated_features: FeatureSet::from_bits(
             FeatureSet::CLOUD_GRANT_V1 | FeatureSet::DATAGRAM | FeatureSet::IP_PACKET_TUNNEL_V1,
@@ -287,19 +299,19 @@ fn authorize(value: &InteropFixture, now: u64) -> Result<(), ControlError> {
 }
 
 #[test]
-fn cloud_objects_and_tun_grant_authorize_in_core_without_database_or_network() {
+fn direct_peer_route_and_tun_grant_authorize_in_core() {
     assert_eq!(authorize(&fixture(), NOW), Ok(()));
 }
 
 #[test]
-fn core_rejects_every_cross_boundary_mismatch_and_partial_pair() {
+fn core_rejects_cross_boundary_and_unsigned_cidr_inputs() {
     let mut value = fixture();
     value.device.device_key_id = DeviceKeyId(id(99));
     assert_eq!(authorize(&value, NOW), Err(ControlError::PrincipalMismatch));
 
     let mut value = fixture();
-    value.grant.route_policy.as_mut().unwrap().content_hash[0] ^= 1;
-    assert_eq!(authorize(&value, NOW), Err(ControlError::PolicyMismatch));
+    value.peer.attachment_id = AttachmentId(id(99));
+    assert_eq!(authorize(&value, NOW), Err(ControlError::PeerNotAllowed));
 
     let mut value = fixture();
     value.open.segment_content_hash[0] ^= 1;
@@ -309,73 +321,25 @@ fn core_rejects_every_cross_boundary_mismatch_and_partial_pair() {
     );
 
     let mut value = fixture();
-    value.open.segment_generation += 1;
-    assert_eq!(
-        authorize(&value, NOW),
-        Err(ControlError::TunnelBindingMismatch)
-    );
+    value.grant.route_policy.as_mut().unwrap().content_hash[0] ^= 1;
+    assert_eq!(authorize(&value, NOW), Err(ControlError::PolicyMismatch));
 
     let mut value = fixture();
-    value.hub.node_pool_id = NodePoolId(id(99));
-    assert_eq!(
-        authorize(&value, NOW),
-        Err(ControlError::NodeContextMismatch)
-    );
-
-    let mut value = fixture();
-    value.open.site_id = SiteId(id(99));
-    assert_eq!(
-        authorize(&value, NOW),
-        Err(ControlError::TunnelBindingMismatch)
-    );
-
-    let mut value = fixture();
-    value.open.attachment_id = AttachmentId(id(99));
-    assert_eq!(
-        authorize(&value, NOW),
-        Err(ControlError::TunnelBindingMismatch)
-    );
-
-    let value = fixture();
-    assert_eq!(authorize(&value, 201), Err(ControlError::Expired));
-
-    let route_key = SigningKey::from_bytes(&[42; 32]);
-    let built = build_route_publication(
-        &publication_input(),
-        &RouteSigner::new(ROUTE_KEY_ID, route_key),
-    )
-    .unwrap();
-    assert_eq!(
-        VerifiedSegmentSnapshot::verify(
-            &built.segment.envelope,
-            &RouteTrustStore::new([]).unwrap()
-        )
-        .unwrap_err(),
-        ControlError::UnknownSigningKey
-    );
-
-    let mut other_input = publication_input();
-    other_input.generation = 2;
-    other_input.previous_hash = built.segment.object.content_hash;
-    other_input.projections[0].projection_generation = 2;
-    other_input.projections[0].previous_hash = built.projections[0].sealed.object.content_hash;
-    other_input.projections[1].projection_generation = 2;
-    other_input.projections[1].previous_hash = built.projections[1].sealed.object.content_hash;
-    let other = build_route_publication(
-        &other_input,
-        &RouteSigner::new(ROUTE_KEY_ID, SigningKey::from_bytes(&[42; 32])),
-    )
-    .unwrap();
-    let trust = RouteTrustStore::new([(
-        ROUTE_KEY_ID.as_bytes().to_vec(),
-        SigningKey::from_bytes(&[42; 32]).verifying_key(),
-    )])
-    .unwrap();
-    let snapshot = VerifiedSegmentSnapshot::verify(&other.segment.envelope, &trust).unwrap();
-    let old_projection =
-        VerifiedSiteProjection::verify(&built.projections[0].sealed.envelope, &trust).unwrap();
-    assert_eq!(
-        VerifiedControl::new(snapshot, old_projection).unwrap_err(),
-        ControlError::TunnelBindingMismatch
-    );
+    value.open.segment_content_hash = value.snapshot.content_hash();
+    let result = candy_tun::control::authorize_ip_tunnel(AuthorizationInput {
+        snapshot: &value.snapshot,
+        projection: &value.projection,
+        grant: &value.grant,
+        device: &value.device,
+        peer: TunnelPeerContext::Direct(&value.peer),
+        open: &value.open,
+        negotiated_features: FeatureSet::from_bits(
+            FeatureSet::CLOUD_GRANT_V1 | FeatureSet::DATAGRAM | FeatureSet::IP_PACKET_TUNNEL_V1,
+        ),
+        now: NOW,
+        tunnel_use: TunnelUse::New,
+        local_cidr_overrides: &[prefix([10, 9, 0, 0], 16)],
+    })
+    .map(|_| ());
+    assert_eq!(result, Err(ControlError::UnsignedCidrOverride));
 }

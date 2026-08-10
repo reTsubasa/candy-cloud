@@ -18,6 +18,7 @@ pub enum DeviceIdentityError {
     Unavailable,
 }
 
+#[derive(Clone)]
 pub struct DeviceIdentityAuthenticator {
     identities: DeviceCertificateIdentityRepository,
     environment: String,

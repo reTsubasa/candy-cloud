@@ -407,6 +407,8 @@ pub enum SdwanError {
     DuplicateProjection,
     #[error("publication id was reused with different content")]
     DivergentReplay,
+    #[error("stored publication content hash is invalid")]
+    InvalidContentHash,
     #[error("segment was not found in the requested tenant")]
     SegmentNotFound,
     #[error("database error: {0}")]
@@ -419,6 +421,10 @@ impl From<sqlx::Error> for SdwanError {
     }
 }
 
+fn decode_hash(value: &[u8]) -> Result<[u8; 32], SdwanError> {
+    value.try_into().map_err(|_| SdwanError::InvalidContentHash)
+}
+
 #[derive(Clone)]
 pub struct SdwanRepository {
     pool: DbPool,
@@ -427,6 +433,77 @@ pub struct SdwanRepository {
 impl SdwanRepository {
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
+    }
+
+    pub async fn current_head(
+        &self,
+        tenant_id: Uuid,
+        segment_id: Uuid,
+    ) -> Result<(u64, [u8; 32]), SdwanError> {
+        let row = sqlx::query(
+            "SELECT current_generation, current_content_hash FROM segments WHERE tenant_id = ? AND id = ? AND state = 'ACTIVE'",
+        )
+        .bind(tenant_id)
+        .bind(segment_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(SdwanError::SegmentNotFound)?;
+        let generation = row.try_get("current_generation")?;
+        let hash = row.try_get::<Vec<u8>, _>("current_content_hash")?;
+        let hash = decode_hash(&hash)?;
+        if (generation == 0 && hash != [0; 32]) || (generation > 0 && hash == [0; 32]) {
+            return Err(SdwanError::InvalidContentHash);
+        }
+        Ok((generation, hash))
+    }
+
+    pub async fn segment_head(
+        &self,
+        tenant_id: Uuid,
+        segment_id: Uuid,
+    ) -> Result<(u64, [u8; 32]), SdwanError> {
+        self.current_head(tenant_id, segment_id).await
+    }
+
+    pub async fn projection_head(
+        &self,
+        tenant_id: Uuid,
+        segment_id: Uuid,
+        attachment_id: Uuid,
+    ) -> Result<Option<(u64, [u8; 32])>, SdwanError> {
+        let rows = sqlx::query(
+            "SELECT projection_generation, previous_hash, content_hash FROM site_route_projection_publications WHERE tenant_id = ? AND segment_id = ? AND attachment_id = ? ORDER BY projection_generation ASC, created_at ASC FOR SHARE",
+        )
+        .bind(tenant_id)
+        .bind(segment_id)
+        .bind(attachment_id)
+        .fetch_all(&self.pool)
+        .await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        let mut expected_generation = 1_u64;
+        let mut previous_content_hash = [0_u8; 32];
+        let mut head = None;
+        for row in rows {
+            let generation: u64 = row.try_get("projection_generation")?;
+            let previous_hash = decode_hash(&row.try_get::<Vec<u8>, _>("previous_hash")?)?;
+            let content_hash = decode_hash(&row.try_get::<Vec<u8>, _>("content_hash")?)?;
+            if generation != expected_generation
+                || (generation == 1 && previous_hash != [0; 32])
+                || (generation > 1 && previous_hash != previous_content_hash)
+                || content_hash == [0; 32]
+            {
+                return Err(SdwanError::InvalidContentHash);
+            }
+            previous_content_hash = content_hash;
+            head = Some((generation, content_hash));
+            expected_generation = expected_generation
+                .checked_add(1)
+                .ok_or(SdwanError::GenerationGap)?;
+        }
+        Ok(head)
     }
 
     pub async fn publish(

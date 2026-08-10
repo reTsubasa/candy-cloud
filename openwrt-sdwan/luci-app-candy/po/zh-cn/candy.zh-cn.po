@@ -258,6 +258,9 @@ msgstr "导出诊断包"
 msgid "Fallback order"
 msgstr "故障切换顺序"
 
+msgid "Manual selection"
+msgstr "手动选择"
+
 msgid "Fallback mode"
 msgstr "自动回退模式"
 

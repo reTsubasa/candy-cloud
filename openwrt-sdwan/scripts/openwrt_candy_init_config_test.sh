@@ -82,7 +82,7 @@ config_get() {
     backup:server) value='198.51.100.20:18443' ;;
     backup:server_name) value='backup.example.test' ;;
     backup:server_pin) value='sha256:1111111111111111111111111111111111111111111111111111111111111111' ;;
-    backup:auth) value='backup-secret' ;;
+    backup:auth) value='backup-secret-long' ;;
     Proxy:type) value='load-balance' ;;
     Fast:type) value='url-test' ;;
     Fast:url_test_url) value='http://www.gstatic.com/generate_204' ;;
@@ -262,6 +262,8 @@ test "$(grep -Fc 'procd_set_param respawn 3600 10 5' "$repo_root/candy-client/ca
 grep -F 'procd_add_reload_trigger "candy"' "$repo_root/candy-client/candy.init" >/dev/null
 grep -F 'logread 2>/dev/null | grep -i candy' "$repo_root/candy-client/candy.init" >/dev/null
 grep -F -- '--check-config' "$repo_root/candy-client/candy.init" >/dev/null
+grep -F "option enabled '0'" "$repo_root/candy-client/candy.config" >/dev/null || fail "bootstrap node must default disabled"
+grep -F 'validate_node_profile_placeholders' "$repo_root/candy-client/candy.init" >/dev/null || fail "placeholder node validation is missing"
 . "$repo_root/candy-client/candy.init"
 DNSMASQ_RESTART_LOG=$runtime_dir/dnsmasq-restart.log
 restart_dnsmasq() {
@@ -322,13 +324,30 @@ chmod +x "$CANDY_CLIENT_BIN"
 export CANDY_CLIENT_CALLS=$runtime_dir/candy-client.calls
 touch "$CANDY_CLIENT_CALLS"
 CANDY_PASSIVE_STATUS_FILE=$RUNTIME_DIR/passive-status.json
+
+test_placeholder_node_rejected() {
+  ! validate_node_profile_placeholders sample '127.0.0.1:8443' localhost sample 'sha256:replace-me' 'change-me-long-random-secret' ||
+    fail "enabled placeholder node was accepted"
+}
+
+test_ipv6_literal_validation() {
+  for address in 2001:db8::1 ::1 :: 2001:db8::192.0.2.1; do
+    is_ipv6_addr "$address" || fail "valid IPv6 literal was rejected: $address"
+  done
+  for address in 2001:db8:::1 2001:db8::1::2 2001:db8::gggg; do
+    ! is_ipv6_addr "$address" || fail "invalid IPv6 literal was accepted: $address"
+  done
+}
+
+test_placeholder_node_rejected
+test_ipv6_literal_validation
 generate_config
 
 test -f "$RUNTIME_CONFIG"
 test "$(stat -c %a "$RUNTIME_CONFIG" 2>/dev/null || stat -f %Lp "$RUNTIME_CONFIG")" = 600
 grep -q '"name":"candy-openwrt"' "$RUNTIME_CONFIG"
 grep -q '"mode":"rule"' "$RUNTIME_CONFIG"
-grep -q '"runtime_mode":"fallback"' "$RUNTIME_CONFIG"
+! grep -q '"runtime_mode"' "$RUNTIME_CONFIG"
 ! grep -q '"selected_group"' "$RUNTIME_CONFIG"
 ! grep -q '"selected_node"' "$RUNTIME_CONFIG"
 grep -Fq '"dns":{"remote":true,"mode":"smart","cache":{"enabled":true,"max_entries":64' "$RUNTIME_CONFIG"
@@ -353,7 +372,7 @@ grep -q '"pin":"sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef012
 ! grep -q '"server_pin"' "$RUNTIME_CONFIG"
 grep -q '"auth":"node-secret-with-\\"quote\\"-and-\\\\slash"' "$RUNTIME_CONFIG"
 grep -Fq '"port_hopping":{"ports":[10443,20443],"interval_seconds":120}' "$RUNTIME_CONFIG"
-grep -q '"type":"round-robin"' "$RUNTIME_CONFIG"
+grep -q '"type":"load-balance"' "$RUNTIME_CONFIG"
 grep -q '"nodes":\["Hong Kong 1","Backup"\]' "$RUNTIME_CONFIG"
 grep -Fq '"name":"Fast","type":"url-test","nodes":["Backup","Hong Kong 1"],"url_test":{"url":"http://www.gstatic.com/generate_204","interval_seconds":60,"timeout_ms":3000,"validity_seconds":180,"tolerance_ms":20}' "$RUNTIME_CONFIG"
 grep -q '"IP-CIDR,10.0.0.0/8,DIRECT,no-resolve"' "$RUNTIME_CONFIG"
@@ -373,7 +392,7 @@ if [ "${CANDY_SKIP_RUST_CONFIG_CHECK:-0}" -ne 1 ]; then
     fail "CANDY_CORE_SRC must point at Candy core unless CANDY_SKIP_RUST_CONFIG_CHECK=1"
   cargo run -q --manifest-path "$candy_core_src/Cargo.toml" -p client-cli -- \
     --config "$RUNTIME_CONFIG" --format candy-json --check-config >/dev/null
-  cargo test -q --manifest-path "$candy_core_src/Cargo.toml" -p carrier-transport \
+  cargo test -q --manifest-path "$candy_core_src/Cargo.toml" -p candy-carrier-transport \
     openwrt_profile_windows_match_target_architecture
 fi
 refresh_node_status_fast "starting"
@@ -497,7 +516,7 @@ config_get() {
     backup:server) value='198.51.100.20:18443' ;;
     backup:server_name) value='backup.example.test' ;;
     backup:server_pin) value='sha256:1111111111111111111111111111111111111111111111111111111111111111' ;;
-    backup:auth) value='backup-secret' ;;
+    backup:auth) value='backup-secret-long' ;;
     Proxy:type) value='select' ;;
     rule_match:value) value='MATCH,Proxy' ;;
   esac
@@ -580,6 +599,7 @@ config_get() {
     client:dns_remote) value='0' ;;
     client:filter_aaaa) value='1' ;;
     client:dns_capture_lan) value='1' ;;
+    backup:enabled) value='0' ;;
     rule_google:value) value='DOMAIN-SUFFIX,example.com,Proxy' ;;
     rule_baidu:value) value='DOMAIN-SUFFIX,baidu.com,DIRECT' ;;
     rule_match:value) value='MATCH,Proxy' ;;
@@ -630,6 +650,7 @@ config_get() {
     client:dns_remote) value='0' ;;
     client:filter_aaaa) value='0' ;;
     client:dns_capture_lan) value='1' ;;
+    backup:enabled) value='0' ;;
     rule_match:value) value='MATCH,Proxy' ;;
   esac
   eval "$var=\$value"
@@ -676,7 +697,8 @@ config_get() {
     hk-1:server) value='104.243.28.153:18443' ;;
     hk-1:server_name) value='node.example.test' ;;
     hk-1:server_pin) value='sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' ;;
-    hk-1:auth) value='node-secret' ;;
+    hk-1:auth) value='node-secret-long-value' ;;
+    backup:enabled) value='0' ;;
     Proxy:type) value='select' ;;
     rule_match:value) value='MATCH,Proxy' ;;
   esac
@@ -704,7 +726,8 @@ printf '%s\n' '1.0.1.0/24' > "$GEO_SHARE_RULESETS_DIR/cn-ip.cidr"
 printf '%s\n' 'google.com' > "$DNS_SHARE_RULESETS_DIR/gfwlist.domains"
 printf '%s\n' "conf-dir=$runtime_dir/dnsmasq.test.d" > "$runtime_dir/dnsmasq.conf.test"
 generate_config
-grep -q '"runtime_mode":"performance"' "$RUNTIME_CONFIG"
+! grep -q '"runtime_mode"' "$RUNTIME_CONFIG"
+[ "$(runtime_mode_value)" = performance ]
 grep -Fq '"udp_redundancy":{"client_multiplier":3,"server_multiplier":3}' "$RUNTIME_CONFIG"
 grep -Fq '"transparent_udp":[{"local":"0.0.0.0:12346"}]' "$RUNTIME_CONFIG"
 apply_firewall
@@ -964,7 +987,8 @@ config_get() {
     hk-1:server) value='104.243.28.153:18443' ;;
     hk-1:server_name) value='node.example.test' ;;
     hk-1:server_pin) value='sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' ;;
-    hk-1:auth) value='node-secret' ;;
+    hk-1:auth) value='node-secret-long-value' ;;
+    backup:enabled) value='0' ;;
     Proxy:type) value='select' ;;
     good_forward:network) value='tcp' ;;
     good_forward:local) value='127.0.0.1:18080' ;;

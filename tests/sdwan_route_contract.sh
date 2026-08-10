@@ -2,7 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-CORE_ROOT=${CANDY_CORE_DIR:-"$ROOT/../udp协议"}
+CORE_ROOT=${CANDY_CORE_DIR:-"$ROOT/../candy-core"}
 cd "$ROOT"
 
 test -f "$CORE_ROOT/interop/vectors/candy-sdwan-route-contract-v1.json"

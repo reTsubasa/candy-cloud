@@ -30,6 +30,7 @@ define Package/candy-client/conffiles
 endef
 
 define Build/Prepare
+	[ "$${CANDY_ALLOW_LEGACY_SNAPSHOT:-0}" = 1 ] || { echo "legacy candy-cloud OpenWrt snapshot is archived; build candy-runtime OpenWrt packages instead"; exit 1; }
 	mkdir -p $(PKG_BUILD_DIR)
 	[ -n "$(CANDY_CORE_SRC)" ] && [ -f "$(CANDY_CORE_SRC)/Cargo.toml" ] || { echo "CANDY_CORE_SRC must point at the Candy core repository"; exit 1; }
 	rsync -a --delete \

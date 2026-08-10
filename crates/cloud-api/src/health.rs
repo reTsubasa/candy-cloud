@@ -1,14 +1,27 @@
-use axum::{http::StatusCode, response::IntoResponse};
+use std::sync::Arc;
 
-pub async fn live() -> &'static str { "ok" }
+use axum::{extract::State, http::StatusCode, response::IntoResponse};
 
-pub async fn ready() -> impl IntoResponse {
-    match std::env::var("DATABASE_URL") {
-        Ok(url) => match cloud_db::connect(&url).await {
-            Ok(pool) if sqlx::query("SELECT 1").execute(&pool).await.is_ok() => (StatusCode::OK, "ready"),
-            _ => (StatusCode::SERVICE_UNAVAILABLE, "database unavailable"),
-        },
-        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "database not configured"),
+use crate::management::ManagementState;
+
+pub async fn live() -> &'static str {
+    "ok"
+}
+
+pub async fn ready(State(state): State<Arc<ManagementState>>) -> impl IntoResponse {
+    if !state.authentication_ready {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "management authentication unavailable",
+        );
+    }
+    match &state.repository {
+        Some(repository) if repository.readiness_check().await.is_ok() => (StatusCode::OK, "ready"),
+        Some(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "database schema unavailable",
+        ),
+        None => (StatusCode::SERVICE_UNAVAILABLE, "database not configured"),
     }
 }
 

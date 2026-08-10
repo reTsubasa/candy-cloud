@@ -72,6 +72,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.91"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae36dc4177970ef04fde5178d3e2429882def40e57a451f919c098f72baa6cec"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -202,9 +213,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "candy-carrier-crypto"
+version = "0.3.9"
+dependencies = [
+ "candy-proto",
+ "ed25519-dalek",
+ "hmac",
+ "sha2",
+ "subtle",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "candy-proto"
-version = "0.3.4"
-source = "git+https://github.com/reTsubasa/candy.git?rev=7ef6ab45#7ef6ab45564cc1ae0a239c3e5c5ce5fe29b8e4ae"
+version = "0.3.9"
 dependencies = [
  "bytes",
  "thiserror 1.0.69",
@@ -212,25 +234,11 @@ dependencies = [
 
 [[package]]
 name = "candy-tun"
-version = "0.3.4"
-source = "git+https://github.com/reTsubasa/candy.git?rev=7ef6ab45#7ef6ab45564cc1ae0a239c3e5c5ce5fe29b8e4ae"
+version = "0.3.9"
 dependencies = [
- "candy-proto",
- "carrier-crypto",
- "ed25519-dalek",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "carrier-crypto"
-version = "0.3.4"
-source = "git+https://github.com/reTsubasa/candy.git?rev=7ef6ab45#7ef6ab45564cc1ae0a239c3e5c5ce5fe29b8e4ae"
-dependencies = [
+ "candy-carrier-crypto",
  "candy-proto",
  "ed25519-dalek",
- "hmac",
- "sha2",
- "subtle",
  "thiserror 1.0.69",
 ]
 
@@ -270,10 +278,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
+ "cloud-control",
  "cloud-db",
  "http-body-util",
+ "jsonwebtoken",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tokio",
  "tower",
@@ -289,8 +301,8 @@ dependencies = [
  "anyhow",
  "axum",
  "base64",
+ "candy-carrier-crypto",
  "candy-proto",
- "carrier-crypto",
  "chrono",
  "cloud-db",
  "ed25519-dalek",
@@ -312,12 +324,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cloud-control"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.19",
+ "uuid",
+]
+
+[[package]]
 name = "cloud-db"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "cloud-control",
  "serde",
+ "serde_json",
  "sha2",
  "sqlx",
  "thiserror 2.0.19",
@@ -331,15 +356,18 @@ name = "cloud-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "candy-carrier-crypto",
  "candy-proto",
  "candy-tun",
- "carrier-crypto",
  "chrono",
  "cloud-auth",
+ "cloud-control",
  "cloud-db",
  "ed25519-dalek",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -698,8 +726,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1010,6 +1040,21 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "jsonwebtoken"
+version = "9.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
+dependencies = [
+ "base64",
+ "js-sys",
+ "pem",
+ "ring",
+ "serde",
+ "serde_json",
+ "simple_asn1",
 ]
 
 [[package]]
@@ -1660,6 +1705,18 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest",
  "rand_core",
+]
+
+[[package]]
+name = "simple_asn1"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d585997b0ac10be3c5ee635f1bab02d512760d14b7c468801ac8a01d9ae5f1d"
+dependencies = [
+ "num-bigint",
+ "num-traits",
+ "thiserror 2.0.19",
+ "time",
 ]
 
 [[package]]

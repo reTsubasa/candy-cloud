@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/cloud-db", "crates/cloud-api", "crates/cloud-auth", "crates/cloud-worker"]
+members = ["crates/cloud-control", "crates/cloud-db", "crates/cloud-api", "crates/cloud-auth", "crates/cloud-worker"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,11 +10,13 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1"
+async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 http-body-util = "0.1"
+jsonwebtoken = "9"
 rand = "0.8"
 rcgen = { version = "0.14.8", features = ["x509-parser"] }
 serde = { version = "1", features = ["derive"] }
@@ -32,7 +34,7 @@ uuid = { version = "1", features = ["serde", "v4", "v7"] }
 x509-parser = { version = "0.18", features = ["verify"] }
 
 [workspace.metadata.candy]
-core_version = "0.3.4"
-core_revision = "7ef6ab45"
+core_version = "0.3.9"
+core_revision = "ac3b598"
 wire_line = "0.3"
 auth_profile = "cloud_grant_v1"

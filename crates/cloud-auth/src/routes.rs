@@ -1,8 +1,9 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use axum::{
-    extract::{FromRequestParts, Json, State},
-    http::{request::Parts, StatusCode},
+    extract::{FromRequestParts, Json, Request, State},
+    http::{request::Parts, HeaderName, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::post,
     Router,
@@ -10,6 +11,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::device_identity::{DeviceIdentityAuthenticator, DeviceIdentityError};
 use crate::domain::{
     DeviceEnrollment, DomainError, GrantRequest, ServiceClass, MAX_REQUEST_ID_LEN,
 };
@@ -17,6 +19,9 @@ use crate::enrollment::{
     EnrollmentChallengeCommand, EnrollmentChallengeReceipt, EnrollmentCompleteCommand,
     EnrollmentCompleteReceipt, EnrollmentCoordinator, EnrollmentCoordinatorError,
 };
+
+static VERIFIED_DEVICE_CERTIFICATE_HEADER: HeaderName =
+    HeaderName::from_static("x-candy-verified-device-certificate-der");
 
 pub type ServiceFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -234,6 +239,46 @@ where
     Router::new()
         .route("/v1/access-grants", post(issue_grant::<S>))
         .with_state(service)
+}
+
+pub fn device_authenticated_app<S>(
+    service: Arc<S>,
+    authenticator: DeviceIdentityAuthenticator,
+) -> Router
+where
+    S: TenantAuthService,
+{
+    authenticated_app(service).route_layer(middleware::from_fn_with_state(
+        Arc::new(authenticator),
+        require_device_identity,
+    ))
+}
+
+async fn require_device_identity(
+    State(authenticator): State<Arc<DeviceIdentityAuthenticator>>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let encoded = request
+        .headers()
+        .get(&VERIFIED_DEVICE_CERTIFICATE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty() && value.len() <= 96 * 1024)
+        .ok_or(ApiError::Unauthenticated)?;
+    let certificate_der =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+            .map_err(|_| ApiError::Unauthenticated)?;
+    let actor = authenticator
+        .authenticate_verified_certificate(&certificate_der, chrono::Utc::now())
+        .await
+        .map_err(|error| match error {
+            DeviceIdentityError::InvalidCertificate | DeviceIdentityError::InactiveCertificate => {
+                ApiError::Unauthenticated
+            }
+            DeviceIdentityError::Unavailable => ApiError::Service(GrantServiceError::Unavailable),
+        })?;
+    request.extensions_mut().insert(actor);
+    Ok(next.run(request).await)
 }
 
 pub fn enrollment_app<S>(service: Arc<S>) -> Router

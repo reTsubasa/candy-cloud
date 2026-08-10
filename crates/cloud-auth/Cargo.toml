@@ -7,8 +7,8 @@ edition.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 base64.workspace = true
-candy-proto = { git = "https://github.com/reTsubasa/candy.git", rev = "7ef6ab45" }
-carrier-crypto = { git = "https://github.com/reTsubasa/candy.git", rev = "7ef6ab45" }
+candy-proto = { path = "../../../candy-core/crates/candy-proto" }
+carrier-crypto = { package = "candy-carrier-crypto", path = "../../../candy-core/crates/candy-carrier-crypto" }
 chrono.workspace = true
 cloud-db = { path = "../cloud-db" }
 ed25519-dalek.workspace = true

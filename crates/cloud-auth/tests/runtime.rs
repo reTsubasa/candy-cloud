@@ -49,6 +49,9 @@ async fn runtime_mounts_enrollment_only_after_database_and_both_key_sets_load() 
     let config = CloudAuthConfig {
         database_url,
         signing_key_path,
+        signing_key_id: "grant-signing-test".into(),
+        issuer_id: Uuid::new_v4(),
+        environment_id: Uuid::new_v4(),
         device_ca_certificate_path,
         device_ca_key_path: device_ca_key_path.clone(),
         device_ca_key_id: "device-ca-test".into(),
@@ -67,6 +70,23 @@ async fn runtime_mounts_enrollment_only_after_database_and_both_key_sets_load() 
         .await
         .unwrap();
     assert_eq!(ready.status(), StatusCode::OK);
+
+    let grant_requires_verified_device = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/access-grants")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        grant_requires_verified_device.status(),
+        StatusCode::UNAUTHORIZED
+    );
 
     fs::remove_file(device_ca_key_path).unwrap();
     let unavailable = app

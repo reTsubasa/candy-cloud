@@ -6,9 +6,13 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+chrono.workspace = true
+cloud-control = { path = "../cloud-control" }
 cloud-db = { path = "../cloud-db" }
+jsonwebtoken.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
 tracing.workspace = true

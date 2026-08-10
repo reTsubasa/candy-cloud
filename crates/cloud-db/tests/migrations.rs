@@ -35,6 +35,11 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "site_route_projection_publications",
         "segment_route_publication_members",
         "segment_expansion_publications",
+        "sdwan_control_resources",
+        "sdwan_control_resource_references",
+        "management_idempotency_records",
+        "segment_generation_heads",
+        "segment_generation_jobs",
     ];
     for table in required {
         let count: i64 = sqlx::query_scalar(
@@ -46,6 +51,31 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+}
+
+#[test]
+fn management_control_migration_is_versioned_tenant_scoped_and_recoverable() {
+    let migration = include_str!("../migrations/0008_sdwan_management_control.sql");
+    for table in [
+        "sdwan_control_resources",
+        "sdwan_control_resource_references",
+        "management_idempotency_records",
+        "segment_generation_heads",
+        "segment_generation_jobs",
+    ] {
+        assert!(migration.contains(&format!("CREATE TABLE {table}")));
+    }
+    assert!(migration.contains("PRIMARY KEY (tenant_id, resource_kind, id)"));
+    assert!(migration.contains("idx_control_resource_references_target"));
+    assert!(migration.contains("PRIMARY KEY (tenant_id, actor_id, idempotency_key)"));
+    assert!(migration.contains("PRIMARY KEY (tenant_id, segment_id)"));
+    assert!(migration.contains(
+        "UNIQUE KEY uq_generation_job_revision (tenant_id, segment_id, desired_revision)"
+    ));
+    assert!(migration.contains("ENUM('PENDING','LEASED','RETRY','PUBLISHED','PERMANENT_FAILURE')"));
+    assert!(migration.contains("lease_until TIMESTAMP(6) NULL"));
+    assert!(!migration.contains("required_contract_version"));
+    assert!(migration.contains("DNS_INTENT"));
 }
 
 #[test]

@@ -817,7 +817,7 @@ runtime_mode_value() {
 	config_get runtime_mode client runtime_mode fallback
 	case "$runtime_mode" in
 		fallback|performance|stable) printf '%s\n' "$runtime_mode" ;;
-		*) printf '%s\n' fallback ;;
+		*) log_error "rejected unknown runtime mode: $runtime_mode"; return 1 ;;
 	esac
 }
 
@@ -826,7 +826,7 @@ udp_redundancy_multiplier_value() {
 	config_get value client "$option" 1
 	case "$value" in
 		1|2|3) printf '%s\n' "$value" ;;
-		*) printf '%s\n' 1 ;;
+		*) log_error "rejected invalid UDP redundancy multiplier for $option: $value"; return 1 ;;
 	esac
 }
 
@@ -995,7 +995,7 @@ append_group_node() {
 	config_get_bool enabled "$node" enabled 1
 	config_get node_server "$node" server
 	[ "$enabled" -eq 1 ] || return 0
-	[ -n "$node_server" ] || return 0
+	[ -n "$node_server" ] || { log_error "group=$group_name references enabled node without server: $node"; CANDY_CONFIG_NODE_ERROR=1; return 0; }
 	config_get node_name "$node" name "$node"
 	if [ "$GROUP_FIRST_NODE" -eq 0 ]; then
 		printf ','
@@ -1006,13 +1006,55 @@ append_group_node() {
 
 append_port_hopping_port() {
 	local port="$1"
-	case "$port" in ''|*[!0-9]*) return 0 ;; esac
-	[ "$port" -ge 1 ] && [ "$port" -le 65535 ] || return 0
+	case "$port" in ''|*[!0-9]*) log_error "node=$NODE_SECTION rejected invalid port hopping port: $port"; CANDY_CONFIG_NODE_ERROR=1; return 0 ;; esac
+	[ "$port" -ge 1 ] && [ "$port" -le 65535 ] || { log_error "node=$NODE_SECTION rejected out-of-range port hopping port: $port"; CANDY_CONFIG_NODE_ERROR=1; return 0; }
 	if [ "$PORT_HOPPING_FIRST" -eq 0 ]; then
 		printf ','
 	fi
 	printf '%s' "$port"
 	PORT_HOPPING_FIRST=0
+}
+
+is_placeholder_node_value() {
+	local value
+	value=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+	case "$value" in
+		''|*change-me*|*replace-me*|test|test-secret) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+validate_node_profile_placeholders() {
+	local node_name="$1" server="$2" server_name="$3" key_id="$4" server_pin="$5" auth="$6" host normalized
+	host=$(server_host "$server")
+	case "$host" in
+		127.0.0.1|localhost|0.0.0.0|::1|\[::\])
+			log_error "node=$node_name rejected placeholder server endpoint"
+			return 1
+			;;
+	esac
+	case "$(printf '%s' "$server_name" | tr '[:upper:]' '[:lower:]')" in
+		localhost) log_error "node=$node_name rejected placeholder server_name"; return 1 ;;
+	esac
+	if is_placeholder_node_value "$key_id" || is_placeholder_node_value "$auth" || [ "${#auth}" -lt 16 ]; then
+		log_error "node=$node_name rejected placeholder identity or credential"
+		return 1
+	fi
+	normalized=${server_pin#sha256:}
+	case "$normalized" in
+		replace-me|REPLACE_WITH_64_HEX_SHA256) log_error "node=$node_name rejected placeholder certificate pin"; return 1 ;;
+	esac
+	if [ -n "$normalized" ] && [ -z "$(printf '%s' "$normalized" | tr -d '0')" ]; then
+		log_error "node=$node_name rejected zero certificate pin"
+		return 1
+	fi
+	case "$normalized" in
+		0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)
+			log_error "node=$node_name rejected test certificate pin"
+			return 1
+			;;
+	esac
+	return 0
 }
 
 write_group() {
@@ -1021,10 +1063,8 @@ write_group() {
 	config_get group_name "$group_id" name "$group_id"
 	config_get type "$group_id" type fallback
 	case "$type" in
-		select) type=fallback ;;
-		load-balance) type=round-robin ;;
-		round-robin|consistent-hash|fallback|url-test) ;;
-		*) type=fallback ;;
+		select|load-balance|round-robin|consistent-hash|fallback|url-test) ;;
+		*) log_error "group=$group_name rejected unknown algorithm"; CANDY_CONFIG_GROUP_ERROR=1; return 0 ;;
 	esac
 	if [ "$FIRST_GROUP" -eq 0 ]; then
 		printf ','
@@ -1042,13 +1082,13 @@ write_group() {
 		config_get interval "$group_id" url_test_interval_seconds 60
 		config_get timeout "$group_id" url_test_timeout_ms 3000
 		config_get tolerance "$group_id" url_test_tolerance_ms 20
-		case "$url" in http://?*|https://?*) ;; *) url='http://www.gstatic.com/generate_204' ;; esac
-		case "$interval" in ''|*[!0-9]*) interval=60 ;; esac
-		case "$timeout" in ''|*[!0-9]*) timeout=3000 ;; esac
-		case "$tolerance" in ''|*[!0-9]*) tolerance=20 ;; esac
-		[ "$interval" -ge 10 ] && [ "$interval" -le 3600 ] || interval=60
-		[ "$timeout" -ge 100 ] && [ "$timeout" -le 30000 ] || timeout=3000
-		[ "$tolerance" -le 1000 ] || tolerance=20
+		case "$url" in http://?*|https://?*) ;; *) log_error "group=$group_name rejected invalid URL-test URL: $url"; CANDY_CONFIG_GROUP_ERROR=1; return 0 ;; esac
+		case "$interval" in ''|*[!0-9]*) log_error "group=$group_name rejected invalid URL-test interval: $interval"; CANDY_CONFIG_GROUP_ERROR=1; return 0 ;; esac
+		case "$timeout" in ''|*[!0-9]*) log_error "group=$group_name rejected invalid URL-test timeout: $timeout"; CANDY_CONFIG_GROUP_ERROR=1; return 0 ;; esac
+		case "$tolerance" in ''|*[!0-9]*) log_error "group=$group_name rejected invalid URL-test tolerance: $tolerance"; CANDY_CONFIG_GROUP_ERROR=1; return 0 ;; esac
+		[ "$interval" -ge 10 ] && [ "$interval" -le 3600 ] || { log_error "group=$group_name rejected URL-test interval outside 10..3600: $interval"; CANDY_CONFIG_GROUP_ERROR=1; return 0; }
+		[ "$timeout" -ge 100 ] && [ "$timeout" -le 30000 ] || { log_error "group=$group_name rejected URL-test timeout outside 100..30000: $timeout"; CANDY_CONFIG_GROUP_ERROR=1; return 0; }
+		[ "$tolerance" -le 1000 ] || { log_error "group=$group_name rejected URL-test tolerance above 1000: $tolerance"; CANDY_CONFIG_GROUP_ERROR=1; return 0; }
 		printf ',"url_test":{"url":'
 		json_string "$url"
 		printf ',"interval_seconds":%s,"timeout_ms":%s,"validity_seconds":%s,"tolerance_ms":%s}' "$interval" "$timeout" "$validity" "$tolerance"
@@ -1063,12 +1103,17 @@ write_node_profile() {
 	config_get_bool enabled "$section" enabled 1
 	config_get server "$section" server
 	[ "$enabled" -eq 1 ] || return 0
-	[ -n "$server" ] || return 0
+	[ -n "$server" ] || { log_error "node=$section is enabled but has no server"; CANDY_CONFIG_NODE_ERROR=1; return 0; }
 	config_get node_name "$section" name "$section"
 	config_get key_id "$section" key_id "$node_name"
 	config_get server_name "$section" server_name "$node_name"
 	config_get server_pin "$section" server_pin
 	config_get auth "$section" auth
+	NODE_SECTION=$section
+	if ! validate_node_profile_placeholders "$node_name" "$server" "$server_name" "$key_id" "$server_pin" "$auth"; then
+		CANDY_CONFIG_PLACEHOLDER_ERROR=1
+		return 0
+	fi
 	if [ "$FIRST_NODE" -eq 0 ]; then
 		printf ','
 	fi
@@ -1085,8 +1130,8 @@ write_node_profile() {
 	printf ',"pin":'
 	json_string "$server_pin"
 	config_get port_hopping_interval "$section" port_hopping_interval_seconds 300
-	case "$port_hopping_interval" in ''|*[!0-9]*) port_hopping_interval=300 ;; esac
-	[ "$port_hopping_interval" -ge 30 ] && [ "$port_hopping_interval" -le 86400 ] || port_hopping_interval=300
+	case "$port_hopping_interval" in ''|*[!0-9]*) log_error "node=$node_name rejected invalid port hopping interval: $port_hopping_interval"; CANDY_CONFIG_NODE_ERROR=1; return 0 ;; esac
+	[ "$port_hopping_interval" -ge 30 ] && [ "$port_hopping_interval" -le 86400 ] || { log_error "node=$node_name rejected port hopping interval outside 30..86400: $port_hopping_interval"; CANDY_CONFIG_NODE_ERROR=1; return 0; }
 	printf ',"port_hopping":{"ports":['
 	PORT_HOPPING_FIRST=1
 	config_list_foreach "$section" port_hopping_port append_port_hopping_port
@@ -1187,6 +1232,9 @@ generate_config() {
 	config_get_bool bypass_china_ip client bypass_china_ip 1
 	config_get transparent_tcp_port client transparent_tcp_port 12345
 	config_get transparent_udp_port client transparent_udp_port 12346
+	CANDY_CONFIG_PLACEHOLDER_ERROR=0
+	CANDY_CONFIG_GROUP_ERROR=0
+	CANDY_CONFIG_NODE_ERROR=0
 
 	refresh_runtime_geo_provider
 	refresh_runtime_gfwlist_provider
@@ -1202,8 +1250,6 @@ generate_config() {
 		printf '"name":"candy-openwrt"'
 		printf ',"mode":'
 		json_string "$mode"
-		printf ',"runtime_mode":'
-		json_string "$runtime_mode"
 		printf ',"dns":{"remote":'
 		json_bool "$dns_remote"
 		printf ',"mode":'
@@ -1281,6 +1327,11 @@ generate_config() {
 		rm -f "$temporary"
 		return 1
 	}
+	if [ "${CANDY_CONFIG_PLACEHOLDER_ERROR:-0}" -eq 1 ] || [ "${CANDY_CONFIG_GROUP_ERROR:-0}" -eq 1 ] || [ "${CANDY_CONFIG_NODE_ERROR:-0}" -eq 1 ]; then
+		rm -f "$temporary"
+		log_error "runtime config generation rejected one or more placeholder node values"
+		return 1
+	fi
 	atomic_commit_file "$temporary" "$RUNTIME_CONFIG" 0600 || return 1
 	log_msg "generated runtime config $RUNTIME_CONFIG"
 	[ "${CANDY_GENERATE_SKIP_STATUS:-0}" -eq 1 ] || refresh_node_status_fast "starting"
@@ -1312,10 +1363,51 @@ is_ipv4_addr() {
 }
 
 is_ipv6_addr() {
-	case "$1" in
-		*:*[0-9A-Fa-f]*) return 0 ;;
-		*) return 1 ;;
-	esac
+	awk -v address="$1" '
+		function valid_hex(value) {
+			return length(value) >= 1 && length(value) <= 4 && value !~ /[^0-9A-Fa-f]/
+		}
+		function valid_ipv4(value, octets, count, pos) {
+			count = split(value, octets, ".")
+			if (count != 4) return 0
+			for (pos = 1; pos <= count; pos++) {
+				if (octets[pos] == "" || octets[pos] ~ /[^0-9]/ || octets[pos] > 255) return 0
+			}
+			return 1
+		}
+		function validate_side(parts, count, allow_ipv4, pos, units) {
+			units = 0
+			for (pos = 1; pos <= count; pos++) {
+				if (parts[pos] ~ /\./) {
+					if (!allow_ipv4 || pos != count || !valid_ipv4(parts[pos])) return -1
+					units += 2
+				} else {
+					if (!valid_hex(parts[pos])) return -1
+					units++
+				}
+			}
+			return units
+		}
+		BEGIN {
+			if (address == "" || address ~ /%/) exit 1
+			compression = index(address, "::")
+			if (compression && index(substr(address, compression + 2), "::")) exit 1
+			if (compression) {
+				left = substr(address, 1, compression - 1)
+				right = substr(address, compression + 2)
+				left_count = left == "" ? 0 : split(left, left_parts, ":")
+				right_count = right == "" ? 0 : split(right, right_parts, ":")
+				left_units = validate_side(left_parts, left_count, 0)
+				right_units = validate_side(right_parts, right_count, 1)
+				if (left_units < 0 || right_units < 0 || left_units + right_units >= 8) exit 1
+			} else {
+				count = split(address, parts, ":")
+				units = validate_side(parts, count, 1)
+				if (units != 8) exit 1
+			}
+			exit 0
+		}
+	'
 }
 
 resolve_server_host_addresses() {
@@ -1405,8 +1497,15 @@ cleanup_tproxy_policy() {
 apply_tproxy_policy() {
 	local tproxy_mark="$1"
 	cleanup_tproxy_policy "$tproxy_mark"
-	ip rule add fwmark "$tproxy_mark" table "$tproxy_mark" 2>/dev/null || true
-	ip route add local 0.0.0.0/0 dev lo table "$tproxy_mark" 2>/dev/null || true
+	if ! ip rule add fwmark "$tproxy_mark" table "$tproxy_mark" 2>/dev/null; then
+		log_error "failed to add TPROXY fwmark rule: $tproxy_mark"
+		return 1
+	fi
+	if ! ip route add local 0.0.0.0/0 dev lo table "$tproxy_mark" 2>/dev/null; then
+		log_error "failed to add TPROXY local route: $tproxy_mark"
+		ip rule del fwmark "$tproxy_mark" table "$tproxy_mark" 2>/dev/null || true
+		return 1
+	fi
 }
 
 dnsmasq_conf_dir() {
@@ -1731,12 +1830,20 @@ write_fw4_include() {
 	atomic_commit_file "$temporary" "$FW4_INCLUDE"
 }
 
+run_iptables() {
+	if iptables "$@"; then
+		return 0
+	fi
+	log_error "iptables command failed: $*"
+	return 1
+}
+
 apply_firewall() {
-	config_load candy
+	config_load candy || return 1
 	local auto_firewall redirect_tcp redirect_udp dns_capture_lan block_quic transparent_tcp_port transparent_udp_port tproxy_mark previous_tproxy_mark bypass_ipv4_hosts bypass_ipv6_hosts bypass_host runtime_mode
 	previous_tproxy_mark=
 	config_get_bool auto_firewall client auto_firewall 1
-	runtime_mode=$(runtime_mode_value)
+	runtime_mode=$(runtime_mode_value) || return 1
 	apply_runtime_mode_preset "$runtime_mode"
 	redirect_tcp=$EFFECTIVE_REDIRECT_TCP
 	redirect_udp=$EFFECTIVE_REDIRECT_UDP
@@ -1754,33 +1861,31 @@ apply_firewall() {
 
 	if command -v iptables >/dev/null 2>&1; then
 		cleanup_firewall || return 1
-		iptables -t nat -N CANDY 2>/dev/null || true
-		iptables -t nat -F CANDY
+		if ! iptables -t nat -N CANDY 2>/dev/null && ! iptables -t nat -L CANDY -n >/dev/null 2>&1; then
+			log_error "failed to create or locate iptables CANDY chain"
+			return 1
+		fi
+		run_iptables -t nat -F CANDY || { cleanup_firewall || true; return 1; }
 		for bypass_host in $bypass_ipv4_hosts; do
-			iptables -t nat -A CANDY -d "$bypass_host" -j RETURN
+			run_iptables -t nat -A CANDY -d "$bypass_host" -j RETURN || { cleanup_firewall || true; return 1; }
 		done
-		iptables -t nat -A CANDY -d 0.0.0.0/8 -j RETURN
-		iptables -t nat -A CANDY -d 10.0.0.0/8 -j RETURN
-		iptables -t nat -A CANDY -d 127.0.0.0/8 -j RETURN
-		iptables -t nat -A CANDY -d 169.254.0.0/16 -j RETURN
-		iptables -t nat -A CANDY -d 172.16.0.0/12 -j RETURN
-		iptables -t nat -A CANDY -d 192.168.0.0/16 -j RETURN
-		iptables -t nat -A CANDY -d 224.0.0.0/4 -j RETURN
-		iptables -t nat -A CANDY -d 240.0.0.0/4 -j RETURN
+		for private_prefix in 0.0.0.0/8 10.0.0.0/8 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4; do
+			run_iptables -t nat -A CANDY -d "$private_prefix" -j RETURN || { cleanup_firewall || true; return 1; }
+		done
 		if [ "$redirect_tcp" -eq 1 ]; then
-			iptables -t nat -A CANDY -p tcp -j REDIRECT --to-ports "$transparent_tcp_port"
-			iptables -t nat -A PREROUTING -p tcp -j CANDY
+			run_iptables -t nat -A CANDY -p tcp -j REDIRECT --to-ports "$transparent_tcp_port" || { cleanup_firewall || true; return 1; }
+			run_iptables -t nat -A PREROUTING -p tcp -j CANDY || { cleanup_firewall || true; return 1; }
 		fi
 		if [ "$block_quic" -eq 1 ]; then
 			iptables -D FORWARD -i br-lan -p udp --dport 443 -j REJECT 2>/dev/null || true
-			iptables -A FORWARD -i br-lan -p udp --dport 443 -j REJECT
+			run_iptables -A FORWARD -i br-lan -p udp --dport 443 -j REJECT || { cleanup_firewall || true; return 1; }
 		elif [ "$redirect_udp" -eq 1 ]; then
-			apply_tproxy_policy "$tproxy_mark"
-			iptables -t mangle -A PREROUTING -i br-lan -p udp --dport 443 -j TPROXY --on-port "$transparent_udp_port" --tproxy-mark "$tproxy_mark/$tproxy_mark"
+			apply_tproxy_policy "$tproxy_mark" || { cleanup_firewall || true; return 1; }
+			run_iptables -t mangle -A PREROUTING -i br-lan -p udp --dport 443 -j TPROXY --on-port "$transparent_udp_port" --tproxy-mark "$tproxy_mark/$tproxy_mark" || { cleanup_firewall || true; return 1; }
 		fi
 		if [ "$dns_capture_lan" -eq 1 ]; then
-			iptables -t nat -A PREROUTING -i br-lan -p udp --dport 53 -j REDIRECT --to-ports 53
-			iptables -t nat -A PREROUTING -i br-lan -p tcp --dport 53 -j REDIRECT --to-ports 53
+			run_iptables -t nat -A PREROUTING -i br-lan -p udp --dport 53 -j REDIRECT --to-ports 53 || { cleanup_firewall || true; return 1; }
+			run_iptables -t nat -A PREROUTING -i br-lan -p tcp --dport 53 -j REDIRECT --to-ports 53 || { cleanup_firewall || true; return 1; }
 		fi
 		persist_applied_firewall_state iptables "$transparent_udp_port" "$tproxy_mark" || return 1
 		log_msg "applied iptables firewall rules"
@@ -1795,9 +1900,12 @@ apply_firewall() {
 			cleanup_tproxy_policy "$tproxy_mark"
 		fi
 		if [ "$redirect_udp" -eq 1 ] && [ "$block_quic" -ne 1 ]; then
-			apply_tproxy_policy "$tproxy_mark"
+			apply_tproxy_policy "$tproxy_mark" || { rm -f "$FW4_INCLUDE"; return 1; }
 		fi
-		write_fw4_include "$redirect_tcp" "$dns_capture_lan" "$block_quic" "$redirect_udp" "$transparent_tcp_port" "$transparent_udp_port" "$bypass_ipv4_hosts" "$bypass_ipv6_hosts" "$tproxy_mark"
+		write_fw4_include "$redirect_tcp" "$dns_capture_lan" "$block_quic" "$redirect_udp" "$transparent_tcp_port" "$transparent_udp_port" "$bypass_ipv4_hosts" "$bypass_ipv6_hosts" "$tproxy_mark" || {
+			cleanup_tproxy_policy "$tproxy_mark"
+			return 1
+		}
 		if run_with_timeout 8 fw4 check >/dev/null 2>&1; then
 			if run_with_timeout 12 fw4 reload >/dev/null 2>&1; then
 				log_msg "applied fw4 nftables firewall rules"
@@ -1806,12 +1914,14 @@ apply_firewall() {
 				fi
 			else
 				rm -f "$FW4_INCLUDE"
+				cleanup_tproxy_policy "$tproxy_mark"
 				log_msg "fw4 reload timed out; firewall policy rolled back"
 				return 1
 			fi
 			persist_applied_firewall_state fw4 "$transparent_udp_port" "$tproxy_mark" || return 1
 		else
 			rm -f "$FW4_INCLUDE"
+			cleanup_tproxy_policy "$tproxy_mark"
 			log_msg "fw4 nftables firewall rule validation failed"
 			return 1
 		fi

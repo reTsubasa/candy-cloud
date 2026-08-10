@@ -11,6 +11,7 @@ CREATE TABLE segments (
     created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     UNIQUE KEY uq_segments_tenant_name (tenant_id, name),
+    UNIQUE KEY uq_segments_tenant_id (tenant_id, id),
     KEY idx_segments_tenant_state (tenant_id, state),
     CONSTRAINT fk_segments_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
     CONSTRAINT fk_segments_hub_pool FOREIGN KEY (hub_node_pool_id) REFERENCES node_pools(id)

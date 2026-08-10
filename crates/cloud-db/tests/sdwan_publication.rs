@@ -202,6 +202,87 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     .unwrap();
     assert_eq!(expansion_count, 1);
 
+    assert_eq!(
+        repository
+            .current_head(tenant_id, segment_id)
+            .await
+            .unwrap(),
+        (1, [7_u8; 32])
+    );
+    assert_eq!(
+        repository
+            .projection_head(tenant_id, segment_id, attachment_id)
+            .await
+            .unwrap(),
+        Some((1, [8_u8; 32]))
+    );
+
+    let mut second = write.clone();
+    second.publication_id = Uuid::new_v4();
+    second.audit_event_id = Uuid::new_v4();
+    second.expected_previous_generation = 1;
+    second.expected_previous_hash = [7_u8; 32];
+    second.generation = 2;
+    second.snapshot = signed(17);
+    second.projections[0].publication_id = Uuid::new_v4();
+    second.projections[0].segment_generation = 2;
+    second.projections[0].segment_content_hash = second.snapshot.content_hash;
+    second.projections[0].projection_generation = 2;
+    second.projections[0].previous_hash = [8_u8; 32];
+    second.projections[0].object = signed(18);
+    second.expansions[0].publication_id = Uuid::new_v4();
+    second.expansions[0].generation = 2;
+    second.expansions[0].segment_generation = 2;
+    second.expansions[0].segment_content_hash = second.snapshot.content_hash;
+    second.expansions[0].object = signed(19);
+    assert_eq!(
+        repository.publish(&second).await.unwrap(),
+        PublicationOutcome::Published
+    );
+    assert_eq!(
+        repository
+            .current_head(tenant_id, segment_id)
+            .await
+            .unwrap(),
+        (2, [17_u8; 32])
+    );
+    assert_eq!(
+        repository
+            .projection_head(tenant_id, segment_id, attachment_id)
+            .await
+            .unwrap(),
+        Some((2, [18_u8; 32]))
+    );
+
+    let mut gap = second.clone();
+    gap.publication_id = Uuid::new_v4();
+    gap.audit_event_id = Uuid::new_v4();
+    gap.expected_previous_hash = [0x55_u8; 32];
+    gap.generation = 3;
+    gap.snapshot = signed(27);
+    gap.projections[0].publication_id = Uuid::new_v4();
+    gap.projections[0].segment_generation = 3;
+    gap.projections[0].segment_content_hash = gap.snapshot.content_hash;
+    gap.projections[0].projection_generation = 3;
+    gap.projections[0].previous_hash = [18_u8; 32];
+    gap.projections[0].object = signed(28);
+    gap.expansions[0].publication_id = Uuid::new_v4();
+    gap.expansions[0].generation = 3;
+    gap.expansions[0].segment_generation = 3;
+    gap.expansions[0].segment_content_hash = gap.snapshot.content_hash;
+    gap.expansions[0].object = signed(29);
+    assert!(matches!(
+        repository.publish(&gap).await,
+        Err(SdwanError::GenerationGap)
+    ));
+    assert_eq!(
+        repository
+            .current_head(tenant_id, segment_id)
+            .await
+            .unwrap(),
+        (2, [17_u8; 32])
+    );
+
     let mut divergent = write.clone();
     divergent.expansions[0].object.signed_envelope.push(1);
     assert!(matches!(
