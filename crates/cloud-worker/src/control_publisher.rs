@@ -49,7 +49,7 @@ impl ControlRoutePublisher {
     ) -> Result<RoutePublicationInput> {
         let (current_generation, current_hash) = self
             .routes
-            .current_head(snapshot.tenant_id, snapshot.segment_id)
+            .segment_head(snapshot.tenant_id, snapshot.segment_id)
             .await
             .context("load segment publication head")?;
         let generation = current_generation

@@ -544,6 +544,7 @@ impl SdwanRepository {
         }
 
         validate_projection_ownership(&mut transaction, write).await?;
+        validate_projection_heads(&mut transaction, write).await?;
 
         sqlx::query(
             "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'WORKER', ?, 'SDWAN_SEGMENT_ROUTES_PUBLISHED', 'SEGMENT', ?, JSON_OBJECT('generation', ?, 'projection_count', ?, 'expansion_count', ?))",
@@ -630,6 +631,39 @@ async fn validate_projection_ownership(
         .await?;
         if matches != 1 {
             return Err(SdwanError::ScopeMismatch);
+        }
+    }
+    Ok(())
+}
+
+async fn validate_projection_heads(
+    transaction: &mut Transaction<'_, MySql>,
+    write: &SegmentPublicationWrite,
+) -> Result<(), SdwanError> {
+    for projection in &write.projections {
+        let row = sqlx::query(
+            "SELECT projection_generation, content_hash FROM site_route_projection_publications WHERE tenant_id = ? AND segment_id = ? AND attachment_id = ? ORDER BY projection_generation DESC LIMIT 1 FOR UPDATE",
+        )
+        .bind(projection.tenant_id)
+        .bind(projection.segment_id)
+        .bind(projection.attachment_id)
+        .fetch_optional(&mut **transaction)
+        .await?;
+        let Some(row) = row else {
+            if projection.projection_generation != 1 || projection.previous_hash != [0; 32] {
+                return Err(SdwanError::GenerationGap);
+            }
+            continue;
+        };
+        let previous_generation: u64 = row.try_get("projection_generation")?;
+        let previous_content_hash = decode_hash(&row.try_get::<Vec<u8>, _>("content_hash")?)?;
+        let expected_generation = previous_generation
+            .checked_add(1)
+            .ok_or(SdwanError::GenerationGap)?;
+        if projection.projection_generation != expected_generation
+            || projection.previous_hash != previous_content_hash
+        {
+            return Err(SdwanError::GenerationGap);
         }
     }
     Ok(())
