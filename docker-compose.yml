@@ -22,6 +22,8 @@ services:
     build:
       context: .
       dockerfile: docker/rust-service.Dockerfile
+      additional_contexts:
+        candy-core: ../candy-core
       args: { PACKAGE: cloud-db, BINARY: cloud-db-migrate }
     environment:
       DATABASE_URL: mysql://cloud_migrator:${MYSQL_MIGRATOR_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
@@ -29,7 +31,11 @@ services:
       mysql: { condition: service_healthy }
     networks: [candy-cloud-internal]
   cloud-api:
-    build: { context: ., dockerfile: docker/rust-service.Dockerfile, args: { PACKAGE: cloud-api, BINARY: cloud-api } }
+    build:
+      context: .
+      dockerfile: docker/rust-service.Dockerfile
+      additional_contexts: { candy-core: ../candy-core }
+      args: { PACKAGE: cloud-api, BINARY: cloud-api }
     restart: unless-stopped
     environment:
       DATABASE_URL: mysql://cloud_api:${MYSQL_API_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
@@ -49,7 +55,11 @@ services:
       timeout: 5s
       retries: 12
   cloud-auth:
-    build: { context: ., dockerfile: docker/rust-service.Dockerfile, args: { PACKAGE: cloud-auth, BINARY: cloud-auth } }
+    build:
+      context: .
+      dockerfile: docker/rust-service.Dockerfile
+      additional_contexts: { candy-core: ../candy-core }
+      args: { PACKAGE: cloud-auth, BINARY: cloud-auth }
     restart: unless-stopped
     environment:
       DATABASE_URL: mysql://cloud_auth:${MYSQL_AUTH_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
@@ -82,7 +92,11 @@ services:
       timeout: 5s
       retries: 12
   cloud-worker:
-    build: { context: ., dockerfile: docker/rust-service.Dockerfile, args: { PACKAGE: cloud-worker, BINARY: cloud-worker } }
+    build:
+      context: .
+      dockerfile: docker/rust-service.Dockerfile
+      additional_contexts: { candy-core: ../candy-core }
+      args: { PACKAGE: cloud-worker, BINARY: cloud-worker }
     restart: unless-stopped
     environment:
       DATABASE_URL: mysql://cloud_worker:${MYSQL_WORKER_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
