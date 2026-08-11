@@ -51,6 +51,7 @@ type AssembleFn = unsafe extern "C" fn(
     usize,
     *mut usize,
 ) -> i32;
+type RouteContentHashFn = unsafe extern "C" fn(u32, *const u8, usize, *mut u8, usize) -> i32;
 type ValidateFn = unsafe extern "C" fn(u32, *const u8, usize, *const u8, usize) -> i32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +123,7 @@ impl Default for ModuleRequirements {
                 "canonicalize",
                 "prepare",
                 "assemble",
+                "route-content-hash",
                 "validate",
             ]
             .into_iter()
@@ -185,6 +187,7 @@ pub struct CoreModule {
     canonicalize_fn: CanonicalizeFn,
     prepare_fn: PrepareFn,
     assemble_fn: AssembleFn,
+    route_content_hash_fn: RouteContentHashFn,
     validate_fn: ValidateFn,
 }
 
@@ -233,6 +236,12 @@ impl CoreModule {
             unsafe { load_symbol::<PrepareFn>(&library, b"candy_core_cloud_prepare\0")? };
         let assemble_fn =
             unsafe { load_symbol::<AssembleFn>(&library, b"candy_core_cloud_assemble\0")? };
+        let route_content_hash_fn = unsafe {
+            load_symbol::<RouteContentHashFn>(
+                &library,
+                b"candy_core_cloud_route_content_hash\0",
+            )?
+        };
         let validate_fn =
             unsafe { load_symbol::<ValidateFn>(&library, b"candy_core_cloud_validate\0")? };
 
@@ -257,6 +266,7 @@ impl CoreModule {
             canonicalize_fn,
             prepare_fn,
             assemble_fn,
+            route_content_hash_fn,
             validate_fn,
         })
     }
@@ -462,6 +472,29 @@ impl CoreModule {
             (self.validate_fn)(object_type.0, input.as_ptr(), input.len(), key_ptr, key_len)
         };
         require_ok("validate", status)
+    }
+
+    /// Verifies a route payload and returns the hash computed by Core's route
+    /// contract implementation. Envelopes and Grant objects are rejected.
+    pub fn route_content_hash(
+        &self,
+        object_type: ObjectType,
+        input: &[u8],
+    ) -> Result<[u8; 32], ModuleError> {
+        ensure_input("route-content-hash", input, self.limits.max_input_bytes)?;
+        let mut output = [0u8; 32];
+        // SAFETY: input and the fixed output buffer remain valid for the call.
+        let status = unsafe {
+            (self.route_content_hash_fn)(
+                object_type.0,
+                input.as_ptr(),
+                input.len(),
+                output.as_mut_ptr(),
+                output.len(),
+            )
+        };
+        require_ok("route-content-hash", status)?;
+        Ok(output)
     }
 }
 

@@ -4,7 +4,7 @@ const OK: i32 = 0;
 const INVALID_ARGUMENT: i32 = -1;
 const UNSUPPORTED_OBJECT: i32 = -2;
 const BUFFER_TOO_SMALL: i32 = -6;
-const CAPABILITIES: &[u8] = br#"{"schema":"candy-core-cloud-capabilities-v1","abi_version":1,"module_version":"test-1","library":"libcandy_core_cloud.so","wire_protocol":"0.3","build_request_schema":"candy-core-cloud-build-v1","max_build_request_bytes":8388608,"operations":["capabilities","canonicalize","prepare","assemble","validate"],"objects":["grant-payload-v1"]}"#;
+const CAPABILITIES: &[u8] = br#"{"schema":"candy-core-cloud-capabilities-v1","abi_version":1,"module_version":"test-1","library":"libcandy_core_cloud.so","wire_protocol":"0.3","build_request_schema":"candy-core-cloud-build-v1","max_build_request_bytes":8388608,"operations":["capabilities","canonicalize","prepare","assemble","route-content-hash","validate"],"objects":["grant-payload-v1"]}"#;
 
 #[no_mangle]
 pub extern "C" fn candy_core_cloud_abi_version() -> u32 {
@@ -98,6 +98,21 @@ pub unsafe extern "C" fn candy_core_cloud_assemble(
     envelope.extend_from_slice(payload);
     envelope.extend_from_slice(signature);
     copy_output(&envelope, output, output_capacity, output_len)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn candy_core_cloud_route_content_hash(
+    object_type: u32,
+    _input: *const u8,
+    _input_len: usize,
+    output_hash: *mut u8,
+    output_hash_len: usize,
+) -> i32 {
+    if object_type != 0x101 || output_hash.is_null() || output_hash_len != 32 {
+        return INVALID_ARGUMENT;
+    }
+    ptr::write_bytes(output_hash, 0, 32);
+    OK
 }
 
 #[no_mangle]
