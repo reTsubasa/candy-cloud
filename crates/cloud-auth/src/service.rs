@@ -90,7 +90,8 @@ impl TenantAuthService for DatabaseTenantAuthService {
                         ) => GrantServiceError::Denied,
                         GrantCoordinatorError::Conflict => GrantServiceError::Conflict,
                         GrantCoordinatorError::Database(_)
-                        | GrantCoordinatorError::SigningKeyUnavailable => {
+                        | GrantCoordinatorError::SigningKeyUnavailable
+                        | GrantCoordinatorError::CoreModuleUnavailable => {
                             GrantServiceError::Unavailable
                         }
                         GrantCoordinatorError::ReplayMismatch
@@ -122,6 +123,8 @@ pub enum GrantCoordinatorError {
     Conflict,
     #[error("required signing key is unavailable")]
     SigningKeyUnavailable,
+    #[error("Core module is unavailable")]
+    CoreModuleUnavailable,
     #[error("persisted replay metadata is inconsistent")]
     ReplayMismatch,
     #[error("database unavailable")]
@@ -135,7 +138,7 @@ pub enum GrantCoordinatorError {
 pub struct GrantIssuanceCoordinator {
     authorization: AuthorizationRepository,
     records: GrantIssuanceRepository,
-    signer: GrantSigner,
+    signer: Option<GrantSigner>,
     issuer: IssuerConfig,
 }
 
@@ -144,6 +147,20 @@ impl GrantIssuanceCoordinator {
         authorization: AuthorizationRepository,
         records: GrantIssuanceRepository,
         signer: GrantSigner,
+        issuer: IssuerConfig,
+    ) -> Self {
+        Self {
+            authorization,
+            records,
+            signer: Some(signer),
+            issuer,
+        }
+    }
+
+    pub fn new_optional(
+        authorization: AuthorizationRepository,
+        records: GrantIssuanceRepository,
+        signer: Option<GrantSigner>,
         issuer: IssuerConfig,
     ) -> Self {
         Self {
@@ -159,6 +176,10 @@ impl GrantIssuanceCoordinator {
         command: &GrantIssueCommand,
         issued_at: u64,
     ) -> Result<GrantDelivery, GrantCoordinatorError> {
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or(GrantCoordinatorError::CoreModuleUnavailable)?;
         let lookup = AuthorizationLookup {
             tenant_id: command.request.tenant_id,
             device_id: command.request.device_id,
@@ -172,7 +193,7 @@ impl GrantIssuanceCoordinator {
             .ok_or(GrantCoordinatorError::Denied)?;
         let material = private_material_from_record(record)?;
         let prepared = prepare_private_grant(
-            &self.signer,
+            signer,
             &self.issuer,
             &command.request_id,
             &command.request,
@@ -190,7 +211,7 @@ impl GrantIssuanceCoordinator {
             request_id: command.request_id.clone(),
             authorization_generation: prepared.authorization_generation,
             request_fingerprint: prepared.request_fingerprint,
-            key_id: self.signer.key_id().to_owned(),
+            key_id: signer.key_id().to_owned(),
             grant_digest: prepared.issued.digest(),
             expires_at,
         };
@@ -209,7 +230,11 @@ impl GrantIssuanceCoordinator {
         material: &crate::issuance::PrivateGrantMaterial,
         existing: StoredGrantRecord,
     ) -> Result<GrantDelivery, GrantCoordinatorError> {
-        if existing.key_id != self.signer.key_id() {
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or(GrantCoordinatorError::CoreModuleUnavailable)?;
+        if existing.key_id != signer.key_id() {
             return Err(GrantCoordinatorError::SigningKeyUnavailable);
         }
         let expires_at = u64::try_from(existing.expires_at.timestamp())
@@ -218,7 +243,7 @@ impl GrantIssuanceCoordinator {
             .checked_sub(PRIVATE_GRANT_TTL_SECS)
             .ok_or(GrantCoordinatorError::ReplayMismatch)?;
         let rebuilt = prepare_private_grant_with_id(
-            &self.signer,
+            signer,
             &self.issuer,
             existing.grant_id,
             &command.request_id,
@@ -255,7 +280,6 @@ mod tests {
         issuance::{GrantQuota, PrivateGrantMaterial},
         routes::AuthenticatedDevice,
     };
-    use ed25519_dalek::SigningKey;
     use uuid::Uuid;
 
     #[tokio::test]
@@ -324,8 +348,7 @@ mod tests {
             environment_id: Uuid::new_v4(),
         };
         let grant_id = Uuid::new_v4();
-        let signing_key = SigningKey::from_bytes(&[3; 32]);
-        let original_signer = GrantSigner::new("k1", signing_key.clone());
+        let original_signer = crate::grants::test_support::signer("k1", [3; 32]);
         let original = prepare_private_grant_with_id(
             &original_signer,
             &issuer,
@@ -342,7 +365,7 @@ mod tests {
         let coordinator = GrantIssuanceCoordinator::new(
             AuthorizationRepository::new(pool.clone()),
             GrantIssuanceRepository::new(pool),
-            GrantSigner::new("k1", signing_key),
+            crate::grants::test_support::signer("k1", [3; 32]),
             issuer,
         );
         let existing = StoredGrantRecord {

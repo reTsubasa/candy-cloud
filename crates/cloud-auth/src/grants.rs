@@ -1,39 +1,36 @@
-use candy_proto::cloud_grant::{
-    AccessGrantEnvelopeV1, AccessGrantPayloadV1, ServiceClass, MAX_GRANT_TTL_SECS,
-};
-use carrier_crypto::cloud_grant::{sign_access_grant, CloudGrantCryptoError};
-use ed25519_dalek::SigningKey;
+use std::sync::Arc;
+
+use cloud_core_module::{CoreModule, ObjectType, PreparedObject};
+use ed25519_dalek::{Signer, SigningKey};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 pub const PRIVATE_GRANT_TTL_SECS: u64 = 24 * 60 * 60;
-const _: () = assert!(PRIVATE_GRANT_TTL_SECS <= MAX_GRANT_TTL_SECS);
-const PRIVATE_GRANT_REFRESH_NUMERATOR: u64 = 3;
-const PRIVATE_GRANT_REFRESH_DENOMINATOR: u64 = 4;
+pub const PRIVATE_GRANT_REFRESH_NUMERATOR: u64 = 3;
+pub const PRIVATE_GRANT_REFRESH_DENOMINATOR: u64 = 4;
+
+const BUILD_SCHEMA_V1: &str = "candy-core-cloud-build-v1";
 
 #[derive(Debug, thiserror::Error)]
 pub enum GrantIssueError {
-    #[error("private grant requires a customer private service class")]
-    InvalidServiceClass,
     #[error("grant time arithmetic overflow")]
     TimeOverflow,
-    #[error("Core grant payload rejected")]
-    Protocol(#[from] candy_proto::error::ProtocolError),
-    #[error("Core grant signing failed")]
-    Crypto(#[from] CloudGrantCryptoError),
+    #[error("Core Grant build request serialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
+    #[error("Core Grant operation failed: {0}")]
+    Core(String),
+    #[error("Core returned object type {0} for a Grant payload request")]
+    UnexpectedObjectType(u32),
 }
 
-/// A Core-defined signed envelope and its exact wire encoding. Candy Cloud owns no Grant codec.
+/// A Core-defined signed envelope. Cloud persists and returns only the opaque
+/// wire bytes and never owns a Grant codec.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuedGrant {
-    envelope: AccessGrantEnvelopeV1,
     raw: Vec<u8>,
 }
 
 impl IssuedGrant {
-    pub fn envelope(&self) -> &AccessGrantEnvelopeV1 {
-        &self.envelope
-    }
-
     pub fn raw(&self) -> &[u8] {
         &self.raw
     }
@@ -43,17 +40,78 @@ impl IssuedGrant {
     }
 }
 
-/// Signs protocol-owned Core Grant payloads with the Cloud signing key.
+/// Narrow protocol surface used by Grant issuance. Production uses the native
+/// Core module; tests can exercise Cloud policy without duplicating Core codecs.
+pub trait GrantCoreModule: Send + Sync {
+    fn prepare(&self, request: &[u8]) -> Result<PreparedObject, String>;
+    fn assemble(
+        &self,
+        object_type: ObjectType,
+        signing_key_id: &[u8],
+        payload: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<Vec<u8>, String>;
+    fn validate(
+        &self,
+        object_type: ObjectType,
+        input: &[u8],
+        verifying_key: Option<&[u8; 32]>,
+    ) -> Result<(), String>;
+}
+
+impl GrantCoreModule for CoreModule {
+    fn prepare(&self, request: &[u8]) -> Result<PreparedObject, String> {
+        CoreModule::prepare(self, request).map_err(|error| error.to_string())
+    }
+
+    fn assemble(
+        &self,
+        object_type: ObjectType,
+        signing_key_id: &[u8],
+        payload: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<Vec<u8>, String> {
+        CoreModule::assemble(self, object_type, signing_key_id, payload, signature)
+            .map_err(|error| error.to_string())
+    }
+
+    fn validate(
+        &self,
+        object_type: ObjectType,
+        input: &[u8],
+        verifying_key: Option<&[u8; 32]>,
+    ) -> Result<(), String> {
+        CoreModule::validate(self, object_type, input, verifying_key)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Cloud-owned Ed25519 signing capability paired with one immutable Core
+/// module loaded and verified at process startup.
 pub struct GrantSigner {
     key_id: String,
     signing_key: SigningKey,
+    core: Arc<dyn GrantCoreModule>,
 }
 
 impl GrantSigner {
-    pub fn new(key_id: impl Into<String>, signing_key: SigningKey) -> Self {
+    pub fn new(
+        key_id: impl Into<String>,
+        signing_key: SigningKey,
+        core: Arc<CoreModule>,
+    ) -> Self {
+        Self::with_core(key_id, signing_key, core)
+    }
+
+    pub fn with_core(
+        key_id: impl Into<String>,
+        signing_key: SigningKey,
+        core: Arc<dyn GrantCoreModule>,
+    ) -> Self {
         Self {
             key_id: key_id.into(),
             signing_key,
+            core,
         }
     }
 
@@ -61,122 +119,156 @@ impl GrantSigner {
         &self.key_id
     }
 
-    /// Applies the product default private-node lifetime then signs the canonical Core payload.
-    pub fn issue_private(
-        &self,
-        mut payload: AccessGrantPayloadV1,
-        issued_at: u64,
-    ) -> Result<IssuedGrant, GrantIssueError> {
-        if payload.service_class != ServiceClass::CustomerPrivate {
-            return Err(GrantIssueError::InvalidServiceClass);
+    /// Prepares canonical bytes in Core, signs the exact Core transcript in
+    /// Cloud, then delegates envelope assembly and final validation to Core.
+    pub fn issue_private<T: Serialize>(&self, object: &T) -> Result<IssuedGrant, GrantIssueError> {
+        #[derive(Serialize)]
+        struct BuildRequest<'a, T> {
+            schema: &'static str,
+            signing_key_id_hex: String,
+            object: &'a T,
         }
-        let expires_at = issued_at
-            .checked_add(PRIVATE_GRANT_TTL_SECS)
-            .ok_or(GrantIssueError::TimeOverflow)?;
-        let refresh_after = issued_at
-            .checked_add(
-                PRIVATE_GRANT_TTL_SECS
-                    .checked_mul(PRIVATE_GRANT_REFRESH_NUMERATOR)
-                    .ok_or(GrantIssueError::TimeOverflow)?
-                    / PRIVATE_GRANT_REFRESH_DENOMINATOR,
-            )
-            .ok_or(GrantIssueError::TimeOverflow)?;
-        payload.issued_at = issued_at;
-        payload.not_before = issued_at;
-        payload.refresh_after = refresh_after;
-        payload.expires_at = expires_at;
 
-        let payload = payload.encode()?;
-        let envelope =
-            sign_access_grant(payload, self.key_id.as_bytes().to_vec(), &self.signing_key)?;
-        let raw = envelope.encode()?;
-        Ok(IssuedGrant { envelope, raw })
+        let request = serde_json::to_vec(&BuildRequest {
+            schema: BUILD_SCHEMA_V1,
+            signing_key_id_hex: encode_hex(self.key_id.as_bytes()),
+            object,
+        })?;
+        let prepared = self
+            .core
+            .prepare(&request)
+            .map_err(GrantIssueError::Core)?;
+        if prepared.object_type != ObjectType::GRANT_PAYLOAD_V1 {
+            return Err(GrantIssueError::UnexpectedObjectType(
+                prepared.object_type.0,
+            ));
+        }
+        let signature = self.signing_key.sign(&prepared.signing_transcript).to_bytes();
+        let raw = self
+            .core
+            .assemble(
+                prepared.object_type,
+                self.key_id.as_bytes(),
+                &prepared.payload,
+                &signature,
+            )
+            .map_err(GrantIssueError::Core)?;
+        let verifying_key = self.signing_key.verifying_key().to_bytes();
+        self.core
+            .validate(
+                ObjectType::GRANT_ENVELOPE_V1,
+                &raw,
+                Some(&verifying_key),
+            )
+            .map_err(GrantIssueError::Core)?;
+        Ok(IssuedGrant { raw })
+    }
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    pub(crate) struct TestGrantCore;
+
+    impl GrantCoreModule for TestGrantCore {
+        fn prepare(&self, request: &[u8]) -> Result<PreparedObject, String> {
+            let mut transcript = b"candy-test-grant-transcript-v1".to_vec();
+            transcript.extend_from_slice(request);
+            Ok(PreparedObject {
+                object_type: ObjectType::GRANT_PAYLOAD_V1,
+                payload: request.to_vec(),
+                signing_transcript: transcript,
+            })
+        }
+
+        fn assemble(
+            &self,
+            object_type: ObjectType,
+            _signing_key_id: &[u8],
+            payload: &[u8],
+            signature: &[u8; 64],
+        ) -> Result<Vec<u8>, String> {
+            if object_type != ObjectType::GRANT_PAYLOAD_V1 {
+                return Err("unexpected object type".into());
+            }
+            let mut raw = Vec::with_capacity(4 + payload.len() + signature.len());
+            raw.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+            raw.extend_from_slice(payload);
+            raw.extend_from_slice(signature);
+            Ok(raw)
+        }
+
+        fn validate(
+            &self,
+            object_type: ObjectType,
+            input: &[u8],
+            verifying_key: Option<&[u8; 32]>,
+        ) -> Result<(), String> {
+            if object_type != ObjectType::GRANT_ENVELOPE_V1 || input.len() < 68 {
+                return Err("invalid test envelope".into());
+            }
+            let payload_len = u32::from_be_bytes(
+                input[..4]
+                    .try_into()
+                    .map_err(|_| "invalid test payload length")?,
+            ) as usize;
+            if input.len() != 4 + payload_len + 64 {
+                return Err("invalid test envelope length".into());
+            }
+            let payload = &input[4..4 + payload_len];
+            let mut transcript = b"candy-test-grant-transcript-v1".to_vec();
+            transcript.extend_from_slice(payload);
+            let key = VerifyingKey::from_bytes(
+                verifying_key.ok_or("missing test verifying key")?,
+            )
+            .map_err(|error| error.to_string())?;
+            let signature = Signature::from_slice(&input[4 + payload_len..])
+                .map_err(|error| error.to_string())?;
+            key.verify(&transcript, &signature)
+                .map_err(|error| error.to_string())
+        }
+    }
+
+    pub(crate) fn signer(key_id: &str, seed: [u8; 32]) -> GrantSigner {
+        GrantSigner::with_core(
+            key_id,
+            SigningKey::from_bytes(&seed),
+            Arc::new(TestGrantCore),
+        )
+    }
+
+    pub(crate) fn request_from_issued(issued: &IssuedGrant) -> serde_json::Value {
+        let payload_len = u32::from_be_bytes(issued.raw[..4].try_into().unwrap()) as usize;
+        serde_json::from_slice(&issued.raw[4..4 + payload_len]).unwrap()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use candy_proto::cloud_grant::{
-        AccessGrantEnvelopeV1, DeviceId, DeviceKeyId, EnvironmentId, GrantId, IssuerId, NodePoolId,
-        OperatorScopeType, OrganizationId, SubscriptionId, TenantId,
-    };
-    use candy_proto::features::FeatureSet;
-    use carrier_crypto::cloud_grant::verify_access_grant;
-
-    fn payload() -> AccessGrantPayloadV1 {
-        AccessGrantPayloadV1 {
-            grant_id: GrantId([1; 16]),
-            issuer_id: IssuerId([2; 16]),
-            environment_id: EnvironmentId([3; 16]),
-            organization_id: OrganizationId([4; 16]),
-            tenant_id: TenantId([5; 16]),
-            subscription_id: SubscriptionId([6; 16]),
-            device_id: DeviceId([7; 16]),
-            device_key_id: DeviceKeyId([8; 16]),
-            device_public_key: [9; 32],
-            assurance_level: 2,
-            node_pool_id: NodePoolId([10; 16]),
-            service_class: ServiceClass::CustomerPrivate,
-            operator_scope_type: OperatorScopeType::Customer,
-            operator_id: None,
-            region_ids: Vec::new(),
-            allowed_features: FeatureSet::from_bits(0),
-            service_permissions: 1,
-            route_policy: None,
-            dns_policy: None,
-            max_outer_connections_per_node: 2,
-            max_outer_connections_per_pool: 4,
-            max_active_sessions_per_connection: 128,
-            max_udp_flows_per_connection: 256,
-            max_pending_opens: 32,
-            max_speculative_streams: 8,
-            max_datagram_record: 1200,
-            upload_rate_bps: 10_000_000,
-            download_rate_bps: 20_000_000,
-            issued_at: 0,
-            not_before: 0,
-            refresh_after: 0,
-            expires_at: 0,
-            policy_generation: 23,
-            entitlement_generation: 24,
-        }
-    }
+    use super::test_support::{request_from_issued, signer};
 
     #[test]
-    fn private_issue_uses_core_codec_and_crypto_with_one_day_ttl() {
-        let key = SigningKey::from_bytes(&[7u8; 32]);
-        let signer = GrantSigner::new("k1", key.clone());
+    fn signer_executes_prepare_sign_assemble_and_validate() {
+        let signer = signer("k1", [7; 32]);
         let issued = signer
-            .issue_private(payload(), 1_800_000_000)
-            .expect("valid Core Grant");
-
-        let envelope = AccessGrantEnvelopeV1::decode(issued.raw()).expect("Core envelope");
-        verify_access_grant(&envelope, &key.verifying_key()).expect("Core signature");
-        let decoded = AccessGrantPayloadV1::decode(&envelope.payload).expect("Core payload");
-        assert_eq!(decoded.issued_at, 1_800_000_000);
-        assert_eq!(decoded.expires_at, 1_800_086_400);
-        assert_eq!(decoded.refresh_after, 1_800_064_800);
-        assert_eq!(envelope, *issued.envelope());
-    }
-
-    #[test]
-    fn issued_grant_digest_is_stable_for_same_core_envelope() {
-        let key = SigningKey::from_bytes(&[9u8; 32]);
-        let signer = GrantSigner::new("k1", key);
-        let grant = signer.issue_private(payload(), 1_800_000_000).unwrap();
-        assert_eq!(grant.digest(), grant.digest());
-    }
-
-    #[test]
-    fn private_issuer_rejects_non_private_core_payloads() {
-        let key = SigningKey::from_bytes(&[9u8; 32]);
-        let signer = GrantSigner::new("k1", key);
-        let mut invalid = payload();
-        invalid.service_class = ServiceClass::CandySharedAcceleration;
-        assert!(matches!(
-            signer.issue_private(invalid, 1_800_000_000),
-            Err(GrantIssueError::InvalidServiceClass)
-        ));
+            .issue_private(&serde_json::json!({"object_type":"grant_payload_v1"}))
+            .unwrap();
+        assert_eq!(
+            request_from_issued(&issued)["schema"],
+            "candy-core-cloud-build-v1"
+        );
+        assert_ne!(issued.digest(), [0; 32]);
     }
 }

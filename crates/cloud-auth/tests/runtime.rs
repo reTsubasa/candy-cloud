@@ -56,6 +56,10 @@ async fn runtime_mounts_enrollment_only_after_database_and_both_key_sets_load() 
         device_ca_key_path: device_ca_key_path.clone(),
         device_ca_key_id: "device-ca-test".into(),
         environment: "test".into(),
+        core_module_root: directory.clone(),
+        core_module_path: directory.join("missing-core-module.so"),
+        core_module_sha256: [0; 32],
+        core_module_owner_uid: 0,
     };
     let app = build_app(config).await.unwrap();
 
@@ -69,7 +73,7 @@ async fn runtime_mounts_enrollment_only_after_database_and_both_key_sets_load() 
         )
         .await
         .unwrap();
-    assert_eq!(ready.status(), StatusCode::OK);
+    assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     let grant_requires_verified_device = app
         .clone()

@@ -2,6 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::{extract::State, http::StatusCode, routing::get, Router};
+use cloud_core_module::{CoreModule, ModuleRequirements, VerifiedModuleSpec};
 use ed25519_dalek::SigningKey;
 
 use crate::{
@@ -26,6 +27,10 @@ pub struct CloudAuthConfig {
     pub device_ca_key_path: PathBuf,
     pub device_ca_key_id: String,
     pub environment: String,
+    pub core_module_root: PathBuf,
+    pub core_module_path: PathBuf,
+    pub core_module_sha256: [u8; 32],
+    pub core_module_owner_uid: u32,
 }
 
 impl CloudAuthConfig {
@@ -40,6 +45,12 @@ impl CloudAuthConfig {
             device_ca_key_path: PathBuf::from(required_env("CLOUD_DEVICE_CA_KEY_FILE")?),
             device_ca_key_id: required_env("CLOUD_DEVICE_CA_KEY_ID")?,
             environment: required_env("CLOUD_ENVIRONMENT")?,
+            core_module_root: PathBuf::from(required_env("CLOUD_CORE_MODULE_ROOT")?),
+            core_module_path: PathBuf::from(required_env("CLOUD_CORE_MODULE_PATH")?),
+            core_module_sha256: parse_sha256_env("CLOUD_CORE_MODULE_SHA256")?,
+            core_module_owner_uid: required_env("CLOUD_CORE_MODULE_OWNER_UID")?
+                .parse()
+                .context("parse CLOUD_CORE_MODULE_OWNER_UID")?,
         })
     }
 }
@@ -47,6 +58,7 @@ impl CloudAuthConfig {
 struct ReadinessState {
     control: cloud_db::control::ControlRepository,
     config: CloudAuthConfig,
+    core_module_ready: bool,
 }
 
 pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
@@ -58,7 +70,13 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
         .readiness_check()
         .await
         .context("verify cloud-auth database schema")?;
-    let grant_signer = load_grant_signer(&config)?;
+    let (grant_signer, core_module_ready) = match load_grant_signer(&config) {
+        Ok(signer) => (Some(signer), true),
+        Err(error) => {
+            tracing::error!(error = %error, event = "core_module_unavailable", "Core module unavailable; Grant issuance is fail-closed");
+            (None, false)
+        }
+    };
     let certificate_issuer = load_device_ca(&config)?;
     let enrollment = enrollment_app(Arc::new(EnrollmentCoordinator::new(
         pool.clone(),
@@ -66,7 +84,7 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
     )));
     let grant_service = Arc::new(DatabaseTenantAuthService::new(
         cloud_db::enrollment::EnrollmentRepository::new(pool.clone()),
-        GrantIssuanceCoordinator::new(
+        GrantIssuanceCoordinator::new_optional(
             cloud_db::authorization::AuthorizationRepository::new(pool.clone()),
             cloud_db::repositories::GrantIssuanceRepository::new(pool.clone()),
             grant_signer,
@@ -80,7 +98,11 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
         DeviceIdentityAuthenticator::new(pool.clone(), config.environment.clone())
             .map_err(anyhow::Error::msg)?;
     let grants = device_authenticated_app(grant_service, device_authenticator);
-    let readiness = Arc::new(ReadinessState { control, config });
+    let readiness = Arc::new(ReadinessState {
+        control,
+        config,
+        core_module_ready,
+    });
     let health = Router::new()
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
@@ -94,6 +116,7 @@ async fn live() -> &'static str {
 
 async fn ready(State(state): State<Arc<ReadinessState>>) -> (StatusCode, &'static str) {
     if state.control.readiness_check().await.is_ok()
+        && state.core_module_ready
         && validate_grant_signing_key(&state.config).is_ok()
         && load_device_ca(&state.config).is_ok()
     {
@@ -109,17 +132,45 @@ fn load_grant_signer(config: &CloudAuthConfig) -> Result<GrantSigner> {
         .expose()
         .try_into()
         .context("parse Grant signing key")?;
-    if config.signing_key_id.is_empty() || config.signing_key_id.len() > 80 {
-        anyhow::bail!("CLOUD_SIGNING_KEY_ID must be between 1 and 80 bytes");
+    if config.signing_key_id.is_empty() || config.signing_key_id.len() > 64 {
+        anyhow::bail!("CLOUD_SIGNING_KEY_ID must be between 1 and 64 bytes");
     }
+    let module = Arc::new(
+        CoreModule::load(
+            &VerifiedModuleSpec::new(
+                config.core_module_root.clone(),
+                config.core_module_path.clone(),
+                config.core_module_sha256,
+                config.core_module_owner_uid,
+            ),
+            &ModuleRequirements {
+                wire_protocol: Some("0.3".to_owned()),
+                required_objects: ["grant-payload-v1", "grant-envelope-v1"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                ..ModuleRequirements::default()
+            },
+        )
+        .context("load verified Candy Core Cloud module")?,
+    );
     Ok(GrantSigner::new(
         config.signing_key_id.clone(),
         SigningKey::from_bytes(seed),
+        module,
     ))
 }
 
 fn validate_grant_signing_key(config: &CloudAuthConfig) -> Result<()> {
-    load_grant_signer(config).map(|_| ())
+    let bytes = load_signing_key(&config.signing_key_path).context("load Grant signing key")?;
+    let _: &[u8; 32] = bytes
+        .expose()
+        .try_into()
+        .context("parse Grant signing key")?;
+    if config.signing_key_id.is_empty() || config.signing_key_id.len() > 64 {
+        anyhow::bail!("CLOUD_SIGNING_KEY_ID must be between 1 and 64 bytes");
+    }
+    Ok(())
 }
 
 fn load_device_ca(config: &CloudAuthConfig) -> Result<DeviceCertificateIssuer> {
@@ -143,4 +194,32 @@ fn parse_uuid_env(name: &str) -> Result<uuid::Uuid> {
         anyhow::bail!("{name} must be a canonical non-zero UUID");
     }
     Ok(parsed)
+}
+
+fn parse_sha256_env(name: &str) -> Result<[u8; 32]> {
+    let value = required_env(name)?;
+    if value.len() != 64 {
+        anyhow::bail!("{name} must contain exactly 64 hexadecimal characters");
+    }
+    let bytes = value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = hex_nibble(pair[0])?;
+            let low = hex_nibble(pair[1])?;
+            Ok((high << 4) | low)
+        })
+        .collect::<Result<Vec<_>, anyhow::Error>>()?;
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{name} must contain exactly 64 hexadecimal characters"))
+}
+
+fn hex_nibble(value: u8) -> Result<u8> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'A'..=b'F' => Ok(value - b'A' + 10),
+        _ => anyhow::bail!("invalid hexadecimal digit in {value:?}"),
+    }
 }
