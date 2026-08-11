@@ -95,11 +95,7 @@ pub struct GrantSigner {
 }
 
 impl GrantSigner {
-    pub fn new(
-        key_id: impl Into<String>,
-        signing_key: SigningKey,
-        core: Arc<CoreModule>,
-    ) -> Self {
+    pub fn new(key_id: impl Into<String>, signing_key: SigningKey, core: Arc<CoreModule>) -> Self {
         Self::with_core(key_id, signing_key, core)
     }
 
@@ -134,16 +130,16 @@ impl GrantSigner {
             signing_key_id_hex: encode_hex(self.key_id.as_bytes()),
             object,
         })?;
-        let prepared = self
-            .core
-            .prepare(&request)
-            .map_err(GrantIssueError::Core)?;
+        let prepared = self.core.prepare(&request).map_err(GrantIssueError::Core)?;
         if prepared.object_type != ObjectType::GRANT_PAYLOAD_V1 {
             return Err(GrantIssueError::UnexpectedObjectType(
                 prepared.object_type.0,
             ));
         }
-        let signature = self.signing_key.sign(&prepared.signing_transcript).to_bytes();
+        let signature = self
+            .signing_key
+            .sign(&prepared.signing_transcript)
+            .to_bytes();
         let raw = self
             .core
             .assemble(
@@ -155,11 +151,7 @@ impl GrantSigner {
             .map_err(GrantIssueError::Core)?;
         let verifying_key = self.signing_key.verifying_key().to_bytes();
         self.core
-            .validate(
-                ObjectType::GRANT_ENVELOPE_V1,
-                &raw,
-                Some(&verifying_key),
-            )
+            .validate(ObjectType::GRANT_ENVELOPE_V1, &raw, Some(&verifying_key))
             .map_err(GrantIssueError::Core)?;
         Ok(IssuedGrant { raw })
     }
@@ -230,10 +222,8 @@ pub(crate) mod test_support {
             let payload = &input[4..4 + payload_len];
             let mut transcript = b"candy-test-grant-transcript-v1".to_vec();
             transcript.extend_from_slice(payload);
-            let key = VerifyingKey::from_bytes(
-                verifying_key.ok_or("missing test verifying key")?,
-            )
-            .map_err(|error| error.to_string())?;
+            let key = VerifyingKey::from_bytes(verifying_key.ok_or("missing test verifying key")?)
+                .map_err(|error| error.to_string())?;
             let signature = Signature::from_slice(&input[4 + payload_len..])
                 .map_err(|error| error.to_string())?;
             key.verify(&transcript, &signature)
