@@ -29,7 +29,7 @@ printf '%s\n' "$compose_config" | awk '
   exit 1
 }
 
-rg -F 'https://github.com/reTsubasa/candy-release/releases/download/core-cloud-module-v${CORE_MODULE_VERSION}/candy-core-cloud-module-${CORE_MODULE_VERSION}-${CORE_MODULE_TARGET}.tar.gz' \
+grep -F 'https://github.com/reTsubasa/candy-release/releases/download/core-cloud-module-v${CORE_MODULE_VERSION}/candy-core-cloud-module-${CORE_MODULE_VERSION}-${CORE_MODULE_TARGET}.tar.gz' \
   docker/rust-service.Dockerfile >/dev/null || {
   echo "Core module source is not pinned to the formal candy-release asset path" >&2
   exit 1
