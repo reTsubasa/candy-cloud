@@ -21,7 +21,7 @@ fn id(byte: u8) -> [u8; 16] {
 fn real_core() -> Arc<CoreModule> {
     let path = PathBuf::from(
         std::env::var("CANDY_CORE_INTEROP_MODULE")
-            .expect("CANDY_CORE_INTEROP_MODULE is required for this ignored test"),
+            .expect("CANDY_CORE_INTEROP_MODULE must point to a released Core module"),
     );
     let root = path.parent().unwrap().to_path_buf();
     let digest = sha2::Sha256::digest(fs::read(&path).unwrap());

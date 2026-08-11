@@ -14,7 +14,6 @@ USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/service"]
 
 FROM debian:bookworm-slim AS core-module-installer
-ARG CORE_MODULE_BUNDLE_URL
 ARG CORE_MODULE_BUNDLE_SHA256
 ARG CORE_MODULE_VERSION
 ARG CORE_MODULE_SHA256
@@ -32,10 +31,14 @@ RUN git init -q /tmp/usign \
     && install -m 0755 /tmp/usign/build/usign /usr/local/bin/usign
 COPY docker/install-core-cloud-module.sh /usr/local/bin/install-core-cloud-module
 COPY keys/core-release.pub /usr/share/candy/keys/core-release.pub
-RUN test -n "${CORE_MODULE_BUNDLE_URL}" \
+RUN case "${CORE_MODULE_VERSION}" in \
+      ''|*[!0-9A-Za-z._-]*) echo 'invalid Core module version' >&2; exit 1 ;; \
+    esac \
+    && test "${CORE_MODULE_TARGET}" = x86_64-unknown-linux-gnu \
+    && core_module_url="https://github.com/reTsubasa/candy-release/releases/download/core-cloud-module-v${CORE_MODULE_VERSION}/candy-core-cloud-module-${CORE_MODULE_VERSION}-${CORE_MODULE_TARGET}.tar.gz" \
     && curl --fail --location --proto '=https' --tlsv1.2 \
       --retry 5 --retry-all-errors --connect-timeout 15 --max-time 300 \
-      --output /tmp/core-module.tar.gz "${CORE_MODULE_BUNDLE_URL}" \
+      --output /tmp/core-module.tar.gz "${core_module_url}" \
     && CORE_MODULE_BUNDLE=/tmp/core-module.tar.gz \
       CORE_MODULE_BUNDLE_SHA256="${CORE_MODULE_BUNDLE_SHA256}" \
       CORE_MODULE_VERSION="${CORE_MODULE_VERSION}" \
