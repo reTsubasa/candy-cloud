@@ -44,7 +44,7 @@ dependencies = [
  "nom",
  "num-traits",
  "rusticata-macros",
- "thiserror 2.0.19",
+ "thiserror",
  "time",
 ]
 
@@ -213,36 +213,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
-name = "candy-carrier-crypto"
-version = "0.3.10"
-dependencies = [
- "candy-proto",
- "ed25519-dalek",
- "hmac",
- "sha2",
- "subtle",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "candy-proto"
-version = "0.3.10"
-dependencies = [
- "bytes",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "candy-tun"
-version = "0.3.10"
-dependencies = [
- "candy-carrier-crypto",
- "candy-proto",
- "ed25519-dalek",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "cc"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -312,7 +282,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
- "thiserror 2.0.19",
+ "thiserror",
  "time",
  "tokio",
  "tower",
@@ -329,7 +299,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "thiserror 2.0.19",
+ "thiserror",
  "uuid",
 ]
 
@@ -342,7 +312,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "thiserror 2.0.19",
+ "thiserror",
 ]
 
 [[package]]
@@ -356,7 +326,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
- "thiserror 2.0.19",
+ "thiserror",
  "tokio",
  "toml",
  "uuid",
@@ -368,11 +338,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "candy-carrier-crypto",
- "candy-proto",
- "candy-tun",
  "chrono",
- "cloud-auth",
  "cloud-control",
  "cloud-core-module",
  "cloud-db",
@@ -380,7 +346,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "thiserror 2.0.19",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1737,7 +1703,7 @@ checksum = "0d585997b0ac10be3c5ee635f1bab02d512760d14b7c468801ac8a01d9ae5f1d"
 dependencies = [
  "num-bigint",
  "num-traits",
- "thiserror 2.0.19",
+ "thiserror",
  "time",
 ]
 
@@ -1826,7 +1792,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "smallvec",
- "thiserror 2.0.19",
+ "thiserror",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -1910,7 +1876,7 @@ dependencies = [
  "smallvec",
  "sqlx-core",
  "stringprep",
- "thiserror 2.0.19",
+ "thiserror",
  "tracing",
  "uuid",
  "whoami",
@@ -1949,7 +1915,7 @@ dependencies = [
  "smallvec",
  "sqlx-core",
  "stringprep",
- "thiserror 2.0.19",
+ "thiserror",
  "tracing",
  "uuid",
  "whoami",
@@ -1975,7 +1941,7 @@ dependencies = [
  "serde",
  "serde_urlencoded",
  "sqlx-core",
- "thiserror 2.0.19",
+ "thiserror",
  "tracing",
  "url",
  "uuid",
@@ -2045,31 +2011,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
-dependencies = [
- "thiserror-impl 1.0.69",
-]
-
-[[package]]
-name = "thiserror"
 version = "2.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09a43598840e33d5b0331f38c5e30d13bb11c11210a4b58f0d9b18a5a5eefcd9"
 dependencies = [
- "thiserror-impl 2.0.19",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
+ "thiserror-impl",
 ]
 
 [[package]]
@@ -2719,7 +2665,7 @@ dependencies = [
  "oid-registry",
  "ring",
  "rusticata-macros",
- "thiserror 2.0.19",
+ "thiserror",
  "time",
 ]
 

@@ -1,22 +1,3 @@
-use candy_proto::{
-    cloud_grant::PolicyId,
-    dynamic_route_contract::DynamicRouteSnapshotV1,
-    error::ProtocolError,
-    fabric_assignment_contract::HubFabricAssignmentV1,
-    ip_tunnel::AttachmentId,
-    mesh_contract::MeshMembershipProjectionV1,
-    route_contract::{
-        AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1, Ipv4PrefixV1,
-        PacketResourcePolicyV1, PathSelectionPolicyV1, PeerEndpointV1, PeerPathCandidateV1, RemoteRouteV1,
-        SegmentAttachmentV1, SegmentRouteSnapshotV1, SegmentRouteV1, SiteRouteProjectionV1,
-    },
-    shared_hub_contract::SharedHubAdmissionPolicyV1,
-};
-use carrier_crypto::route_contract::{
-    seal_dynamic_route_snapshot, seal_fabric_assignment, seal_mesh_membership,
-    seal_segment_snapshot, seal_shared_hub_admission, seal_site_projection,
-    RouteContractCryptoError, SealedRouteObject,
-};
 use cloud_core_module::{CoreModule, ObjectType};
 use cloud_db::sdwan::{
     ExpansionObjectKind, ExpansionObjectPublicationWrite, PublicationOutcome, SdwanError,
@@ -28,11 +9,26 @@ use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::route_types::{
+    AttachmentId, AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1,
+    DynamicRouteSnapshotV1, HubFabricAssignmentV1, Ipv4PrefixV1, MeshMembershipProjectionV1,
+    PacketResourcePolicyV1, PathSelectionPolicyV1, PeerEndpointV1, PeerPathCandidateV1, PolicyId,
+    RemoteRouteV1, SegmentAttachmentV1, SegmentId, SegmentRouteSnapshotV1, SegmentRouteV1,
+    SharedHubAdmissionPolicyV1, SharedHubQuotaV1, SiteRouteProjectionV1, TenantId,
+};
+
 #[derive(Clone)]
 pub struct RouteSigner {
     key_id: Vec<u8>,
     signing_key: SigningKey,
-    core: Option<Arc<CoreModule>>,
+    core: Arc<CoreModule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedRouteObject<T> {
+    pub source: T,
+    pub content_hash: [u8; 32],
+    pub envelope: Vec<u8>,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -45,7 +41,7 @@ fn hex(bytes: &[u8]) -> String {
     value
 }
 
-fn policy_ref_json(policy: &candy_proto::cloud_grant::PolicyRefV1) -> Value {
+fn policy_ref_json(policy: &crate::route_types::PolicyRefV1) -> Value {
     json!({
         "policy_id_hex": hex(&policy.policy_id.0),
         "generation": policy.generation,
@@ -70,7 +66,10 @@ fn principal_json(principal: &AttachmentPrincipalV1) -> Value {
             "device_id_hex": hex(&device_id.0),
             "device_key_id_hex": hex(&device_key_id.0),
         }),
-        AttachmentPrincipalV1::Node { node_id, node_key_id } => json!({
+        AttachmentPrincipalV1::Node {
+            node_id,
+            node_key_id,
+        } => json!({
             "principal_type": "node",
             "node_id_hex": hex(&node_id.0),
             "node_key_id_hex": hex(&node_key_id.0),
@@ -196,20 +195,125 @@ fn site_projection_json(object: &SiteRouteProjectionV1) -> Value {
     })
 }
 
+fn quota_json(quota: &SharedHubQuotaV1) -> Value {
+    json!({
+        "max_entities": quota.max_entities,
+        "max_queue_packets": quota.max_queue_packets,
+        "max_queue_bytes": quota.max_queue_bytes,
+        "packets_per_second": quota.packets_per_second,
+        "bytes_per_second": quota.bytes_per_second,
+        "burst_packets": quota.burst_packets,
+        "burst_bytes": quota.burst_bytes,
+    })
+}
+
+fn shared_hub_admission_json(object: &SharedHubAdmissionPolicyV1) -> Value {
+    json!({
+        "object_type": "shared_hub_admission_v1",
+        "node_id_hex": hex(&object.node_id.0),
+        "node_key_id_hex": hex(&object.node_key_id.0),
+        "node_pool_id_hex": hex(&object.node_pool_id.0),
+        "tenant_id_hex": hex(&object.tenant_id.0),
+        "segment_id_hex": hex(&object.segment_id.0),
+        "segment_generation": object.segment_generation,
+        "segment_content_hash_hex": hex(&object.segment_content_hash),
+        "policy_id_hex": hex(&object.policy_id.0),
+        "policy_generation": object.policy_generation,
+        "not_before": object.not_before,
+        "expires_at": object.expires_at,
+        "stale_until": object.stale_until,
+        "previous_hash_hex": hex(&object.previous_hash),
+        "node": quota_json(&object.node),
+        "tenant": quota_json(&object.tenant),
+        "site": quota_json(&object.site),
+        "tunnel": quota_json(&object.tunnel),
+    })
+}
+
+fn mesh_membership_json(object: &MeshMembershipProjectionV1) -> Value {
+    json!({
+        "object_type": "mesh_membership_v1",
+        "tenant_id_hex": hex(&object.tenant_id.0),
+        "segment_id_hex": hex(&object.segment_id.0),
+        "segment_generation": object.segment_generation,
+        "segment_content_hash_hex": hex(&object.segment_content_hash),
+        "local_site_id_hex": hex(&object.local_site_id.0),
+        "local_attachment_id_hex": hex(&object.local_attachment_id.0),
+        "peers": object.peers.iter().map(|peer| json!({
+            "site_id_hex": hex(&peer.site_id.0),
+            "attachment_id_hex": hex(&peer.attachment_id.0),
+            "epoch_floor": peer.epoch_floor,
+        })).collect::<Vec<_>>(),
+        "projection_id_hex": hex(&object.projection_id.0),
+        "projection_generation": object.projection_generation,
+        "not_before": object.not_before,
+        "expires_at": object.expires_at,
+        "stale_until": object.stale_until,
+        "previous_hash_hex": hex(&object.previous_hash),
+    })
+}
+
+fn dynamic_route_snapshot_json(object: &DynamicRouteSnapshotV1) -> Value {
+    json!({
+        "object_type": "dynamic_route_snapshot_v1",
+        "tenant_id_hex": hex(&object.tenant_id.0),
+        "segment_id_hex": hex(&object.segment_id.0),
+        "base_segment_generation": object.base_segment_generation,
+        "base_segment_content_hash_hex": hex(&object.base_segment_content_hash),
+        "routes": object.routes.iter().map(|route| json!({
+            "prefix": prefix_json(&route.prefix),
+            "owner_site_id_hex": hex(&route.owner_site_id.0),
+            "owner_attachment_id_hex": hex(&route.owner_attachment_id.0),
+            "metric": route.metric,
+        })).collect::<Vec<_>>(),
+        "policy_id_hex": hex(&object.policy_id.0),
+        "generation": object.generation,
+        "not_before": object.not_before,
+        "expires_at": object.expires_at,
+        "stale_until": object.stale_until,
+        "previous_hash_hex": hex(&object.previous_hash),
+    })
+}
+
+fn fabric_assignment_json(object: &HubFabricAssignmentV1) -> Value {
+    json!({
+        "object_type": "fabric_assignment_v1",
+        "tenant_id_hex": hex(&object.tenant_id.0),
+        "segment_id_hex": hex(&object.segment_id.0),
+        "segment_generation": object.segment_generation,
+        "segment_content_hash_hex": hex(&object.segment_content_hash),
+        "assignments": object.assignments.iter().map(|assignment| json!({
+            "site_id_hex": hex(&assignment.site_id.0),
+            "attachment_id_hex": hex(&assignment.attachment_id.0),
+            "hub_node_id_hex": hex(&assignment.hub_node_id.0),
+            "hub_node_key_id_hex": hex(&assignment.hub_node_key_id.0),
+            "hub_attachment_id_hex": hex(&assignment.hub_attachment_id.0),
+            "attachment_epoch": assignment.attachment_epoch,
+        })).collect::<Vec<_>>(),
+        "policy_id_hex": hex(&object.policy_id.0),
+        "generation": object.generation,
+        "not_before": object.not_before,
+        "expires_at": object.expires_at,
+        "stale_until": object.stale_until,
+        "previous_hash_hex": hex(&object.previous_hash),
+    })
+}
+
 fn module_seal<T>(
     core: &CoreModule,
     key_id: &[u8],
     signing_key: &SigningKey,
     object_type: ObjectType,
+    source: T,
     object: Value,
-    decode: fn(&[u8]) -> Result<T, candy_proto::error::ProtocolError>,
 ) -> Result<SealedRouteObject<T>, RoutePublicationError> {
     let request = json!({
         "schema": "candy-core-cloud-build-v1",
         "signing_key_id_hex": hex(key_id),
         "object": object,
     });
-    let request = serde_json::to_vec(&request).map_err(|error| RoutePublicationError::Core(error.to_string()))?;
+    let request = serde_json::to_vec(&request)
+        .map_err(|error| RoutePublicationError::Core(error.to_string()))?;
     let prepared = core
         .prepare(&request)
         .map_err(|error| RoutePublicationError::Core(error.to_string()))?;
@@ -220,38 +324,33 @@ fn module_seal<T>(
         )));
     }
     let signature = ed25519_dalek::Signer::sign(signing_key, &prepared.signing_transcript);
-    core.route_content_hash(object_type, &prepared.payload)
+    let content_hash = core
+        .route_content_hash(object_type, &prepared.payload)
         .map_err(|error| RoutePublicationError::Core(error.to_string()))?;
     let raw = core
-        .assemble(object_type, key_id, &prepared.payload, &signature.to_bytes())
+        .assemble(
+            object_type,
+            key_id,
+            &prepared.payload,
+            &signature.to_bytes(),
+        )
         .map_err(|error| RoutePublicationError::Core(error.to_string()))?;
     let public_key = signing_key.verifying_key().to_bytes();
     core.validate(ObjectType::ROUTE_ENVELOPE_V1, &raw, Some(&public_key))
         .map_err(|error| RoutePublicationError::Core(error.to_string()))?;
-    let envelope = candy_proto::route_contract::SignedRouteEnvelopeV1::decode(&raw)
-        .map_err(RoutePublicationError::Protocol)?;
-    let object = decode(&envelope.payload).map_err(RoutePublicationError::Protocol)?;
-    Ok(SealedRouteObject { object, envelope })
+    Ok(SealedRouteObject {
+        source,
+        content_hash,
+        envelope: raw,
+    })
 }
 
 impl RouteSigner {
-    pub fn new(key_id: impl Into<String>, signing_key: SigningKey) -> Self {
+    pub fn new(key_id: impl Into<String>, signing_key: SigningKey, core: Arc<CoreModule>) -> Self {
         Self {
             key_id: key_id.into().into_bytes(),
             signing_key,
-            core: None,
-        }
-    }
-
-    pub fn with_core(
-        key_id: impl Into<String>,
-        signing_key: SigningKey,
-        core: Arc<CoreModule>,
-    ) -> Self {
-        Self {
-            key_id: key_id.into().into_bytes(),
-            signing_key,
-            core: Some(core),
+            core,
         }
     }
 
@@ -263,86 +362,84 @@ impl RouteSigner {
         &self,
         object: SegmentRouteSnapshotV1,
     ) -> Result<SealedRouteObject<SegmentRouteSnapshotV1>, RoutePublicationError> {
-        if let Some(core) = &self.core {
-            return module_seal(
-                core,
-                self.key_id.as_slice(),
-                &self.signing_key,
-                ObjectType::SEGMENT_SNAPSHOT_V1,
-                segment_snapshot_json(&object),
-                SegmentRouteSnapshotV1::decode,
-            );
-        }
-        Ok(seal_segment_snapshot(
-            object,
-            self.key_id.clone(),
+        module_seal(
+            &self.core,
+            self.key_id.as_slice(),
             &self.signing_key,
-        )?)
+            ObjectType::SEGMENT_SNAPSHOT_V1,
+            object.clone(),
+            segment_snapshot_json(&object),
+        )
     }
 
     fn sign_site_projection(
         &self,
         object: SiteRouteProjectionV1,
     ) -> Result<SealedRouteObject<SiteRouteProjectionV1>, RoutePublicationError> {
-        if let Some(core) = &self.core {
-            return module_seal(
-                core,
-                self.key_id.as_slice(),
-                &self.signing_key,
-                ObjectType::SITE_PROJECTION_V1,
-                site_projection_json(&object),
-                SiteRouteProjectionV1::decode,
-            );
-        }
-        Ok(seal_site_projection(
-            object,
-            self.key_id.clone(),
+        module_seal(
+            &self.core,
+            self.key_id.as_slice(),
             &self.signing_key,
-        )?)
+            ObjectType::SITE_PROJECTION_V1,
+            object.clone(),
+            site_projection_json(&object),
+        )
     }
 
     pub fn sign_shared_hub_admission(
         &self,
         policy: SharedHubAdmissionPolicyV1,
     ) -> Result<SealedRouteObject<SharedHubAdmissionPolicyV1>, RoutePublicationError> {
-        Ok(seal_shared_hub_admission(
-            policy,
-            self.key_id.clone(),
+        module_seal(
+            &self.core,
+            self.key_id.as_slice(),
             &self.signing_key,
-        )?)
+            ObjectType::SHARED_HUB_ADMISSION_V1,
+            policy.clone(),
+            shared_hub_admission_json(&policy),
+        )
     }
 
     pub fn sign_mesh_membership(
         &self,
         projection: MeshMembershipProjectionV1,
     ) -> Result<SealedRouteObject<MeshMembershipProjectionV1>, RoutePublicationError> {
-        Ok(seal_mesh_membership(
-            projection,
-            self.key_id.clone(),
+        module_seal(
+            &self.core,
+            self.key_id.as_slice(),
             &self.signing_key,
-        )?)
+            ObjectType::MESH_MEMBERSHIP_V1,
+            projection.clone(),
+            mesh_membership_json(&projection),
+        )
     }
 
     pub fn sign_dynamic_route_snapshot(
         &self,
         snapshot: DynamicRouteSnapshotV1,
     ) -> Result<SealedRouteObject<DynamicRouteSnapshotV1>, RoutePublicationError> {
-        Ok(seal_dynamic_route_snapshot(
-            snapshot,
-            self.key_id.clone(),
+        module_seal(
+            &self.core,
+            self.key_id.as_slice(),
             &self.signing_key,
-        )?)
+            ObjectType::DYNAMIC_ROUTE_SNAPSHOT_V1,
+            snapshot.clone(),
+            dynamic_route_snapshot_json(&snapshot),
+        )
     }
 
     pub fn sign_fabric_assignment(
         &self,
         assignment: HubFabricAssignmentV1,
     ) -> Result<SealedRouteObject<HubFabricAssignmentV1>, RoutePublicationError> {
-        Ok(seal_fabric_assignment(
-            assignment,
-            self.key_id.clone(),
+        module_seal(
+            &self.core,
+            self.key_id.as_slice(),
             &self.signing_key,
-        )?)
+            ObjectType::FABRIC_ASSIGNMENT_V1,
+            assignment.clone(),
+            fabric_assignment_json(&assignment),
+        )
     }
 }
 
@@ -365,8 +462,8 @@ pub struct RoutePublicationInput {
     pub publication_id: Uuid,
     pub audit_event_id: Uuid,
     pub actor_id: String,
-    pub tenant_id: candy_proto::cloud_grant::TenantId,
-    pub segment_id: candy_proto::ip_tunnel::SegmentId,
+    pub tenant_id: TenantId,
+    pub segment_id: SegmentId,
     pub generation: u64,
     pub previous_hash: [u8; 32],
     pub segment_overlay_prefix: Ipv4PrefixV1,
@@ -421,26 +518,26 @@ impl BuiltRoutePublication {
         &self,
         expansions: &[BuiltExpansionPublication],
     ) -> Result<SegmentPublicationWrite, RoutePublicationError> {
-        let generation = self.segment.object.segment_generation;
+        let generation = self.segment.source.segment_generation;
         let expected_previous_generation = generation
             .checked_sub(1)
             .ok_or(RoutePublicationError::InvalidGeneration)?;
         Ok(SegmentPublicationWrite {
             publication_id: self.publication_id,
-            tenant_id: uuid(self.segment.object.tenant_id.0),
-            segment_id: uuid(self.segment.object.segment_id.0),
+            tenant_id: uuid(self.segment.source.tenant_id.0),
+            segment_id: uuid(self.segment.source.segment_id.0),
             expected_previous_generation,
-            expected_previous_hash: self.segment.object.previous_hash,
+            expected_previous_hash: self.segment.source.previous_hash,
             generation,
             snapshot: SignedObjectWrite {
-                content_hash: self.segment.object.content_hash,
-                signed_envelope: self.segment.envelope.encode()?,
+                content_hash: self.segment.content_hash,
+                signed_envelope: self.segment.envelope.clone(),
             },
             projections: self
                 .projections
                 .iter()
                 .map(|built| {
-                    let projection = &built.sealed.object;
+                    let projection = &built.sealed.source;
                     Ok(SiteProjectionPublicationWrite {
                         publication_id: built.publication_id,
                         projection_id: uuid(projection.projection_id.0),
@@ -455,8 +552,8 @@ impl BuiltRoutePublication {
                         projection_generation: projection.projection_generation,
                         previous_hash: projection.previous_hash,
                         object: SignedObjectWrite {
-                            content_hash: projection.content_hash,
-                            signed_envelope: built.sealed.envelope.encode()?,
+                            content_hash: built.sealed.content_hash,
+                            signed_envelope: built.sealed.envelope.clone(),
                         },
                     })
                 })
@@ -474,7 +571,7 @@ impl BuiltRoutePublication {
         &self,
         expansion: &BuiltExpansionPublication,
     ) -> Result<ExpansionObjectPublicationWrite, RoutePublicationError> {
-        let segment = &self.segment.object;
+        let segment = &self.segment.source;
         let (
             publication_id,
             kind,
@@ -495,16 +592,16 @@ impl BuiltRoutePublication {
             } => (
                 *publication_id,
                 ExpansionObjectKind::SharedHubAdmission,
-                sealed.object.policy_id,
-                sealed.object.policy_generation,
-                sealed.object.tenant_id,
-                sealed.object.segment_id,
-                sealed.object.segment_generation,
-                sealed.object.segment_content_hash,
+                sealed.source.policy_id,
+                sealed.source.policy_generation,
+                sealed.source.tenant_id,
+                sealed.source.segment_id,
+                sealed.source.segment_generation,
+                sealed.source.segment_content_hash,
                 None,
                 None,
-                sealed.object.content_hash,
-                sealed.envelope.encode()?,
+                sealed.content_hash,
+                sealed.envelope.clone(),
             ),
             BuiltExpansionPublication::Mesh {
                 publication_id,
@@ -512,16 +609,16 @@ impl BuiltRoutePublication {
             } => (
                 *publication_id,
                 ExpansionObjectKind::MeshMembership,
-                sealed.object.projection_id,
-                sealed.object.projection_generation,
-                sealed.object.tenant_id,
-                sealed.object.segment_id,
-                sealed.object.segment_generation,
-                sealed.object.segment_content_hash,
-                Some(sealed.object.local_site_id),
-                Some(sealed.object.local_attachment_id),
-                sealed.object.content_hash,
-                sealed.envelope.encode()?,
+                sealed.source.projection_id,
+                sealed.source.projection_generation,
+                sealed.source.tenant_id,
+                sealed.source.segment_id,
+                sealed.source.segment_generation,
+                sealed.source.segment_content_hash,
+                Some(sealed.source.local_site_id),
+                Some(sealed.source.local_attachment_id),
+                sealed.content_hash,
+                sealed.envelope.clone(),
             ),
             BuiltExpansionPublication::DynamicRoute {
                 publication_id,
@@ -529,16 +626,16 @@ impl BuiltRoutePublication {
             } => (
                 *publication_id,
                 ExpansionObjectKind::DynamicRouteSnapshot,
-                sealed.object.policy_id,
-                sealed.object.generation,
-                sealed.object.tenant_id,
-                sealed.object.segment_id,
-                sealed.object.base_segment_generation,
-                sealed.object.base_segment_content_hash,
+                sealed.source.policy_id,
+                sealed.source.generation,
+                sealed.source.tenant_id,
+                sealed.source.segment_id,
+                sealed.source.base_segment_generation,
+                sealed.source.base_segment_content_hash,
                 None,
                 None,
-                sealed.object.content_hash,
-                sealed.envelope.encode()?,
+                sealed.content_hash,
+                sealed.envelope.clone(),
             ),
             BuiltExpansionPublication::FabricAssignment {
                 publication_id,
@@ -546,23 +643,23 @@ impl BuiltRoutePublication {
             } => (
                 *publication_id,
                 ExpansionObjectKind::FabricAssignment,
-                sealed.object.policy_id,
-                sealed.object.generation,
-                sealed.object.tenant_id,
-                sealed.object.segment_id,
-                sealed.object.segment_generation,
-                sealed.object.segment_content_hash,
+                sealed.source.policy_id,
+                sealed.source.generation,
+                sealed.source.tenant_id,
+                sealed.source.segment_id,
+                sealed.source.segment_generation,
+                sealed.source.segment_content_hash,
                 None,
                 None,
-                sealed.object.content_hash,
-                sealed.envelope.encode()?,
+                sealed.content_hash,
+                sealed.envelope.clone(),
             ),
         };
         if publication_id.is_nil()
             || tenant_id != segment.tenant_id
             || segment_id != segment.segment_id
             || segment_generation != segment.segment_generation
-            || segment_content_hash != segment.content_hash
+            || segment_content_hash != self.segment.content_hash
         {
             return Err(RoutePublicationError::ExpansionScopeMismatch);
         }
@@ -601,12 +698,8 @@ pub enum RoutePublicationError {
     ExpansionScopeMismatch,
     #[error("every device projection requires a reverse route")]
     MissingReverseRoute,
-    #[error("Core route contract rejected the publication")]
-    Protocol(#[from] ProtocolError),
     #[error("Core module route operation failed: {0}")]
     Core(String),
-    #[error("Core route signing rejected the publication")]
-    Crypto(#[from] RouteContractCryptoError),
     #[error("SD-WAN repository rejected the publication")]
     Repository(#[from] SdwanError),
 }
@@ -637,21 +730,18 @@ pub fn build_route_publication(
         return Err(RoutePublicationError::IncompleteProjectionSet);
     }
 
-    let segment = signer.sign_segment_snapshot(
-        SegmentRouteSnapshotV1 {
-            tenant_id: input.tenant_id,
-            segment_id: input.segment_id,
-            segment_generation: input.generation,
-            segment_overlay_prefix: input.segment_overlay_prefix,
-            attachments: attachments.clone(),
-            routes: routes.clone(),
-            not_before: input.not_before,
-            expires_at: input.expires_at,
-            stale_until: input.stale_until,
-            previous_hash: input.previous_hash,
-            content_hash: [0; 32],
-        },
-    )?;
+    let segment = signer.sign_segment_snapshot(SegmentRouteSnapshotV1 {
+        tenant_id: input.tenant_id,
+        segment_id: input.segment_id,
+        segment_generation: input.generation,
+        segment_overlay_prefix: input.segment_overlay_prefix,
+        attachments: attachments.clone(),
+        routes: routes.clone(),
+        not_before: input.not_before,
+        expires_at: input.expires_at,
+        stale_until: input.stale_until,
+        previous_hash: input.previous_hash,
+    })?;
 
     let mut plans: Vec<&DeviceProjectionInput> = input.projections.iter().collect();
     plans.sort_unstable_by_key(|plan| plan.attachment_id.0);
@@ -699,34 +789,31 @@ pub fn build_route_publication(
         if remote_routes.is_empty() {
             return Err(RoutePublicationError::MissingReverseRoute);
         }
-        let sealed = signer.sign_site_projection(
-            SiteRouteProjectionV1 {
-                tenant_id: input.tenant_id,
-                segment_id: input.segment_id,
-                segment_generation: input.generation,
-                segment_content_hash: segment.object.content_hash,
-                site_id,
-                attachment_id: attachment.attachment_id,
-                device_id,
-                device_key_id,
-                overlay_router_ipv4: attachment.overlay_router_ipv4,
-                local_prefixes: attachment.local_prefixes.clone(),
-                remote_routes,
-                path_policy: plan.path_policy,
-                peer_paths: plan.peer_paths.clone(),
-                coherent_manifest: plan.coherent_manifest.clone(),
-                max_inner_mtu: plan.max_inner_mtu,
-                resources: plan.resources,
-                epoch_floor: attachment.epoch_floor,
-                not_before: input.not_before,
-                expires_at: input.expires_at,
-                stale_until: input.stale_until,
-                projection_id: plan.projection_id,
-                projection_generation: plan.projection_generation,
-                previous_hash: plan.previous_hash,
-                content_hash: [0; 32],
-            },
-        )?;
+        let sealed = signer.sign_site_projection(SiteRouteProjectionV1 {
+            tenant_id: input.tenant_id,
+            segment_id: input.segment_id,
+            segment_generation: input.generation,
+            segment_content_hash: segment.content_hash,
+            site_id,
+            attachment_id: attachment.attachment_id,
+            device_id,
+            device_key_id,
+            overlay_router_ipv4: attachment.overlay_router_ipv4,
+            local_prefixes: attachment.local_prefixes.clone(),
+            remote_routes,
+            path_policy: plan.path_policy,
+            peer_paths: plan.peer_paths.clone(),
+            coherent_manifest: plan.coherent_manifest.clone(),
+            max_inner_mtu: plan.max_inner_mtu,
+            resources: plan.resources,
+            epoch_floor: attachment.epoch_floor,
+            not_before: input.not_before,
+            expires_at: input.expires_at,
+            stale_until: input.stale_until,
+            projection_id: plan.projection_id,
+            projection_generation: plan.projection_generation,
+            previous_hash: plan.previous_hash,
+        })?;
         projections.push(BuiltDeviceProjection {
             publication_id: plan.publication_id,
             sealed,

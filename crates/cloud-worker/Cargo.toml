@@ -6,8 +6,6 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-candy-proto = { path = "../../../candy-core/crates/candy-proto" }
-carrier-crypto = { package = "candy-carrier-crypto", path = "../../../candy-core/crates/candy-carrier-crypto" }
 cloud-core-module = { path = "../cloud-core-module" }
 chrono.workspace = true
 cloud-db = { path = "../cloud-db" }
@@ -23,6 +21,4 @@ uuid.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-candy-tun = { path = "../../../candy-core/crates/candy-tun" }
-cloud-auth = { path = "../cloud-auth" }
 serde_json.workspace = true

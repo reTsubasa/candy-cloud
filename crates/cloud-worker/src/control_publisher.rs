@@ -5,15 +5,6 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use candy_proto::{
-    cloud_grant::{DeviceId, DeviceKeyId, PolicyId, PolicyRefV1, TenantId},
-    ip_tunnel::{AttachmentId, SegmentId, SiteId},
-    route_contract::{
-        AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1, Ipv4PrefixV1,
-        PacketResourcePolicyV1, PathCandidateId, PathSelectionPolicyV1, PeerEndpointV1,
-        PeerPathCandidateV1, PeerPathKindV1, SegmentAttachmentV1,
-    },
-};
 use cloud_control::{PathCandidateKindV1, PeerPathPolicyV1, ResourceSpecV1, ResourceState};
 use cloud_core_module::CoreModule;
 use cloud_db::{
@@ -22,13 +13,19 @@ use cloud_db::{
 };
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{
     generation_loop::{PublicationFailure, PublishedGeneration, SegmentGenerationPublisher},
     route_publication::{
         build_route_publication, DeviceProjectionInput, RoutePublicationInput, RouteSigner,
+    },
+    route_types::{
+        AttachmentId, AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1, DeviceId,
+        DeviceKeyId, Ipv4PrefixV1, NodeId, NodeKeyId, PacketResourcePolicyV1, PathCandidateId,
+        PathSelectionPolicyV1, PeerEndpointV1, PeerPathCandidateV1, PeerPathKindV1, PolicyId,
+        PolicyRefV1, RelayNodeIdentityV1, SegmentAttachmentV1, SegmentId, SiteId, TenantId,
     },
 };
 
@@ -38,14 +35,7 @@ pub struct ControlRoutePublisher {
 }
 
 impl ControlRoutePublisher {
-    pub fn new(routes: SdwanRepository, signing_key_id: String, signing_key: SigningKey) -> Self {
-        Self {
-            routes,
-            signer: RouteSigner::new(signing_key_id, signing_key),
-        }
-    }
-
-    pub fn new_with_core(
+    pub fn new(
         routes: SdwanRepository,
         signing_key_id: String,
         signing_key: SigningKey,
@@ -53,7 +43,7 @@ impl ControlRoutePublisher {
     ) -> Self {
         Self {
             routes,
-            signer: RouteSigner::with_core(signing_key_id, signing_key, core),
+            signer: RouteSigner::new(signing_key_id, signing_key, core),
         }
     }
 
@@ -190,13 +180,9 @@ impl ControlRoutePublisher {
                     let node = nodes
                         .get(&relay.service_node_id)
                         .context("Relay references a missing service Node")?;
-                    Some(candy_proto::route_contract::RelayNodeIdentityV1 {
-                        node_id: candy_proto::route_contract::NodeId(
-                            relay.service_node_id.into_bytes(),
-                        ),
-                        node_key_id: candy_proto::route_contract::NodeKeyId(
-                            node.device_key_id.into_bytes(),
-                        ),
+                    Some(RelayNodeIdentityV1 {
+                        node_id: NodeId(relay.service_node_id.into_bytes()),
+                        node_key_id: NodeKeyId(node.device_key_id.into_bytes()),
                     })
                 } else {
                     None
@@ -399,7 +385,7 @@ impl SegmentGenerationPublisher for ControlRoutePublisher {
                 code: format!("ROUTE_BUILD_{error}"),
             }
         })?;
-        let content_hash = built.segment.object.content_hash;
+        let content_hash = built.segment.content_hash;
         let write = built
             .database_write()
             .map_err(|error| PublicationFailure::Permanent {
@@ -410,7 +396,7 @@ impl SegmentGenerationPublisher for ControlRoutePublisher {
             .await
             .map_err(classify_publish_error)?;
         Ok(PublishedGeneration {
-            generation: built.segment.object.segment_generation,
+            generation: built.segment.source.segment_generation,
             content_hash,
         })
     }
