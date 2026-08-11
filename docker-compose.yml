@@ -100,10 +100,17 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: mysql://cloud_worker:${MYSQL_WORKER_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      CANDY_ROUTE_SIGNING_KEY_ID: ${CANDY_ROUTE_SIGNING_KEY_ID:?set CANDY_ROUTE_SIGNING_KEY_ID}
+      CANDY_ROUTE_SIGNING_KEY_HEX: ${CANDY_ROUTE_SIGNING_KEY_HEX:?set CANDY_ROUTE_SIGNING_KEY_HEX}
     depends_on:
       mysql: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
     networks: [candy-cloud-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
   reverse-proxy:
     image: caddy:2.9-alpine
     restart: unless-stopped
