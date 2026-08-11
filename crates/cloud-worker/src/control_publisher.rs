@@ -15,6 +15,7 @@ use candy_proto::{
     },
 };
 use cloud_control::{PathCandidateKindV1, PeerPathPolicyV1, ResourceSpecV1, ResourceState};
+use cloud_core_module::CoreModule;
 use cloud_db::{
     control::SegmentControlSnapshot,
     sdwan::{SdwanError, SdwanRepository},
@@ -22,6 +23,7 @@ use cloud_db::{
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+use std::sync::Arc;
 
 use crate::{
     generation_loop::{PublicationFailure, PublishedGeneration, SegmentGenerationPublisher},
@@ -40,6 +42,18 @@ impl ControlRoutePublisher {
         Self {
             routes,
             signer: RouteSigner::new(signing_key_id, signing_key),
+        }
+    }
+
+    pub fn new_with_core(
+        routes: SdwanRepository,
+        signing_key_id: String,
+        signing_key: SigningKey,
+        core: Arc<CoreModule>,
+    ) -> Self {
+        Self {
+            routes,
+            signer: RouteSigner::with_core(signing_key_id, signing_key, core),
         }
     }
 

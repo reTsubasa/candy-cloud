@@ -190,7 +190,7 @@ fn fixture() -> InteropFixture {
     let route_key = SigningKey::from_bytes(&[42; 32]);
     let built = build_route_publication(
         &publication_input(),
-        &RouteSigner::new(ROUTE_KEY_ID, route_key.clone()),
+        &RouteSigner::with_core(ROUTE_KEY_ID, route_key.clone(), real_core()),
     )
     .unwrap();
     let trust =
