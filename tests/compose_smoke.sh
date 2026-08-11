@@ -20,11 +20,18 @@ printf '%s\n' "$compose_config" | awk '
   worker && /^  [[:alnum:]_-]+:$/ { worker = 0 }
   worker && /target: runtime-core/ { target = 1 }
   worker && /CORE_MODULE_VERSION: 0.3.10/ { version = 1 }
+  worker && /CORE_MODULE_BUNDLE_URL:/ { url = 1 }
   worker && /CORE_MODULE_BUNDLE_SHA256: 891fc81bbd258a364d138788660214a05d8819df0c896cd8a61d971bfed0564c/ { bundle = 1 }
   worker && /CORE_MODULE_SHA256: 54c1e6a1f61ef0b28208d5dec13ce7b1351922478987b5eac3ac9a06f183c478/ { module = 1 }
-  END { exit (target && version && bundle && module) ? 0 : 1 }
+  END { exit (target && version && !url && bundle && module) ? 0 : 1 }
 ' || {
   echo "cloud-worker verified Core module build contract is missing" >&2
+  exit 1
+}
+
+rg -F 'https://github.com/reTsubasa/candy-release/releases/download/core-cloud-module-v${CORE_MODULE_VERSION}/candy-core-cloud-module-${CORE_MODULE_VERSION}-${CORE_MODULE_TARGET}.tar.gz' \
+  docker/rust-service.Dockerfile >/dev/null || {
+  echo "Core module source is not pinned to the formal candy-release asset path" >&2
   exit 1
 }
 

@@ -47,11 +47,13 @@ jobs:
         run: |
           private_token='CANDY_CORE''_READ_TOKEN'
           core_context='additional_contexts:.*candy-''core'
-          core_path='\.\./\.\./\.\./candy-''core'
-          if rg -n -e "$private_token" -e "$core_context" -e "$core_path" \
-            .github docker docker-compose.yml crates Cargo.toml Cargo.lock; then
+          core_path='(\.\./)+candy-''core'
+          core_source_env='CANDY_CORE_''(DIR|SRC)'
+          if rg -n -e "$private_token" -e "$core_context" -e "$core_path" -e "$core_source_env" \
+            .github docker docker-compose.yml crates tests openwrt-sdwan Cargo.toml Cargo.lock; then
             echo 'Cloud still depends on private Core source' >&2
             exit 1
           fi
+      - run: docker/install-core-cloud-module-test.sh
       - run: tests/compose_smoke.sh
       - run: docker compose --env-file .env.example config >/dev/null

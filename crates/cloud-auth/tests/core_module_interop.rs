@@ -1,4 +1,4 @@
-//! Interoperability coverage against a locally built, real Candy Core module.
+//! Interoperability coverage against a released Candy Core module.
 //!
 //! This test is intentionally opt-in: normal Cloud builds have no Core source
 //! checkout and use the signed module supplied by the release pipeline.
@@ -56,7 +56,7 @@ fn grant_object() -> Value {
 }
 
 #[test]
-#[ignore = "requires CANDY_CORE_INTEROP_MODULE pointing to a locally built Core module"]
+#[ignore = "requires CANDY_CORE_INTEROP_MODULE pointing to a released Core module"]
 fn cloud_signs_and_validates_a_real_core_envelope() {
     let module = PathBuf::from(
         std::env::var_os("CANDY_CORE_INTEROP_MODULE")

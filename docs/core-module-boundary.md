@@ -10,14 +10,14 @@ user-facing executable.
 /opt/candy/cores/<version>/libcandy_core_cloud.so
 /opt/candy/cores/<version>/manifest.json
 /opt/candy/cores/<version>/manifest.sig
-/opt/candy/cores/current -> <version>
 ```
 
 `cloud-auth` and `cloud-worker` remain the only Cloud service executables. They
-load the module selected by `current` during process startup and keep that
-module pinned for the lifetime of the process. A Core upgrade is activated by
-starting a replacement process, completing readiness checks, and only then
-retiring the old process. A loaded shared object is never replaced in place.
+load an explicitly versioned module during process startup and keep that module
+pinned for the lifetime of the process. A Core upgrade is activated by starting
+a replacement process with a new immutable version path, completing readiness
+checks, and only then retiring the old process. A loaded shared object is never
+replaced in place.
 
 ## Trust boundary
 
@@ -70,6 +70,8 @@ generation. The previous verified module remains installed for rollback.
 ## Delivery
 
 Cloud images consume a pinned Core module bundle from the signed
-`candy-release` catalog. CI and production builds must not use a Git checkout
-of `reTsubasa/candy-core`. Unit tests use a test module implementing the same
-ABI; interoperability tests use a released, signed Core module.
+`candy-release` catalog. The image derives the only permitted download URL from
+the pinned version and target; operators cannot inject an alternate artifact
+host. CI and production builds must not use a Git checkout of
+`reTsubasa/candy-core`. Unit tests use a test module implementing the same ABI;
+interoperability tests use a released, signed Core module.

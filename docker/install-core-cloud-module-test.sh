@@ -81,4 +81,43 @@ if CORE_MODULE_BUNDLE="$work/module.tar.gz" \
   exit 1
 fi
 
+if CORE_MODULE_BUNDLE="$work/module.tar.gz" \
+  CORE_MODULE_BUNDLE_SHA256="$bundle_sha" \
+  CORE_MODULE_VERSION=latest \
+  CORE_MODULE_SHA256="$module_sha" \
+  CORE_MODULE_PUBLIC_KEY="$work/test-release.pub" \
+  CORE_MODULE_KEY_FINGERPRINT="$test_fingerprint" \
+  CORE_MODULE_INSTALL_ROOT="$work/rejected-version" \
+  "$installer" >/dev/null 2>&1; then
+  printf '%s\n' 'non-semantic module version was accepted' >&2
+  exit 1
+fi
+
+if CORE_MODULE_BUNDLE="$work/module.tar.gz" \
+  CORE_MODULE_BUNDLE_SHA256="$bundle_sha" \
+  CORE_MODULE_VERSION=0.3.10 \
+  CORE_MODULE_SHA256="$module_sha" \
+  CORE_MODULE_TARGET=aarch64-unknown-linux-gnu \
+  CORE_MODULE_PUBLIC_KEY="$work/test-release.pub" \
+  CORE_MODULE_KEY_FINGERPRINT="$test_fingerprint" \
+  CORE_MODULE_INSTALL_ROOT="$work/rejected-target" \
+  "$installer" >/dev/null 2>&1; then
+  printf '%s\n' 'unsupported module target was accepted' >&2
+  exit 1
+fi
+
+mkdir "$work/real-install-root"
+ln -s "$work/real-install-root" "$work/install-root-link"
+if CORE_MODULE_BUNDLE="$work/module.tar.gz" \
+  CORE_MODULE_BUNDLE_SHA256="$bundle_sha" \
+  CORE_MODULE_VERSION=0.3.10 \
+  CORE_MODULE_SHA256="$module_sha" \
+  CORE_MODULE_PUBLIC_KEY="$work/test-release.pub" \
+  CORE_MODULE_KEY_FINGERPRINT="$test_fingerprint" \
+  CORE_MODULE_INSTALL_ROOT="$work/install-root-link" \
+  "$installer" >/dev/null 2>&1; then
+  printf '%s\n' 'symlinked module install root was accepted' >&2
+  exit 1
+fi
+
 printf '%s\n' 'Core Cloud module installer tests passed'
