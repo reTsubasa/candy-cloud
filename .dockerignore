@@ -1,7 +1,5 @@
 .git
 .env
-# Keep the sibling Core checkout available for the path dependencies used by
-# cloud-auth and cloud-worker, while excluding build output and credentials.
 **/target
 **/.git
 **/secrets

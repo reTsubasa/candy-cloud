@@ -22,8 +22,7 @@ services:
     build:
       context: .
       dockerfile: docker/rust-service.Dockerfile
-      additional_contexts:
-        candy-core: ../candy-core
+      target: runtime
       args: { PACKAGE: cloud-db, BINARY: cloud-db-migrate }
     environment:
       DATABASE_URL: mysql://cloud_migrator:${MYSQL_MIGRATOR_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
@@ -34,7 +33,7 @@ services:
     build:
       context: .
       dockerfile: docker/rust-service.Dockerfile
-      additional_contexts: { candy-core: ../candy-core }
+      target: runtime
       args: { PACKAGE: cloud-api, BINARY: cloud-api }
     restart: unless-stopped
     environment:
@@ -55,11 +54,18 @@ services:
       timeout: 5s
       retries: 12
   cloud-auth:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: docker/rust-service.Dockerfile
-      additional_contexts: { candy-core: ../candy-core }
-      args: { PACKAGE: cloud-auth, BINARY: cloud-auth }
+      target: runtime-core
+      args:
+        PACKAGE: cloud-auth
+        BINARY: cloud-auth
+        CORE_MODULE_BUNDLE_URL: ${CORE_MODULE_BUNDLE_URL:?set CORE_MODULE_BUNDLE_URL}
+        CORE_MODULE_BUNDLE_SHA256: ${CORE_MODULE_BUNDLE_SHA256:?set CORE_MODULE_BUNDLE_SHA256}
+        CORE_MODULE_VERSION: ${CORE_MODULE_VERSION:?set CORE_MODULE_VERSION}
+        CORE_MODULE_SHA256: ${CORE_MODULE_SHA256:?set CORE_MODULE_SHA256}
     restart: unless-stopped
     environment:
       DATABASE_URL: mysql://cloud_auth:${MYSQL_AUTH_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
@@ -92,11 +98,18 @@ services:
       timeout: 5s
       retries: 12
   cloud-worker:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: docker/rust-service.Dockerfile
-      additional_contexts: { candy-core: ../candy-core }
-      args: { PACKAGE: cloud-worker, BINARY: cloud-worker }
+      target: runtime-core
+      args:
+        PACKAGE: cloud-worker
+        BINARY: cloud-worker
+        CORE_MODULE_BUNDLE_URL: ${CORE_MODULE_BUNDLE_URL:?set CORE_MODULE_BUNDLE_URL}
+        CORE_MODULE_BUNDLE_SHA256: ${CORE_MODULE_BUNDLE_SHA256:?set CORE_MODULE_BUNDLE_SHA256}
+        CORE_MODULE_VERSION: ${CORE_MODULE_VERSION:?set CORE_MODULE_VERSION}
+        CORE_MODULE_SHA256: ${CORE_MODULE_SHA256:?set CORE_MODULE_SHA256}
     restart: unless-stopped
     environment:
       DATABASE_URL: mysql://cloud_worker:${MYSQL_WORKER_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
