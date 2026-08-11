@@ -41,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+
 fn decode_key(value: &str) -> anyhow::Result<[u8; 32]> {
     let value = value.strip_prefix("0x").unwrap_or(value);
     anyhow::ensure!(

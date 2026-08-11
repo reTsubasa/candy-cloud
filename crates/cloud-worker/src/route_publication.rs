@@ -7,7 +7,7 @@ use candy_proto::{
     mesh_contract::MeshMembershipProjectionV1,
     route_contract::{
         AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1, Ipv4PrefixV1,
-        PacketResourcePolicyV1, PathSelectionPolicyV1, PeerPathCandidateV1, RemoteRouteV1,
+        PacketResourcePolicyV1, PathSelectionPolicyV1, PeerEndpointV1, PeerPathCandidateV1, RemoteRouteV1,
         SegmentAttachmentV1, SegmentRouteSnapshotV1, SegmentRouteV1, SiteRouteProjectionV1,
     },
     shared_hub_contract::SharedHubAdmissionPolicyV1,
@@ -17,11 +17,14 @@ use carrier_crypto::route_contract::{
     seal_segment_snapshot, seal_shared_hub_admission, seal_site_projection,
     RouteContractCryptoError, SealedRouteObject,
 };
+use cloud_core_module::{CoreModule, ObjectType};
 use cloud_db::sdwan::{
     ExpansionObjectKind, ExpansionObjectPublicationWrite, PublicationOutcome, SdwanError,
     SdwanRepository, SegmentPublicationWrite, SignedObjectWrite, SiteProjectionPublicationWrite,
 };
 use ed25519_dalek::SigningKey;
+use serde_json::{json, Value};
+use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -29,6 +32,206 @@ use uuid::Uuid;
 pub struct RouteSigner {
     key_id: Vec<u8>,
     signing_key: SigningKey,
+    core: Option<Arc<CoreModule>>,
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut value = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        value.push(DIGITS[(byte >> 4) as usize] as char);
+        value.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    value
+}
+
+fn policy_ref_json(policy: &candy_proto::cloud_grant::PolicyRefV1) -> Value {
+    json!({
+        "policy_id_hex": hex(&policy.policy_id.0),
+        "generation": policy.generation,
+        "content_hash_hex": hex(&policy.content_hash),
+    })
+}
+
+fn prefix_json(prefix: &Ipv4PrefixV1) -> Value {
+    json!({
+        "network_hex": hex(&prefix.network),
+        "prefix_len": prefix.prefix_len,
+    })
+}
+
+fn principal_json(principal: &AttachmentPrincipalV1) -> Value {
+    match principal {
+        AttachmentPrincipalV1::Device {
+            device_id,
+            device_key_id,
+        } => json!({
+            "principal_type": "device",
+            "device_id_hex": hex(&device_id.0),
+            "device_key_id_hex": hex(&device_key_id.0),
+        }),
+        AttachmentPrincipalV1::Node { node_id, node_key_id } => json!({
+            "principal_type": "node",
+            "node_id_hex": hex(&node_id.0),
+            "node_key_id_hex": hex(&node_key_id.0),
+        }),
+    }
+}
+
+fn attachment_json(attachment: &SegmentAttachmentV1) -> Value {
+    json!({
+        "attachment_id_hex": hex(&attachment.attachment_id.0),
+        "site_id_hex": attachment.site_id.map(|id| hex(&id.0)),
+        "principal": principal_json(&attachment.principal),
+        "overlay_router_ipv4_hex": hex(&attachment.overlay_router_ipv4),
+        "local_prefixes": attachment.local_prefixes.iter().map(prefix_json).collect::<Vec<_>>(),
+        "state": attachment.state as u64,
+        "epoch_floor": attachment.epoch_floor,
+    })
+}
+
+fn route_json(route: &SegmentRouteV1) -> Value {
+    json!({
+        "destination_prefix": prefix_json(&route.destination_prefix),
+        "owner_site_id_hex": route.owner_site_id.map(|id| hex(&id.0)),
+        "owner_attachment_ids_hex": route.owner_attachment_ids.iter().map(|id| hex(&id.0)).collect::<Vec<_>>(),
+    })
+}
+
+fn segment_snapshot_json(object: &SegmentRouteSnapshotV1) -> Value {
+    json!({
+        "object_type": "segment_snapshot_v1",
+        "tenant_id_hex": hex(&object.tenant_id.0),
+        "segment_id_hex": hex(&object.segment_id.0),
+        "segment_generation": object.segment_generation,
+        "segment_overlay_prefix": prefix_json(&object.segment_overlay_prefix),
+        "attachments": object.attachments.iter().map(attachment_json).collect::<Vec<_>>(),
+        "routes": object.routes.iter().map(route_json).collect::<Vec<_>>(),
+        "not_before": object.not_before,
+        "expires_at": object.expires_at,
+        "stale_until": object.stale_until,
+        "previous_hash_hex": hex(&object.previous_hash),
+    })
+}
+
+fn endpoint_json(endpoint: &PeerEndpointV1) -> Value {
+    match endpoint {
+        PeerEndpointV1::Ipv4 { address, port } => json!({
+            "address_family": "ipv4",
+            "address_hex": hex(address),
+            "port": port,
+        }),
+        PeerEndpointV1::Ipv6 { address, port } => json!({
+            "address_family": "ipv6",
+            "address_hex": hex(address),
+            "port": port,
+        }),
+    }
+}
+
+fn peer_path_json(path: &PeerPathCandidateV1) -> Value {
+    json!({
+        "candidate_id_hex": hex(&path.candidate_id.0),
+        "peer_site_id_hex": hex(&path.peer_site_id.0),
+        "peer_attachment_id_hex": hex(&path.peer_attachment_id.0),
+        "kind": path.kind as u64,
+        "relay_node": path.relay_node.as_ref().map(|node| json!({
+            "node_id_hex": hex(&node.node_id.0),
+            "node_key_id_hex": hex(&node.node_key_id.0),
+        })),
+        "endpoint": endpoint_json(&path.endpoint),
+        "priority": path.priority,
+        "authorization": policy_ref_json(&path.authorization),
+    })
+}
+
+fn remote_route_json(route: &RemoteRouteV1) -> Value {
+    json!({
+        "destination_prefix": prefix_json(&route.destination_prefix),
+        "owner_site_id_hex": hex(&route.owner_site_id.0),
+        "owner_attachment_ids_hex": route.owner_attachment_ids.iter().map(|id| hex(&id.0)).collect::<Vec<_>>(),
+    })
+}
+
+fn site_projection_json(object: &SiteRouteProjectionV1) -> Value {
+    let manifest = &object.coherent_manifest;
+    let resources = &object.resources;
+    json!({
+        "object_type": "site_projection_v1",
+        "tenant_id_hex": hex(&object.tenant_id.0),
+        "segment_id_hex": hex(&object.segment_id.0),
+        "segment_generation": object.segment_generation,
+        "segment_content_hash_hex": hex(&object.segment_content_hash),
+        "site_id_hex": hex(&object.site_id.0),
+        "attachment_id_hex": hex(&object.attachment_id.0),
+        "device_id_hex": hex(&object.device_id.0),
+        "device_key_id_hex": hex(&object.device_key_id.0),
+        "overlay_router_ipv4_hex": hex(&object.overlay_router_ipv4),
+        "local_prefixes": object.local_prefixes.iter().map(prefix_json).collect::<Vec<_>>(),
+        "remote_routes": object.remote_routes.iter().map(remote_route_json).collect::<Vec<_>>(),
+        "path_policy": object.path_policy as u64,
+        "peer_paths": object.peer_paths.iter().map(peer_path_json).collect::<Vec<_>>(),
+        "coherent_manifest": {
+            "generation": manifest.generation,
+            "dns_projection": manifest.dns_projection.as_ref().map(policy_ref_json),
+            "egress_authorization": manifest.egress_authorization.as_ref().map(policy_ref_json),
+        },
+        "max_inner_mtu": object.max_inner_mtu,
+        "resources": {
+            "max_route_prefixes": resources.max_route_prefixes,
+            "max_queue_packets": resources.max_queue_packets,
+            "max_queue_bytes": resources.max_queue_bytes,
+            "replay_window_packets": resources.replay_window_packets,
+            "max_packets_per_second": resources.max_packets_per_second,
+            "max_bytes_per_second": resources.max_bytes_per_second,
+            "allowed_traffic_classes": resources.allowed_traffic_classes,
+        },
+        "epoch_floor": object.epoch_floor,
+        "not_before": object.not_before,
+        "expires_at": object.expires_at,
+        "stale_until": object.stale_until,
+        "projection_id_hex": hex(&object.projection_id.0),
+        "projection_generation": object.projection_generation,
+        "previous_hash_hex": hex(&object.previous_hash),
+    })
+}
+
+fn module_seal<T>(
+    core: &CoreModule,
+    key_id: &[u8],
+    signing_key: &SigningKey,
+    object_type: ObjectType,
+    object: Value,
+    decode: fn(&[u8]) -> Result<T, candy_proto::error::ProtocolError>,
+) -> Result<SealedRouteObject<T>, RoutePublicationError> {
+    let request = json!({
+        "schema": "candy-core-cloud-build-v1",
+        "signing_key_id_hex": hex(key_id),
+        "object": object,
+    });
+    let request = serde_json::to_vec(&request).map_err(|error| RoutePublicationError::Core(error.to_string()))?;
+    let prepared = core
+        .prepare(&request)
+        .map_err(|error| RoutePublicationError::Core(error.to_string()))?;
+    if prepared.object_type != object_type {
+        return Err(RoutePublicationError::Core(format!(
+            "Core returned object type {}, expected {}",
+            prepared.object_type.0, object_type.0
+        )));
+    }
+    let signature = ed25519_dalek::Signer::sign(signing_key, &prepared.signing_transcript);
+    core.route_content_hash(object_type, &prepared.payload)
+        .map_err(|error| RoutePublicationError::Core(error.to_string()))?;
+    let raw = core
+        .assemble(object_type, key_id, &prepared.payload, &signature.to_bytes())
+        .map_err(|error| RoutePublicationError::Core(error.to_string()))?;
+    let public_key = signing_key.verifying_key().to_bytes();
+    core.validate(ObjectType::ROUTE_ENVELOPE_V1, &raw, Some(&public_key))
+        .map_err(|error| RoutePublicationError::Core(error.to_string()))?;
+    let envelope = candy_proto::route_contract::SignedRouteEnvelopeV1::decode(&raw)
+        .map_err(RoutePublicationError::Protocol)?;
+    let object = decode(&envelope.payload).map_err(RoutePublicationError::Protocol)?;
+    Ok(SealedRouteObject { object, envelope })
 }
 
 impl RouteSigner {
@@ -36,11 +239,66 @@ impl RouteSigner {
         Self {
             key_id: key_id.into().into_bytes(),
             signing_key,
+            core: None,
+        }
+    }
+
+    pub fn with_core(
+        key_id: impl Into<String>,
+        signing_key: SigningKey,
+        core: Arc<CoreModule>,
+    ) -> Self {
+        Self {
+            key_id: key_id.into().into_bytes(),
+            signing_key,
+            core: Some(core),
         }
     }
 
     pub fn ready(&self) -> bool {
         !self.key_id.is_empty() && self.key_id.len() <= 64
+    }
+
+    fn sign_segment_snapshot(
+        &self,
+        object: SegmentRouteSnapshotV1,
+    ) -> Result<SealedRouteObject<SegmentRouteSnapshotV1>, RoutePublicationError> {
+        if let Some(core) = &self.core {
+            return module_seal(
+                core,
+                self.key_id.as_slice(),
+                &self.signing_key,
+                ObjectType::SEGMENT_SNAPSHOT_V1,
+                segment_snapshot_json(&object),
+                SegmentRouteSnapshotV1::decode,
+            );
+        }
+        Ok(seal_segment_snapshot(
+            object,
+            self.key_id.clone(),
+            &self.signing_key,
+        )?)
+    }
+
+    fn sign_site_projection(
+        &self,
+        object: SiteRouteProjectionV1,
+    ) -> Result<SealedRouteObject<SiteRouteProjectionV1>, RoutePublicationError> {
+        if let Some(core) = &self.core {
+            return module_seal(
+                core,
+                self.key_id.as_slice(),
+                &self.signing_key,
+                ObjectType::SITE_PROJECTION_V1,
+                site_projection_json(&object),
+                SiteRouteProjectionV1::decode,
+            );
+        }
+        Ok(seal_site_projection(
+            object,
+            self.key_id.clone(),
+            &self.signing_key,
+        )?)
     }
 
     pub fn sign_shared_hub_admission(
@@ -345,6 +603,8 @@ pub enum RoutePublicationError {
     MissingReverseRoute,
     #[error("Core route contract rejected the publication")]
     Protocol(#[from] ProtocolError),
+    #[error("Core module route operation failed: {0}")]
+    Core(String),
     #[error("Core route signing rejected the publication")]
     Crypto(#[from] RouteContractCryptoError),
     #[error("SD-WAN repository rejected the publication")]
@@ -377,7 +637,7 @@ pub fn build_route_publication(
         return Err(RoutePublicationError::IncompleteProjectionSet);
     }
 
-    let segment = seal_segment_snapshot(
+    let segment = signer.sign_segment_snapshot(
         SegmentRouteSnapshotV1 {
             tenant_id: input.tenant_id,
             segment_id: input.segment_id,
@@ -391,8 +651,6 @@ pub fn build_route_publication(
             previous_hash: input.previous_hash,
             content_hash: [0; 32],
         },
-        signer.key_id.clone(),
-        &signer.signing_key,
     )?;
 
     let mut plans: Vec<&DeviceProjectionInput> = input.projections.iter().collect();
@@ -441,7 +699,7 @@ pub fn build_route_publication(
         if remote_routes.is_empty() {
             return Err(RoutePublicationError::MissingReverseRoute);
         }
-        let sealed = seal_site_projection(
+        let sealed = signer.sign_site_projection(
             SiteRouteProjectionV1 {
                 tenant_id: input.tenant_id,
                 segment_id: input.segment_id,
@@ -468,8 +726,6 @@ pub fn build_route_publication(
                 previous_hash: plan.previous_hash,
                 content_hash: [0; 32],
             },
-            signer.key_id.clone(),
-            &signer.signing_key,
         )?;
         projections.push(BuiltDeviceProjection {
             publication_id: plan.publication_id,
