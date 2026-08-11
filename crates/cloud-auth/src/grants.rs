@@ -40,9 +40,9 @@ impl IssuedGrant {
     }
 }
 
-/// Narrow protocol surface used by Grant issuance. Production uses the native
-/// Core module; tests can exercise Cloud policy without duplicating Core codecs.
-pub trait GrantCoreModule: Send + Sync {
+/// Narrow internal protocol surface used by Grant issuance. It is deliberately
+/// private so downstream crates cannot replace the verified Core module.
+pub(crate) trait GrantCoreModule: Send + Sync {
     fn prepare(&self, request: &[u8]) -> Result<PreparedObject, String>;
     fn assemble(
         &self,
@@ -99,7 +99,7 @@ impl GrantSigner {
         Self::with_core(key_id, signing_key, core)
     }
 
-    pub fn with_core(
+    pub(crate) fn with_core(
         key_id: impl Into<String>,
         signing_key: SigningKey,
         core: Arc<dyn GrantCoreModule>,
