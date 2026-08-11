@@ -1,19 +1,46 @@
-use candy_proto::{
-    cloud_grant::{DeviceId, DeviceKeyId, PolicyId, PolicyRefV1, TenantId},
-    ip_tunnel::{AttachmentId, SegmentId, SiteId},
-    route_contract::{
-        AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1, Ipv4PrefixV1,
-        PacketResourcePolicyV1, PathCandidateId, PathSelectionPolicyV1, PeerEndpointV1,
-        PeerPathCandidateV1, PeerPathKindV1, SegmentAttachmentV1,
-    },
-};
-use carrier_crypto::route_contract::{verify_segment_snapshot, verify_site_projection};
+use cloud_core_module::{CoreModule, ModuleRequirements, ObjectType, VerifiedModuleSpec};
 use cloud_worker::route_publication::{
     build_route_publication, DeviceProjectionInput, RoutePublicationError, RoutePublicationInput,
     RouteSigner,
 };
+use cloud_worker::route_types::{
+    AttachmentId, AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1, DeviceId,
+    DeviceKeyId, Ipv4PrefixV1, PacketResourcePolicyV1, PathCandidateId, PathSelectionPolicyV1,
+    PeerEndpointV1, PeerPathCandidateV1, PeerPathKindV1, PolicyId, PolicyRefV1,
+    SegmentAttachmentV1, SegmentId, SharedHubAdmissionPolicyV1, SharedHubQuotaV1, SiteId, TenantId,
+};
 use ed25519_dalek::SigningKey;
+use sha2::Digest;
+use std::{fs, os::unix::fs::MetadataExt, path::PathBuf, sync::Arc};
 use uuid::Uuid;
+
+fn real_core() -> Arc<CoreModule> {
+    let path = PathBuf::from(
+        std::env::var("CANDY_CORE_INTEROP_MODULE")
+            .expect("CANDY_CORE_INTEROP_MODULE is required for this ignored test"),
+    );
+    let root = path.parent().unwrap().to_path_buf();
+    let digest = sha2::Sha256::digest(fs::read(&path).unwrap());
+    let owner_uid = fs::metadata(&root).unwrap().uid();
+    Arc::new(
+        CoreModule::load(
+            &VerifiedModuleSpec::new(root, path, digest.into(), owner_uid),
+            &ModuleRequirements {
+                wire_protocol: Some("0.3".into()),
+                required_objects: [
+                    "route-envelope-v1",
+                    "segment-snapshot-v1",
+                    "site-projection-v1",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+                ..ModuleRequirements::default()
+            },
+        )
+        .unwrap(),
+    )
+}
 
 fn prefix(network: [u8; 4], prefix_len: u8) -> Ipv4PrefixV1 {
     Ipv4PrefixV1::new(network, prefix_len).unwrap()
@@ -155,25 +182,41 @@ fn fixture() -> RoutePublicationInput {
 }
 
 #[test]
+#[ignore = "requires CANDY_CORE_INTEROP_MODULE"]
 fn builds_and_verifies_direct_first_v1_publication() {
     let key = SigningKey::from_bytes(&[0x77; 32]);
-    let built =
-        build_route_publication(&fixture(), &RouteSigner::new("route-key-1", key.clone())).unwrap();
-    let snapshot = verify_segment_snapshot(&built.segment.envelope, &key.verifying_key()).unwrap();
-    assert_eq!(snapshot, built.segment.object);
-    assert_eq!(snapshot.attachments.len(), 2);
+    let core = real_core();
+    let built = build_route_publication(
+        &fixture(),
+        &RouteSigner::new("route-key-1", key.clone(), core.clone()),
+    )
+    .unwrap();
+    core.validate(
+        ObjectType::ROUTE_ENVELOPE_V1,
+        &built.segment.envelope,
+        Some(&key.verifying_key().to_bytes()),
+    )
+    .unwrap();
+    assert_eq!(built.segment.source.attachments.len(), 2);
     for projection in &built.projections {
-        let verified =
-            verify_site_projection(&projection.sealed.envelope, &key.verifying_key()).unwrap();
-        assert_eq!(verified, projection.sealed.object);
-        assert_eq!(verified.peer_paths.len(), 1);
-        assert_ne!(verified.coherent_manifest.peer_paths_hash, [0; 32]);
+        core.validate(
+            ObjectType::ROUTE_ENVELOPE_V1,
+            &projection.sealed.envelope,
+            Some(&key.verifying_key().to_bytes()),
+        )
+        .unwrap();
+        assert_eq!(projection.sealed.source.peer_paths.len(), 1);
     }
 }
 
 #[test]
+#[ignore = "requires CANDY_CORE_INTEROP_MODULE"]
 fn rejects_incomplete_or_cross_bound_peer_path_sets_before_signing() {
-    let signer = RouteSigner::new("route-key-1", SigningKey::from_bytes(&[0x77; 32]));
+    let signer = RouteSigner::new(
+        "route-key-1",
+        SigningKey::from_bytes(&[0x77; 32]),
+        real_core(),
+    );
     let mut input = fixture();
     input.projections.pop();
     assert!(matches!(
@@ -187,17 +230,66 @@ fn rejects_incomplete_or_cross_bound_peer_path_sets_before_signing() {
 }
 
 #[test]
+#[ignore = "requires CANDY_CORE_INTEROP_MODULE"]
 fn database_write_binds_projection_to_exact_segment_hash() {
-    let signer = RouteSigner::new("route-key-1", SigningKey::from_bytes(&[0x77; 32]));
+    let signer = RouteSigner::new(
+        "route-key-1",
+        SigningKey::from_bytes(&[0x77; 32]),
+        real_core(),
+    );
     let built = build_route_publication(&fixture(), &signer).unwrap();
     let write = built.database_write().unwrap();
     assert_eq!(write.projections.len(), 2);
-    assert_eq!(
-        write.snapshot.content_hash,
-        built.segment.object.content_hash
-    );
+    assert_eq!(write.snapshot.content_hash, built.segment.content_hash);
     assert!(write
         .projections
         .iter()
         .all(|projection| projection.segment_content_hash == write.snapshot.content_hash));
+}
+
+#[test]
+#[ignore = "requires CANDY_CORE_INTEROP_MODULE"]
+fn expansion_write_binds_to_core_segment_hash() {
+    let key = SigningKey::from_bytes(&[0x77; 32]);
+    let signer = RouteSigner::new("route-key-1", key, real_core());
+    let built = build_route_publication(&fixture(), &signer).unwrap();
+    let quota = |max_entities| SharedHubQuotaV1 {
+        max_entities,
+        max_queue_packets: 1024,
+        max_queue_bytes: 4 * 1024 * 1024,
+        packets_per_second: 100_000,
+        bytes_per_second: 100_000_000,
+        burst_packets: 1000,
+        burst_bytes: 1_000_000,
+    };
+    let sealed = signer
+        .sign_shared_hub_admission(SharedHubAdmissionPolicyV1 {
+            node_id: cloud_worker::route_types::NodeId([0x91; 16]),
+            node_key_id: cloud_worker::route_types::NodeKeyId([0x92; 16]),
+            node_pool_id: cloud_worker::route_types::NodePoolId([0x93; 16]),
+            tenant_id: built.segment.source.tenant_id,
+            segment_id: built.segment.source.segment_id,
+            segment_generation: built.segment.source.segment_generation,
+            segment_content_hash: built.segment.content_hash,
+            policy_id: PolicyId([0x94; 16]),
+            policy_generation: 1,
+            not_before: 1_800_000_000,
+            expires_at: 1_800_003_600,
+            stale_until: 1_800_007_200,
+            previous_hash: [0; 32],
+            node: quota(64),
+            tenant: quota(32),
+            site: quota(16),
+            tunnel: quota(1),
+        })
+        .unwrap();
+    let expansion = cloud_worker::route_publication::BuiltExpansionPublication::SharedHub {
+        publication_id: Uuid::from_bytes([0x95; 16]),
+        sealed: Box::new(sealed),
+    };
+    let write = built.database_write_with_expansions(&[expansion]).unwrap();
+    assert_eq!(
+        write.expansions[0].segment_content_hash,
+        built.segment.content_hash
+    );
 }
