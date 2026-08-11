@@ -86,13 +86,15 @@ jq -e \
   --arg module_sha "$CORE_MODULE_SHA256" \
   '
     .schema_version == 1 and
-    .release_kind == "candy-core-cloud-module" and
+    (
+      ($version == "0.3.10" and .release_kind == "candy-core-cloud-module" and .artifact.kind == "shared-module") or
+      ($version != "0.3.10" and .release_kind == "candy-core" and .artifact.kind == "shared-library")
+    ) and
     .module.version == $version and
     .module.abi_version == 1 and
     .module.library == "libcandy_core_cloud.so" and
     .module.wire_protocol == "0.3" and
     .module.build_request_schema == "candy-core-cloud-build-v1" and
-    .artifact.kind == "shared-module" and
     .artifact.name == "libcandy_core_cloud.so" and
     .artifact.sha256 == $module_sha and
     .artifact.target == $target and

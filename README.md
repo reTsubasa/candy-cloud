@@ -2,7 +2,7 @@
 
 独立的 Candy Cloud 控制面，产品版本 `0.1.0`。控制面负责 AAA、租户、设备、订阅、权益和 Grant 签发，不承载客户数据面流量。
 
-- Candy Core Cloud module: `0.3.10` from revision
+- Candy Core Cloud ABI profile: `0.3.10` from revision
   `37757a70a8b94d787b50fc612c276f80176ac355`
 - wire line: `0.3`
 - auth profile: `cloud_grant_v1`
@@ -41,9 +41,11 @@ slice is kept under [`openwrt-sdwan/`](openwrt-sdwan/); it contains the package,
 procd, LuCI, and focused productization checks without copying the Core
 protocol implementation.
 
-The project is pinned to the signed Candy Core Cloud module `0.3.10` from Core
+The project is pinned to the signed Candy Core Cloud ABI profile `0.3.10` from Core
 revision `37757a70a8b94d787b50fc612c276f80176ac355` and wire line `0.3`. Cloud
 never checks out or compiles the private Core repository. The
 service images load the signed, versioned `libcandy_core_cloud.so` module from
-the formal `candy-release` asset path. IPv6 remains outside this delivery;
+the formal `candy-release` asset path. Core `0.3.10` retains its immutable
+legacy release location; later ABI profiles are assets of the matching
+`core-v<version>` release and do not form a separate Core product line. IPv6 remains outside this delivery;
 Mesh precedes dynamic routing in the expansion sequence.

@@ -29,9 +29,19 @@ printf '%s\n' "$compose_config" | awk '
   exit 1
 }
 
-grep -F 'https://github.com/reTsubasa/candy-release/releases/download/core-cloud-module-v${CORE_MODULE_VERSION}/candy-core-cloud-module-${CORE_MODULE_VERSION}-${CORE_MODULE_TARGET}.tar.gz' \
+grep -F 'core_release_tag="core-v${CORE_MODULE_VERSION}"' \
   docker/rust-service.Dockerfile >/dev/null || {
-  echo "Core module source is not pinned to the formal candy-release asset path" >&2
+  echo "new Core modules are not pinned to the unified Core release tag" >&2
+  exit 1
+}
+grep -F 'core_module_asset="candy-core-${CORE_MODULE_VERSION}-cloud-abi-${CORE_MODULE_TARGET}.tar.gz"' \
+  docker/rust-service.Dockerfile >/dev/null || {
+  echo "new Core modules do not use the unified Cloud ABI asset name" >&2
+  exit 1
+}
+grep -F 'core_release_tag="core-cloud-module-v${CORE_MODULE_VERSION}"' \
+  docker/rust-service.Dockerfile >/dev/null || {
+  echo "Core 0.3.10 compatibility path is missing" >&2
   exit 1
 }
 
