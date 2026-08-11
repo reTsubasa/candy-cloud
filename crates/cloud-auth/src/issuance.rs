@@ -1,11 +1,4 @@
-use candy_proto::{
-    cloud_grant::{
-        AccessGrantPayloadV1, DeviceId, DeviceKeyId, EnvironmentId, GrantId, IssuerId, NodePoolId,
-        OperatorScopeType, OrganizationId, PolicyId, PolicyRefV1, ServiceClass as CoreServiceClass,
-        SubscriptionId, TenantId,
-    },
-    features::FeatureSet,
-};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -16,7 +9,57 @@ use crate::{
 
 pub const PERMISSION_PRIVATE_CONNECT: u64 = 1 << 0;
 pub const PERMISSION_PRIVATE_TUN_CONNECT: u64 = 1 << 1;
-const REQUIRED_TUN_FEATURES: u64 = FeatureSet::DATAGRAM | FeatureSet::IP_PACKET_TUNNEL_V1;
+const FEATURE_DATAGRAM: u64 = 1 << 0;
+const FEATURE_IP_PACKET_TUNNEL_V1: u64 = 1 << 10;
+const REQUIRED_TUN_FEATURES: u64 = FEATURE_DATAGRAM | FEATURE_IP_PACKET_TUNNEL_V1;
+const CORE_SERVICE_CLASS_CUSTOMER_PRIVATE: u64 = 1;
+const CORE_OPERATOR_SCOPE_CUSTOMER: u64 = 1;
+
+#[derive(Debug, Serialize)]
+struct PolicyRefBuildV1 {
+    policy_id_hex: String,
+    generation: u64,
+    content_hash_hex: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GrantPayloadBuildV1 {
+    object_type: &'static str,
+    grant_id_hex: String,
+    issuer_id_hex: String,
+    environment_id_hex: String,
+    organization_id_hex: String,
+    tenant_id_hex: String,
+    subscription_id_hex: String,
+    device_id_hex: String,
+    device_key_id_hex: String,
+    device_public_key_hex: String,
+    assurance_level: u64,
+    node_pool_id_hex: String,
+    service_class: u64,
+    operator_scope_type: u64,
+    operator_id_hex: Option<String>,
+    region_ids_hex: Vec<String>,
+    allowed_features: u64,
+    service_permissions: u64,
+    route_policy: Option<PolicyRefBuildV1>,
+    dns_policy: Option<PolicyRefBuildV1>,
+    max_outer_connections_per_node: u64,
+    max_outer_connections_per_pool: u64,
+    max_active_sessions_per_connection: u64,
+    max_udp_flows_per_connection: u64,
+    max_pending_opens: u64,
+    max_speculative_streams: u64,
+    max_datagram_record: u64,
+    upload_rate_bps: u64,
+    download_rate_bps: u64,
+    issued_at: u64,
+    not_before: u64,
+    refresh_after: u64,
+    expires_at: u64,
+    policy_generation: u64,
+    entitlement_generation: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrantQuota {
@@ -158,31 +201,43 @@ pub fn prepare_private_grant_with_id(
         if material.quota.allowed_features & REQUIRED_TUN_FEATURES != REQUIRED_TUN_FEATURES {
             return Err(PrepareGrantError::MissingTunnelFeatures);
         }
-        Some(PolicyRefV1 {
-            policy_id: PolicyId(*binding.projection_id.as_bytes()),
+        Some(PolicyRefBuildV1 {
+            policy_id_hex: encode_hex(binding.projection_id.as_bytes()),
             generation: binding.projection_generation,
-            content_hash: binding.projection_content_hash,
+            content_hash_hex: encode_hex(&binding.projection_content_hash),
         })
     } else {
         None
     };
-    let payload = AccessGrantPayloadV1 {
-        grant_id: GrantId(*grant_id.as_bytes()),
-        issuer_id: IssuerId(*issuer.issuer_id.as_bytes()),
-        environment_id: EnvironmentId(*issuer.environment_id.as_bytes()),
-        organization_id: OrganizationId(*material.organization_id.as_bytes()),
-        tenant_id: TenantId(*request.tenant_id.as_bytes()),
-        subscription_id: SubscriptionId(*material.subscription_id.as_bytes()),
-        device_id: DeviceId(*request.device_id.as_bytes()),
-        device_key_id: DeviceKeyId(*material.device_key_id.as_bytes()),
-        device_public_key: material.device_public_key,
+    let expires_at = issued_at
+        .checked_add(crate::grants::PRIVATE_GRANT_TTL_SECS)
+        .ok_or(GrantIssueError::TimeOverflow)?;
+    let refresh_after = issued_at
+        .checked_add(
+            crate::grants::PRIVATE_GRANT_TTL_SECS
+                .checked_mul(crate::grants::PRIVATE_GRANT_REFRESH_NUMERATOR)
+                .ok_or(GrantIssueError::TimeOverflow)?
+                / crate::grants::PRIVATE_GRANT_REFRESH_DENOMINATOR,
+        )
+        .ok_or(GrantIssueError::TimeOverflow)?;
+    let payload = GrantPayloadBuildV1 {
+        object_type: "grant_payload_v1",
+        grant_id_hex: encode_hex(grant_id.as_bytes()),
+        issuer_id_hex: encode_hex(issuer.issuer_id.as_bytes()),
+        environment_id_hex: encode_hex(issuer.environment_id.as_bytes()),
+        organization_id_hex: encode_hex(material.organization_id.as_bytes()),
+        tenant_id_hex: encode_hex(request.tenant_id.as_bytes()),
+        subscription_id_hex: encode_hex(material.subscription_id.as_bytes()),
+        device_id_hex: encode_hex(request.device_id.as_bytes()),
+        device_key_id_hex: encode_hex(material.device_key_id.as_bytes()),
+        device_public_key_hex: encode_hex(&material.device_public_key),
         assurance_level: material.assurance_level,
-        node_pool_id: NodePoolId(*request.node_pool_id.as_bytes()),
-        service_class: CoreServiceClass::CustomerPrivate,
-        operator_scope_type: OperatorScopeType::Customer,
-        operator_id: None,
-        region_ids: Vec::new(),
-        allowed_features: FeatureSet::from_bits(material.quota.allowed_features),
+        node_pool_id_hex: encode_hex(request.node_pool_id.as_bytes()),
+        service_class: CORE_SERVICE_CLASS_CUSTOMER_PRIVATE,
+        operator_scope_type: CORE_OPERATOR_SCOPE_CUSTOMER,
+        operator_id_hex: None,
+        region_ids_hex: Vec::new(),
+        allowed_features: material.quota.allowed_features,
         service_permissions,
         route_policy,
         dns_policy: None,
@@ -195,20 +250,19 @@ pub fn prepare_private_grant_with_id(
         max_datagram_record: material.quota.max_datagram_record,
         upload_rate_bps: material.quota.upload_rate_bps,
         download_rate_bps: material.quota.download_rate_bps,
-        issued_at: 0,
-        not_before: 0,
-        refresh_after: 0,
-        expires_at: 0,
+        issued_at,
+        not_before: issued_at,
+        refresh_after,
+        expires_at,
         policy_generation: material.snapshot.policy_generation,
         entitlement_generation: material.snapshot.entitlement.generation,
     };
-    let issued = signer.issue_private(payload, issued_at)?;
+    let issued = signer.issue_private(&payload)?;
     let request_fingerprint = request_fingerprint(
         request_id,
         request,
         material.snapshot.authorization_generation,
     );
-    let expires_at = issued_at + crate::grants::PRIVATE_GRANT_TTL_SECS;
     Ok(PreparedGrant {
         grant_id,
         authorization_generation: material.snapshot.authorization_generation,
@@ -216,6 +270,16 @@ pub fn prepare_private_grant_with_id(
         expires_at,
         issued,
     })
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 fn permission_bits(permission: &str) -> Result<(u64, bool), PrepareGrantError> {
@@ -254,8 +318,10 @@ fn request_fingerprint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{DeviceStatus, EntitlementSnapshot, SnapshotDevice, SnapshotStatus};
-    use ed25519_dalek::SigningKey;
+    use crate::{
+        domain::{DeviceStatus, EntitlementSnapshot, SnapshotDevice, SnapshotStatus},
+        grants::test_support::{request_from_issued, signer},
+    };
 
     fn fixture() -> (GrantRequest, PrivateGrantMaterial) {
         let tenant_id = Uuid::new_v4();
@@ -317,7 +383,7 @@ mod tests {
     #[test]
     fn prepares_core_grant_from_one_authorization_snapshot() {
         let (request, material) = fixture();
-        let signer = GrantSigner::new("k1", SigningKey::from_bytes(&[3; 32]));
+        let signer = signer("k1", [3; 32]);
         let prepared = prepare_private_grant(
             &signer,
             &IssuerConfig {
@@ -340,7 +406,7 @@ mod tests {
         let (mut request, mut material) = fixture();
         request.service_permission = "private.anything".into();
         material.snapshot.entitlement.service_permission = "private.anything".into();
-        let signer = GrantSigner::new("k1", SigningKey::from_bytes(&[3; 32]));
+        let signer = signer("k1", [3; 32]);
         assert!(matches!(
             prepare_private_grant(
                 &signer,
@@ -360,7 +426,7 @@ mod tests {
     #[test]
     fn rejects_empty_idempotency_key() {
         let (request, material) = fixture();
-        let signer = GrantSigner::new("k1", SigningKey::from_bytes(&[3; 32]));
+        let signer = signer("k1", [3; 32]);
         assert!(matches!(
             prepare_private_grant(
                 &signer,
@@ -400,7 +466,7 @@ mod tests {
             segment_generation: 4,
             segment_content_hash: [8; 32],
         });
-        let signer = GrantSigner::new("k1", SigningKey::from_bytes(&[3; 32]));
+        let signer = signer("k1", [3; 32]);
         let prepared = prepare_private_grant(
             &signer,
             &IssuerConfig {
@@ -413,22 +479,27 @@ mod tests {
             1_800_000_000,
         )
         .unwrap();
-        let payload = AccessGrantPayloadV1::decode(&prepared.issued.envelope().payload).unwrap();
-        assert!(payload.allowed_features.contains(REQUIRED_TUN_FEATURES));
+        let request = request_from_issued(&prepared.issued);
+        let payload = &request["object"];
         assert_eq!(
-            payload.route_policy,
-            Some(PolicyRefV1 {
-                policy_id: PolicyId(*projection_id.as_bytes()),
-                generation: 9,
-                content_hash: [7; 32],
-            })
+            payload["allowed_features"].as_u64().unwrap() & REQUIRED_TUN_FEATURES,
+            REQUIRED_TUN_FEATURES
+        );
+        assert_eq!(
+            payload["route_policy"]["policy_id_hex"],
+            encode_hex(projection_id.as_bytes())
+        );
+        assert_eq!(payload["route_policy"]["generation"], 9);
+        assert_eq!(
+            payload["route_policy"]["content_hash_hex"],
+            encode_hex(&[7; 32])
         );
     }
 
     #[test]
     fn non_tun_grant_retains_no_route_policy() {
         let (request, material) = fixture();
-        let signer = GrantSigner::new("k1", SigningKey::from_bytes(&[3; 32]));
+        let signer = signer("k1", [3; 32]);
         let prepared = prepare_private_grant(
             &signer,
             &IssuerConfig {
@@ -441,7 +512,7 @@ mod tests {
             1_800_000_000,
         )
         .unwrap();
-        let payload = AccessGrantPayloadV1::decode(&prepared.issued.envelope().payload).unwrap();
-        assert_eq!(payload.route_policy, None);
+        let request = request_from_issued(&prepared.issued);
+        assert!(request["object"]["route_policy"].is_null());
     }
 }
