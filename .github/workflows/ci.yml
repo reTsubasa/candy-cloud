@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: reTsubasa/candy-core
-          ref: 42b2ffd1993e65956e6acdebfb3ab229a2aff0ab
+          ref: 4bdd30d97852d1773bb5c60d7907bfb423e3ce1b
           path: candy-core
           token: ${{ secrets.CANDY_CORE_READ_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@1.88.0

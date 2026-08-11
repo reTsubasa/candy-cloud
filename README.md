@@ -2,7 +2,7 @@
 
 独立的 Candy Cloud 控制面，产品版本 `0.1.0`。控制面负责 AAA、租户、设备、订阅、权益和 Grant 签发，不承载客户数据面流量。
 
-- Candy Core: `0.3.10` at revision `42b2ffd`
+- Candy Core: `0.3.10` at revision `4bdd30d`
 - wire line: `0.3`
 - auth profile: `cloud_grant_v1`
 - runtime: Rust + Axum + Tokio + SQLx/MySQL
@@ -40,6 +40,6 @@ slice is kept under [`openwrt-sdwan/`](openwrt-sdwan/); it contains the package,
 procd, LuCI, and focused productization checks without copying the Core
 protocol implementation.
 
-The project is pinned to Candy Core `0.3.10` at revision `42b2ffd` and wire line
+The project is pinned to Candy Core `0.3.10` at revision `4bdd30d` and wire line
 `0.3`. IPv6 remains outside this delivery; Mesh precedes dynamic routing in
 the expansion sequence.
