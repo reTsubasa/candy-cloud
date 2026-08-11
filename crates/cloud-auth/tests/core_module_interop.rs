@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 fn repeated_hex(byte: u8, length: usize) -> String {
-    format!("{:02x}", byte).repeat(length)
+    format!("{byte:02x}").repeat(length)
 }
 
 fn grant_object() -> Value {
