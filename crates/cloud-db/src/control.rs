@@ -789,7 +789,7 @@ async fn dependent_segments(
     id: Uuid,
 ) -> Result<HashSet<Uuid>, ControlStoreError> {
     let rows = sqlx::query(
-        "WITH RECURSIVE dependents (resource_kind, resource_id) AS (SELECT CAST(? AS CHAR(32)), ? UNION DISTINCT SELECT CAST(refs.source_kind AS CHAR(32)), refs.source_id FROM sdwan_control_resource_references refs JOIN dependents current ON refs.tenant_id = ? AND CAST(refs.target_kind AS CHAR(32)) = current.resource_kind AND refs.target_id = current.resource_id) SELECT DISTINCT resources.segment_id FROM dependents JOIN sdwan_control_resources resources ON resources.tenant_id = ? AND CAST(resources.resource_kind AS CHAR(32)) = dependents.resource_kind AND resources.id = dependents.resource_id WHERE resources.state <> 'DELETED' AND resources.segment_id IS NOT NULL",
+        "WITH RECURSIVE dependents (resource_kind, resource_id) AS (SELECT CAST(? AS CHAR(32)), CAST(? AS BINARY(16)) UNION DISTINCT SELECT CAST(refs.source_kind AS CHAR(32)), refs.source_id FROM sdwan_control_resource_references refs JOIN dependents current ON refs.tenant_id = ? AND CAST(refs.target_kind AS CHAR(32)) = current.resource_kind AND refs.target_id = current.resource_id) SELECT DISTINCT resources.segment_id FROM dependents JOIN sdwan_control_resources resources ON resources.tenant_id = ? AND CAST(resources.resource_kind AS CHAR(32)) = dependents.resource_kind AND resources.id = dependents.resource_id WHERE resources.state <> 'DELETED' AND resources.segment_id IS NOT NULL",
     )
     .bind(kind.database_value())
     .bind(id)
@@ -983,7 +983,7 @@ impl GenerationJobRepository {
             now + chrono::Duration::from_std(ttl).map_err(|_| ControlStoreError::InvalidRequest)?;
         let mut transaction = self.pool.begin().await?;
         let row = sqlx::query(
-            "SELECT id, tenant_id, segment_id, desired_revision, attempt_count FROM segment_generation_jobs WHERE ((state IN ('PENDING','RETRY') AND next_attempt_at <= ?) OR (state = 'LEASED' AND lease_until <= ?)) ORDER BY next_attempt_at, created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED",
+            "SELECT candidate.id, candidate.tenant_id, candidate.segment_id, candidate.desired_revision, candidate.attempt_count FROM segment_generation_jobs candidate WHERE ((candidate.state IN ('PENDING','RETRY') AND candidate.next_attempt_at <= ?) OR (candidate.state = 'LEASED' AND candidate.lease_until <= ?)) AND NOT EXISTS (SELECT 1 FROM segment_generation_jobs earlier WHERE earlier.tenant_id = candidate.tenant_id AND earlier.segment_id = candidate.segment_id AND earlier.desired_revision < candidate.desired_revision AND earlier.state NOT IN ('PUBLISHED','PERMANENT_FAILURE')) ORDER BY candidate.next_attempt_at, candidate.created_at, candidate.id LIMIT 1 FOR UPDATE SKIP LOCKED",
         )
         .bind(now)
         .bind(now)

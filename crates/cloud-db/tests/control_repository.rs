@@ -84,7 +84,7 @@ async fn repository_enforces_tenant_revision_idempotency_and_lease_recovery() {
     };
     let repository = ControlRepository::new(pool.clone());
     let jobs = GenerationJobRepository::new(pool);
-    let resource_id = Uuid::new_v4();
+    let resource_id = Uuid::parse_str("c63ece79-9380-4fa2-8f80-ff80fe807f81").unwrap();
     let create = mutation(
         segment(tenant, resource_id, 1, "branch-segment"),
         "create-1",
@@ -178,4 +178,15 @@ async fn repository_enforces_tenant_revision_idempotency_and_lease_recovery() {
     )
     .await
     .unwrap();
+    let next = jobs
+        .claim_next(
+            "worker-c",
+            now + ChronoDuration::seconds(3),
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.desired_revision, 2);
+    assert_eq!(next.attempt_count, 1);
 }

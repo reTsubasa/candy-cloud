@@ -237,10 +237,7 @@ impl CoreModule {
         let assemble_fn =
             unsafe { load_symbol::<AssembleFn>(&library, b"candy_core_cloud_assemble\0")? };
         let route_content_hash_fn = unsafe {
-            load_symbol::<RouteContentHashFn>(
-                &library,
-                b"candy_core_cloud_route_content_hash\0",
-            )?
+            load_symbol::<RouteContentHashFn>(&library, b"candy_core_cloud_route_content_hash\0")?
         };
         let validate_fn =
             unsafe { load_symbol::<ValidateFn>(&library, b"candy_core_cloud_validate\0")? };
