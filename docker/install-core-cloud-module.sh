@@ -88,7 +88,7 @@ jq -e \
     .schema_version == 1 and
     (
       ($version == "0.3.10" and .release_kind == "candy-core-cloud-module" and .artifact.kind == "shared-module") or
-      ($version != "0.3.10" and .release_kind == "candy-core" and .artifact.kind == "shared-library")
+      (.release_kind == "candy-core" and .artifact.kind == "shared-library")
     ) and
     .module.version == $version and
     .module.abi_version == 1 and
