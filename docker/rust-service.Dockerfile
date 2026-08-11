@@ -35,7 +35,17 @@ RUN case "${CORE_MODULE_VERSION}" in \
       ''|*[!0-9A-Za-z._-]*) echo 'invalid Core module version' >&2; exit 1 ;; \
     esac \
     && test "${CORE_MODULE_TARGET}" = x86_64-unknown-linux-gnu \
-    && core_module_url="https://github.com/reTsubasa/candy-release/releases/download/core-cloud-module-v${CORE_MODULE_VERSION}/candy-core-cloud-module-${CORE_MODULE_VERSION}-${CORE_MODULE_TARGET}.tar.gz" \
+    && case "${CORE_MODULE_VERSION}" in \
+      0.3.10) \
+        core_release_tag="core-cloud-module-v${CORE_MODULE_VERSION}"; \
+        core_module_asset="candy-core-cloud-module-${CORE_MODULE_VERSION}-${CORE_MODULE_TARGET}.tar.gz" \
+        ;; \
+      *) \
+        core_release_tag="core-v${CORE_MODULE_VERSION}"; \
+        core_module_asset="candy-core-${CORE_MODULE_VERSION}-cloud-abi-${CORE_MODULE_TARGET}.tar.gz" \
+        ;; \
+    esac \
+    && core_module_url="https://github.com/reTsubasa/candy-release/releases/download/${core_release_tag}/${core_module_asset}" \
     && curl --fail --location --proto '=https' --tlsv1.2 \
       --retry 5 --retry-all-errors --connect-timeout 15 --max-time 300 \
       --output /tmp/core-module.tar.gz "${core_module_url}" \
