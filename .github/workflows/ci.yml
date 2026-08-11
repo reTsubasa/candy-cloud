@@ -29,17 +29,6 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: candy-cloud
-      - name: Require private Core read credential
-        env:
-          CORE_READ_TOKEN: ${{ secrets.CANDY_CORE_READ_TOKEN }}
-        run: test -n "$CORE_READ_TOKEN" || { echo 'CANDY_CORE_READ_TOKEN must be configured for private candy-core checkout' >&2; exit 1; }
-      - name: Check out pinned Candy Core
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          repository: reTsubasa/candy-core
-          ref: 4bdd30d97852d1773bb5c60d7907bfb423e3ce1b
-          path: candy-core
-          token: ${{ secrets.CANDY_CORE_READ_TOKEN }}
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
           components: clippy
@@ -49,5 +38,15 @@ jobs:
       - run: cargo run -p cloud-db --bin cloud-db-migrate
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Reject private Core source dependencies
+        run: |
+          private_token='CANDY_CORE''_READ_TOKEN'
+          core_context='additional_contexts:.*candy-''core'
+          core_path='\.\./\.\./\.\./candy-''core'
+          if rg -n -e "$private_token" -e "$core_context" -e "$core_path" \
+            .github docker docker-compose.yml crates Cargo.toml Cargo.lock; then
+            echo 'Cloud still depends on private Core source' >&2
+            exit 1
+          fi
       - run: tests/compose_smoke.sh
       - run: docker compose --env-file .env.example config >/dev/null

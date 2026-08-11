@@ -15,6 +15,18 @@ printf '%s\n' "$compose_config" | awk '
   echo "cloud-worker route-signing environment is missing from rendered Compose configuration" >&2
   exit 1
 }
+printf '%s\n' "$compose_config" | awk '
+  /^  cloud-worker:$/ { worker = 1; next }
+  worker && /^  [[:alnum:]_-]+:$/ { worker = 0 }
+  worker && /target: runtime-core/ { target = 1 }
+  worker && /CORE_MODULE_VERSION: 0.3.10/ { version = 1 }
+  worker && /CORE_MODULE_BUNDLE_SHA256: 891fc81bbd258a364d138788660214a05d8819df0c896cd8a61d971bfed0564c/ { bundle = 1 }
+  worker && /CORE_MODULE_SHA256: 54c1e6a1f61ef0b28208d5dec13ce7b1351922478987b5eac3ac9a06f183c478/ { module = 1 }
+  END { exit (target && version && bundle && module) ? 0 : 1 }
+' || {
+  echo "cloud-worker verified Core module build contract is missing" >&2
+  exit 1
+}
 
 if ! docker info >/dev/null 2>&1; then
   echo "SKIP: Docker daemon is not running"
