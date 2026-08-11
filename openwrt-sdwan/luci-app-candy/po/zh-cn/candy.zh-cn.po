@@ -606,8 +606,8 @@ msgstr "自动更新周期。24 表示每天一次。"
 msgid "China IP bypass"
 msgstr "中国 IP 分流"
 
-msgid "China IP bypass routes provider-matched China destination IPs directly while Candy is running. Provider matching is compiled by candy-core; LuCI only manages the update source and shows status."
-msgstr "Candy 运行时，中国 IP 分流会将 Provider 命中的中国目标 IP 直连。Provider 匹配由 candy-core 编译，LuCI 只管理更新源并显示状态。"
+msgid "China IP bypass routes provider-matched China destination IPs directly while Candy is running. Provider matching is compiled by the Core module; LuCI only manages the update source and shows status."
+msgstr "Candy 运行时，中国 IP 分流会将 Provider 命中的中国目标 IP 直连。Provider 匹配由 Core 模块编译，LuCI 只管理更新源并显示状态。"
 
 msgid "CIDR text provider URL used by the manual update action."
 msgstr "手动更新动作使用的 CIDR 文本 Provider URL。"

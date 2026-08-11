@@ -5,12 +5,8 @@ PKG_VERSION:=0.3.4
 # OpenWrt requires a package revision. This is internal metadata, not part of
 # the Candy product version shown to users.
 PKG_RELEASE:=13
-CANDY_CORE_SRC?=
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
-PKG_BUILD_PARALLEL:=1
-CARGO_TARGET?=x86_64-unknown-linux-musl
-CARGO_TARGET_ENV?=X86_64_UNKNOWN_LINUX_MUSL
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -30,24 +26,8 @@ define Package/candy-client/conffiles
 endef
 
 define Build/Prepare
-	[ "$${CANDY_ALLOW_LEGACY_SNAPSHOT:-0}" = 1 ] || { echo "legacy candy-cloud OpenWrt snapshot is archived; build candy-runtime OpenWrt packages instead"; exit 1; }
-	mkdir -p $(PKG_BUILD_DIR)
-	[ -n "$(CANDY_CORE_SRC)" ] && [ -f "$(CANDY_CORE_SRC)/Cargo.toml" ] || { echo "CANDY_CORE_SRC must point at the Candy core repository"; exit 1; }
-	rsync -a --delete \
-		--exclude .git \
-		--exclude .openwrt-sdk-cache \
-		--exclude target \
-		--exclude dist \
-		"$(CANDY_CORE_SRC)/" $(PKG_BUILD_DIR)/
-endef
-
-define Build/Compile
-	cd $(PKG_BUILD_DIR) && \
-		CC_$(CARGO_TARGET_ENV)="$(TARGET_CC_NOCACHE)" \
-		AR_$(CARGO_TARGET_ENV)="$(TARGET_AR)" \
-		CARGO_TARGET_$(CARGO_TARGET_ENV)_LINKER="$(TARGET_CC_NOCACHE)" \
-		RUSTFLAGS="-Ctarget-feature=-crt-static -lssp_nonshared -Clink-arg=-fuse-ld=bfd" \
-		cargo build --release -p client-cli -p candy-netd -p candy-sdwan --target $(CARGO_TARGET)
+	@echo "candy-cloud OpenWrt snapshot is archived and cannot be built; use candy-runtime OpenWrt packages" >&2
+	@false
 endef
 
 define Package/candy-client/install

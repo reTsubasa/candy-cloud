@@ -5,11 +5,11 @@ use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
 #[test]
-#[ignore = "requires CANDY_CORE_INTEROP_MODULE pointing to a locally built Core module"]
+#[ignore = "requires CANDY_CORE_INTEROP_MODULE pointing to a released Core module"]
 fn loads_the_real_core_cloud_module() {
     let module = PathBuf::from(
         std::env::var_os("CANDY_CORE_INTEROP_MODULE")
-            .expect("CANDY_CORE_INTEROP_MODULE must point to the local shared module"),
+            .expect("CANDY_CORE_INTEROP_MODULE must point to the released shared module"),
     );
     let root = module.parent().expect("Core module has a parent");
     let bytes = fs::read(&module).expect("read Core module");

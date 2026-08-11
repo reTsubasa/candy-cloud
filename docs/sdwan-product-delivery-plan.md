@@ -28,8 +28,9 @@ egress.
   route, Hub, mesh, and publication structures were never deployed and carry
   no compatibility promise; they must be corrected in place instead of
   creating a V2 or retaining a legacy decoder.
-- `candy-core` is an internal managed data-plane executable and is never the
-  user-facing command.
+- Candy Core is an internal managed data-plane implementation, delivered as a
+  signed shared module or through the product-owned service binaries; it is
+  never a user-facing command or standalone service.
 - Linux Edge uses the `candy` product command.
 - Linux server uses the `candy-server` product command.
 - SD-WAN is an additive `candy-server` capability and can run concurrently
@@ -298,7 +299,7 @@ The same service chain is valid from Site B through Site A.
   a generation.
 - [ ] Emit bounded audit records and operational metrics for every job.
 
-### 5.5 `candy-core`: full-duplex TUN data plane
+### 5.5 Core module: full-duplex TUN data plane
 
 - [ ] Implement the currently rejected `client sdwan` Process API command.
 - [ ] Open one multi-queue Layer-3 TUN per routing domain and process reads and
@@ -317,7 +318,7 @@ The same service chain is valid from Site B through Site A.
   the real Site-to-Site data path.
 - [ ] Expose independent transmit and receive metrics for every Site Peer.
 
-### 5.6 `candy-core`: Peer and path manager
+### 5.6 Core module: Peer and path manager
 
 - [ ] Implement mutually authenticated direct Peer connections using signed
   Cloud identity and authorization.
@@ -330,7 +331,7 @@ The same service chain is valid from Site B through Site A.
   fail affected flows explicitly without corrupting unrelated Peers.
 - [ ] Reject stale Peer identity, attachment epoch, and path authorization.
 
-### 5.7 `candy-core`: concurrent Candy server services
+### 5.7 Core module: concurrent Candy server services
 
 - [ ] Remove the current mutual exclusion between ordinary Candy users and
   SD-WAN service blocks.
@@ -367,7 +368,7 @@ The same service chain is valid from Site B through Site A.
 
 - [ ] Ship the user-facing `candy` Linux Edge command and systemd service.
 - [ ] Support `candy join`, `candy sdwan status`, `candy sdwan reconnect`, and
-  `candy leave` without exposing `candy-core`.
+  `candy leave` without exposing the internal Core module.
 - [ ] Ship one `candy-server` service that can enable ordinary Candy and
   SD-WAN concurrently from one validated configuration.
 - [ ] Preserve `--check-config` and `--preflight` on the product command.

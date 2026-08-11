@@ -386,15 +386,6 @@ grep -Fq '"forwards":[{"network":"udp","local":"127.0.0.1:15353","target":"9.9.9
 grep -Fq '"transparent_tcp":[{"local":"0.0.0.0:12345"}]' "$RUNTIME_CONFIG"
 ! grep -Fq '"transparent_udp":[{"local":"0.0.0.0:12346"}]' "$RUNTIME_CONFIG"
 test -f "$GEO_RUNTIME_RULESETS_DIR/cn-ip.cidr"
-if [ "${CANDY_SKIP_RUST_CONFIG_CHECK:-0}" -ne 1 ]; then
-  candy_core_src=${CANDY_CORE_SRC:-}
-  [ -n "$candy_core_src" ] && [ -f "$candy_core_src/Cargo.toml" ] ||
-    fail "CANDY_CORE_SRC must point at Candy core unless CANDY_SKIP_RUST_CONFIG_CHECK=1"
-  cargo run -q --manifest-path "$candy_core_src/Cargo.toml" -p client-cli -- \
-    --config "$RUNTIME_CONFIG" --format candy-json --check-config >/dev/null
-  cargo test -q --manifest-path "$candy_core_src/Cargo.toml" -p candy-carrier-transport \
-    openwrt_profile_windows_match_target_architecture
-fi
 refresh_node_status_fast "starting"
 test -f "$NODE_STATUS_FILE"
 grep -q '"nodes":\[' "$NODE_STATUS_FILE"

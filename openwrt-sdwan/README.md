@@ -32,10 +32,9 @@ From this directory, run:
 scripts/verify.sh
 ```
 
-Set `CANDY_CORE_SRC` to a Candy Core checkout when the Rust package-version
-probe should run as well. Without it, `verify.sh` still runs all OpenWrt
-productization and LuCI checks and explicitly skips only that cross-repository
-probe.
+The archive contains no Core source, Cargo manifest, or cross-repository build
+probe. `verify.sh` runs only the static OpenWrt productization and LuCI checks;
+it never checks out, copies, or compiles the private Core repository.
 
 SDK and target-hardware gates remain in the source OpenWrt repository because
 they require an external SDK or device. IPv6 is intentionally not included in

@@ -14,9 +14,11 @@ fail() {
 	exit 1
 }
 
-grep -F 'cargo build --release -p client-cli -p candy-netd -p candy-sdwan' "$makefile" >/dev/null || fail "SD-WAN binaries are not built together"
-grep -F 'release/candy-netd $(1)/usr/bin/candy-netd' "$makefile" >/dev/null || fail "candy-netd is not installed"
-grep -F 'release/candy-sdwan $(1)/usr/bin/candy-sdwan' "$makefile" >/dev/null || fail "candy-sdwan is not installed"
+grep -F 'snapshot is archived and cannot be built' "$makefile" >/dev/null || fail "archived package build guard is missing"
+core_src_env='CANDY_CORE_''SRC'
+if grep -Eq "$core_src_env|rsync|cargo (build|run|test)|manifest-path" "$makefile"; then
+	fail "archived package still contains a Core source build path"
+fi
 grep -F '+kmod-tun' "$makefile" >/dev/null || fail "TUN kernel dependency is missing"
 grep -F 'config sdwan' "$config" >/dev/null || fail "SD-WAN UCI bootstrap is missing"
 grep -F "option enabled '0'" "$config" >/dev/null || fail "SD-WAN must default off"
