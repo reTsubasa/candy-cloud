@@ -1,6 +1,7 @@
 use candy_proto::{
     cloud_grant::{
-        AccessGrantPayloadV1, DeviceId, DeviceKeyId, NodePoolId, PolicyId, PolicyRefV1,
+        AccessGrantEnvelopeV1, AccessGrantPayloadV1, DeviceId, DeviceKeyId, NodePoolId, PolicyId,
+        PolicyRefV1,
         ServiceClass, TenantId,
     },
     features::FeatureSet,
@@ -27,14 +28,41 @@ use cloud_auth::{
         RoutePolicyBinding,
     },
 };
+use cloud_core_module::{CoreModule, ModuleRequirements, VerifiedModuleSpec};
 use cloud_worker::route_publication::{
     build_route_publication, DeviceProjectionInput, RoutePublicationInput, RouteSigner,
 };
 use ed25519_dalek::SigningKey;
 use uuid::Uuid;
+use std::{fs, os::unix::fs::MetadataExt, path::PathBuf, sync::Arc};
+use sha2::Digest;
 
 const NOW: u64 = 150;
 const ROUTE_KEY_ID: &str = "route-key-1";
+
+fn real_core() -> Arc<CoreModule> {
+    let path = PathBuf::from(
+        std::env::var("CANDY_CORE_INTEROP_MODULE")
+            .expect("CANDY_CORE_INTEROP_MODULE is required for this ignored test"),
+    );
+    let root = path.parent().unwrap().to_path_buf();
+    let digest = sha2::Sha256::digest(fs::read(&path).unwrap());
+    let owner_uid = fs::metadata(&root).unwrap().uid();
+    Arc::new(
+        CoreModule::load(
+            &VerifiedModuleSpec::new(root, path, digest.into(), owner_uid),
+            &ModuleRequirements {
+                wire_protocol: Some("0.3".into()),
+                required_objects: ["grant-payload-v1", "grant-envelope-v1"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                ..ModuleRequirements::default()
+            },
+        )
+        .unwrap(),
+    )
+}
 
 fn id(byte: u8) -> [u8; 16] {
     [byte; 16]
@@ -235,7 +263,11 @@ fn fixture() -> InteropFixture {
         },
     };
     let issued = prepare_private_grant_with_id(
-        &GrantSigner::new("grant-key-1", SigningKey::from_bytes(&[43; 32])),
+        &GrantSigner::new(
+            "grant-key-1",
+            SigningKey::from_bytes(&[43; 32]),
+            real_core(),
+        ),
         &IssuerConfig {
             issuer_id: uuid(24),
             environment_id: uuid(25),
@@ -247,7 +279,8 @@ fn fixture() -> InteropFixture {
         90,
     )
     .unwrap();
-    let grant = AccessGrantPayloadV1::decode(&issued.issued.envelope().payload).unwrap();
+    let envelope = AccessGrantEnvelopeV1::decode(issued.issued.raw()).unwrap();
+    let grant = AccessGrantPayloadV1::decode(&envelope.payload).unwrap();
     let site_projection = projection.policy_ref();
     let segment_content_hash = snapshot.content_hash();
     InteropFixture {
@@ -299,11 +332,13 @@ fn authorize(value: &InteropFixture, now: u64) -> Result<(), ControlError> {
 }
 
 #[test]
+#[ignore = "requires a locally built signed Core module"]
 fn direct_peer_route_and_tun_grant_authorize_in_core() {
     assert_eq!(authorize(&fixture(), NOW), Ok(()));
 }
 
 #[test]
+#[ignore = "requires a locally built signed Core module"]
 fn core_rejects_cross_boundary_and_unsigned_cidr_inputs() {
     let mut value = fixture();
     value.device.device_key_id = DeviceKeyId(id(99));
