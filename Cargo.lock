@@ -374,6 +374,7 @@ dependencies = [
  "chrono",
  "cloud-auth",
  "cloud-control",
+ "cloud-core-module",
  "cloud-db",
  "ed25519-dalek",
  "serde",
