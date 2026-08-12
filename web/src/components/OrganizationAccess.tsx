@@ -79,12 +79,28 @@ export function OrganizationAccess({ session, onSessionInvalidated }: Props) {
     </Space> },
   ];
 
+  const memberActions = (item: OrganizationMember) => item.role === 'ORGANIZATION_OWNER' || !canManage ? null : <Space size={4}>
+    <Popconfirm title="移除成员？" content="该成员的全部管理会话会立即撤销。" onOk={() => void run(item.id, () => removeOrganizationMember(session.token, item.id))}><Button size="mini" status="danger" type="text">移除</Button></Popconfirm>
+    <Popconfirm title="转移组织所有权？" content="你将变为租户管理员，双方现有会话都会立即失效。" onOk={() => void run(item.id, () => transferOrganizationOwnership(session.token, item.id), true)}><Button size="mini" type="text" icon={<IconRight />}>转让</Button></Popconfirm>
+  </Space>;
+
   return <section className="workspace-section organization-access-page">
     <header className="page-header"><div><Typography.Title heading={4}>成员与权限</Typography.Title><Typography.Text type="secondary">邀请成员、分配最小权限，并即时撤销不再需要的访问。</Typography.Text></div><Space><Button icon={<IconRefresh />} loading={loading} onClick={() => void load()}>刷新</Button>{canManage && <Button type="primary" icon={<IconPlus />} onClick={() => setInviteOpen(true)}>邀请成员</Button>}</Space></header>
     {error && <Alert className="editor-alert" type="error" content={error} showIcon />}
     <div className="access-summary"><IconUserGroup /><div><strong>{members.filter((item) => item.active).length}</strong><span>活跃成员</span></div><div><strong>{members.filter((item) => item.role === 'ORGANIZATION_OWNER').length}</strong><span>组织所有者</span></div><p>权限变更、停用和移除会在数据库事务内撤销受影响会话，Cloud API 每次请求重新校验权限。</p></div>
-    {loading ? <div className="access-table-state"><Spin /></div> : members.length === 0 ? <Empty description="暂无组织成员" /> : <Table rowKey="id" columns={columns} data={members} pagination={false} className="access-table" />}
-    <Modal title="邀请组织成员" visible={inviteOpen} onCancel={() => setInviteOpen(false)} onOk={() => void invite()} confirmLoading={busy === 'invite'} okButtonProps={{ disabled: !email.trim() }}>
+    {loading ? <div className="access-table-state"><Spin /></div> : members.length === 0 ? <Empty description="暂无组织成员" /> : <>
+      <Table rowKey="id" columns={columns} data={members} pagination={false} className="access-table access-table-desktop" />
+      <div className="member-list-mobile">
+        {members.map((item) => <article className="member-card-mobile" key={item.id}>
+          <header><div className="member-identity"><strong>{item.display_name}</strong><span>{item.email}</span></div>{memberActions(item)}</header>
+          <div className="member-card-fields">
+            <div><span>角色</span>{item.role === 'ORGANIZATION_OWNER' || !canManage ? <Tag color={item.role === 'ORGANIZATION_OWNER' ? 'arcoblue' : 'gray'}>{roleLabel(item.role)}</Tag> : <Select size="small" value={item.role} options={roles} onChange={(next) => void run(item.id, () => updateOrganizationMemberRole(session.token, item.id, next))} disabled={busy === item.id} />}</div>
+            <div><span>状态</span>{item.role === 'ORGANIZATION_OWNER' || !canManage ? <Tag color={item.active ? 'green' : 'orange'}>{item.active ? '活跃' : '已停用'}</Tag> : <Switch checked={item.active} loading={busy === item.id} onChange={(next) => void run(item.id, () => updateOrganizationMemberStatus(session.token, item.id, next))} />}</div>
+          </div>
+        </article>)}
+      </div>
+    </>}
+    <Modal className="invite-member-modal" title="邀请组织成员" visible={inviteOpen} onCancel={() => setInviteOpen(false)} onOk={() => void invite()} confirmLoading={busy === 'invite'} okButtonProps={{ disabled: !email.trim() }}>
       <Form layout="vertical"><Form.Item label="邮箱" required><Input value={email} onChange={setEmail} placeholder="member@example.com" /></Form.Item><Form.Item label="角色" required><Select value={role} onChange={setRole} options={roles} /></Form.Item></Form>
     </Modal>
   </section>;

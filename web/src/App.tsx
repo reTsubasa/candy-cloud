@@ -167,10 +167,10 @@ export default function App() {
           <div className="topbar-context">
             <Button type="text" className="mobile-nav-button" icon={<IconMenuUnfold />} aria-label="打开导航" onClick={() => setMobileNav(true)} />
             <Tag color="arcoblue">组织</Tag>
-            {memberships.length > 1 ? <Dropdown droplist={<Menu selectedKeys={[session.membership?.organization_id ?? '']} onClickMenuItem={(key) => void switchContext(key)}>{memberships.map((item) => <Menu.Item key={item.organization_id}>{item.organization_name}<small className="context-role">{item.role}</small></Menu.Item>)}</Menu>} position="bl"><button type="button" className="context-switch">{session.membership?.organization_name ?? shortId(session.claims.organization_id)} <IconDown /></button></Dropdown> : <Tooltip content={session.claims.tenant_id ?? 'JWT 未包含 tenant_id'}><span>{session.membership?.organization_name ?? shortId(session.claims.organization_id)}</span></Tooltip>}
+          {memberships.length > 1 ? <Dropdown trigger="click" droplist={<Menu selectedKeys={[session.membership?.organization_id ?? '']} onClickMenuItem={(key) => void switchContext(key)}>{memberships.map((item) => <Menu.Item key={item.organization_id}>{item.organization_name}<small className="context-role">{item.role}</small></Menu.Item>)}</Menu>} position="bl"><button type="button" className="context-switch">{session.membership?.organization_name ?? shortId(session.claims.organization_id)} <IconDown /></button></Dropdown> : <Tooltip content={session.claims.tenant_id ?? 'JWT 未包含 tenant_id'}><span>{session.membership?.organization_name ?? shortId(session.claims.organization_id)}</span></Tooltip>}
           </div>
-          <Dropdown droplist={accountMenu} position="br">
-            <button className="account-button" type="button">
+          <Dropdown trigger="click" droplist={accountMenu} position="br">
+            <button className="account-button" type="button" aria-label="打开账户菜单">
               <Avatar size={30}><IconUser /></Avatar>
               <span className="account-copy"><strong>{session.user?.display_name ?? session.claims.sub ?? 'Cloud Operator'}</strong><small>{session.membership?.role ?? session.claims.role ?? 'role unavailable'}</small></span>
               <IconDown />
