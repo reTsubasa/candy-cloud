@@ -163,10 +163,7 @@ services:
   reverse-proxy:
     image: caddy:2.9-alpine
     ports: !override
-      - target: 443
-        published: "$https_port"
-        protocol: tcp
-        mode: host
+      - "$https_port:443/tcp"
   cloud-auth:
     image: candy-cloud-saas-e2e-cloud-auth:local
   cloud-web:
