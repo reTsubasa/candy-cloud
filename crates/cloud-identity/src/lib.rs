@@ -405,8 +405,9 @@ async fn register(
         .ok_or(ApiError::Unavailable)?;
     let user_id = user.id;
     let recipient = user.email.clone();
-    let response = issue_session(&state, user, membership, None).await?;
     let token = random_token();
+    // Delivery happens before session issuance so a failed provider cannot leave a
+    // browser authenticated to an account whose verification flow cannot begin.
     state
         .repository
         .create_action_token(
@@ -430,6 +431,7 @@ async fn register(
             tracing::error!(event = "identity_email_delivery_failed", error = %error);
             ApiError::Unavailable
         })?;
+    let response = issue_session(&state, user, membership, None).await?;
     Ok((StatusCode::CREATED, response))
 }
 
