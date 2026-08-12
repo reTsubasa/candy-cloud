@@ -135,7 +135,7 @@ impl IdentityConfig {
         };
         let required =
             |name: &str| std::env::var(name).with_context(|| format!("{name} is required"));
-        Ok(Self {
+        let config = Self {
             database_url: required("DATABASE_URL")?,
             signing_key_file: std::path::PathBuf::from(required(
                 "CLOUD_IDENTITY_SIGNING_KEY_FILE",
@@ -153,7 +153,61 @@ impl IdentityConfig {
             refresh_ttl: seconds("CLOUD_IDENTITY_REFRESH_TTL_SECONDS", 2_592_000, 31_536_000)?,
             verification_ttl: seconds("CLOUD_IDENTITY_VERIFICATION_TTL_SECONDS", 86_400, 604_800)?,
             reset_ttl: seconds("CLOUD_IDENTITY_RESET_TTL_SECONDS", 900, 3600)?,
-        })
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if !matches!(
+            self.environment.as_str(),
+            "development" | "test" | "e2e" | "staging" | "production"
+        ) {
+            anyhow::bail!("CLOUD_IDENTITY_ENVIRONMENT is not a supported environment");
+        }
+        if self.signing_key_id.is_empty()
+            || self.signing_key_id.len() > 64
+            || self.audience.is_empty()
+            || self.audience.len() > 200
+        {
+            anyhow::bail!("identity signing key id and audience must be non-empty and bounded");
+        }
+        let issuer = reqwest::Url::parse(&self.issuer).context("parse CLOUD_IDENTITY_ISSUER")?;
+        if !issuer.username().is_empty()
+            || issuer.password().is_some()
+            || issuer.fragment().is_some()
+        {
+            anyhow::bail!("CLOUD_IDENTITY_ISSUER must not contain credentials or a fragment");
+        }
+        if matches!(self.environment.as_str(), "production" | "staging") {
+            let host = issuer
+                .host_str()
+                .context("CLOUD_IDENTITY_ISSUER must include a host")?;
+            if issuer.scheme() != "https"
+                || host.eq_ignore_ascii_case("localhost")
+                || host.ends_with(".localhost")
+                || host.ends_with(".invalid")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| match address {
+                        std::net::IpAddr::V4(address) => {
+                            address.is_loopback()
+                                || address.is_unspecified()
+                                || address.is_private()
+                        }
+                        std::net::IpAddr::V6(address) => {
+                            address.is_loopback()
+                                || address.is_unspecified()
+                                || address.is_unique_local()
+                        }
+                    })
+            {
+                anyhow::bail!(
+                    "production and staging CLOUD_IDENTITY_ISSUER must use a public HTTPS host"
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -260,16 +314,8 @@ impl IdentityState {
             std::fs::read(&config.signing_key_file).context("read identity signing key")?;
         let verification_pem = std::fs::read(&config.verification_key_file)
             .context("read identity verification key")?;
-        if config.signing_key_id.is_empty()
-            || config.signing_key_id.len() > 64
-            || config.issuer.is_empty()
-            || config.audience.is_empty()
-        {
-            anyhow::bail!(
-                "identity signing key id, issuer, and audience must be non-empty and bounded"
-            );
-        }
-        Ok(Self {
+        config.validate()?;
+        let state = Self {
             repository,
             signing_key: EncodingKey::from_ed_pem(&signing_pem)?,
             verification_key: DecodingKey::from_ed_pem(&verification_pem)?,
@@ -281,7 +327,36 @@ impl IdentityState {
             verification_ttl: config.verification_ttl,
             reset_ttl: config.reset_ttl,
             delivery,
-        })
+        };
+        state.verify_signing_key_pair()?;
+        Ok(state)
+    }
+
+    fn verify_signing_key_pair(&self) -> Result<()> {
+        let now = Utc::now();
+        let claims = AccessClaims {
+            sub: Uuid::now_v7(),
+            sid: Uuid::now_v7(),
+            organization_id: Uuid::now_v7(),
+            tenant_id: Uuid::now_v7(),
+            role: "ORGANIZATION_OWNER".into(),
+            iss: self.issuer.clone(),
+            aud: self.audience.clone(),
+            exp: (now + ChronoDuration::minutes(1)).timestamp() as u64,
+            nbf: (now - ChronoDuration::seconds(1)).timestamp() as u64,
+            iat: now.timestamp() as u64,
+            jti: Uuid::now_v7().to_string(),
+        };
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(self.signing_key_id.clone());
+        let token = encode(&header, &claims, &self.signing_key)
+            .context("sign identity key-pair startup probe")?;
+        if decode_access_claims(self, &token).is_none() {
+            anyhow::bail!(
+                "CLOUD_IDENTITY_SIGNING_KEY_FILE and CLOUD_IDENTITY_VERIFICATION_KEY_FILE do not form a valid key pair"
+            );
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1517,6 +1592,39 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(config.email, DEFAULT_DEMO_EMAIL);
+    }
+
+    #[test]
+    fn production_identity_config_rejects_placeholder_and_local_issuers() {
+        let config = |environment: &str, issuer: &str| IdentityConfig {
+            database_url: "mysql://unused".into(),
+            signing_key_file: "private.pem".into(),
+            verification_key_file: "public.pem".into(),
+            signing_key_id: "management-1".into(),
+            issuer: issuer.into(),
+            audience: "candy-cloud-management".into(),
+            environment: environment.into(),
+            bind: "127.0.0.1:8082".into(),
+            access_ttl: Duration::from_secs(900),
+            refresh_ttl: Duration::from_secs(3600),
+            verification_ttl: Duration::from_secs(3600),
+            reset_ttl: Duration::from_secs(900),
+        };
+        assert!(config("production", "https://identity.example.invalid")
+            .validate()
+            .is_err());
+        assert!(config("staging", "https://127.0.0.1/identity")
+            .validate()
+            .is_err());
+        assert!(config("production", "https://identity.candy.example")
+            .validate()
+            .is_ok());
+        assert!(config("e2e", "https://localhost/identity")
+            .validate()
+            .is_ok());
+        assert!(config("unknown", "https://identity.candy.example")
+            .validate()
+            .is_err());
     }
 
     #[tokio::test]

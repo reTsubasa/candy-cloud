@@ -45,6 +45,9 @@ token and constructs the customer-facing link. Its `purpose` field may be
 `verify_email`, `reset_password`, or `organization_invitation`. Verification links must target
 `https://<cloud-host>/?verify_email=<token>`. The service will not start in
 production without it, so account recovery cannot silently degrade.
+Production and staging additionally reject placeholder or local identity
+issuers. Startup signs and verifies a probe JWT, so mismatched management
+signing and verification keys fail before the service becomes ready.
 
 Reset links target `https://<cloud-host>/?reset_password=<token>`. Organization
 invitation links target `https://<cloud-host>/?accept_invitation=<token>`; the
