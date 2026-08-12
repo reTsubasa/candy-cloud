@@ -162,7 +162,7 @@ services:
       - $work:/run/test-secrets:ro
   reverse-proxy:
     image: caddy:2.9-alpine
-    ports:
+    ports: !override
       - target: 443
         published: "$https_port"
         protocol: tcp
