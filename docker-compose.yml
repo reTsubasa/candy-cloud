@@ -19,6 +19,7 @@ services:
       timeout: 5s
       retries: 20
   migrate:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: docker/rust-service.Dockerfile
@@ -30,6 +31,7 @@ services:
       mysql: { condition: service_healthy }
     networks: [candy-cloud-internal]
   cloud-api:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: docker/rust-service.Dockerfile

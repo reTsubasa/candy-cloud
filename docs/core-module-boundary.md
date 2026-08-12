@@ -76,8 +76,10 @@ host. CI and production builds must not use a Git checkout of
 `reTsubasa/candy-core`. Unit tests use a test module implementing the same ABI;
 interoperability tests use a released, signed Core module.
 
-Starting with Core `0.3.11`, the Cloud ABI is an `abi_profiles` artifact in the
+Starting with the unified Core `0.3.10` release, the Cloud ABI is an
+`abi_profiles` artifact in the
 same immutable `core-v<version>` release as the full Runtime targets. SD-WAN and
 Cloud integration do not create a separate Core edition or version line. The
 historical `core-cloud-module-v0.3.10` release remains readable only for the
-already-published compatibility pin.
+explicit legacy manifest compatibility path; normal image builds use
+`core-v0.3.10`.
