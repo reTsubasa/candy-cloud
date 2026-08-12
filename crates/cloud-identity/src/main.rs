@@ -9,6 +9,9 @@ async fn main() -> anyhow::Result<()> {
     let config = cloud_identity::IdentityConfig::from_env()?;
     let pool = cloud_db::connect(&config.database_url).await?;
     let repository = cloud_identity::IdentityRepository::new(pool);
+    // Login and organization bootstrap do not depend on outbound email. Until
+    // a transactional provider is wired in, verification and password-reset
+    // requests fail closed instead of exposing a one-time credential.
     let delivery: Arc<dyn cloud_identity::EmailDelivery> =
         Arc::new(cloud_identity::UnconfiguredEmailDelivery);
     let state = cloud_identity::IdentityState::new(repository, &config, delivery)?;

@@ -37,7 +37,6 @@ pub struct IdentityConfig {
     pub signing_key_id: String,
     pub issuer: String,
     pub audience: String,
-    pub environment: String,
     pub bind: String,
     pub access_ttl: Duration,
     pub refresh_ttl: Duration,
@@ -70,15 +69,9 @@ impl IdentityConfig {
             signing_key_id: required("CLOUD_IDENTITY_SIGNING_KEY_ID")?,
             issuer: required("CLOUD_IDENTITY_ISSUER")?,
             audience: required("CLOUD_IDENTITY_AUDIENCE")?,
-            environment: std::env::var("CLOUD_IDENTITY_ENVIRONMENT")
-                .unwrap_or_else(|_| "production".into()),
             bind: std::env::var("CLOUD_IDENTITY_BIND").unwrap_or_else(|_| "0.0.0.0:8082".into()),
-            access_ttl: seconds("CLOUD_IDENTITY_ACCESS_TOKEN_TTL_SECONDS", 900, 3600)?,
-            refresh_ttl: seconds(
-                "CLOUD_IDENTITY_REFRESH_TOKEN_TTL_SECONDS",
-                2_592_000,
-                31_536_000,
-            )?,
+            access_ttl: seconds("CLOUD_IDENTITY_ACCESS_TTL_SECONDS", 900, 3600)?,
+            refresh_ttl: seconds("CLOUD_IDENTITY_REFRESH_TTL_SECONDS", 2_592_000, 31_536_000)?,
             verification_ttl: seconds("CLOUD_IDENTITY_VERIFICATION_TTL_SECONDS", 86_400, 604_800)?,
             reset_ttl: seconds("CLOUD_IDENTITY_RESET_TTL_SECONDS", 900, 3600)?,
         })
