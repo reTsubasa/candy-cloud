@@ -40,13 +40,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: candy-cloud -> target
+      - run: corepack enable
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: candy-cloud/web/pnpm-lock.yaml
-      - run: corepack enable
-        working-directory: candy-cloud/web
       - run: pnpm install --frozen-lockfile
         working-directory: candy-cloud/web
       - run: pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build
