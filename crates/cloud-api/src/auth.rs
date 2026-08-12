@@ -6,6 +6,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use chrono::Utc;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -19,12 +20,14 @@ use crate::{
 pub struct ManagementAuthenticator {
     decoding_key: DecodingKey,
     validation: Validation,
+    identity_repository: Option<cloud_db::identity::IdentityRepository>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ManagementClaims {
     sub: String,
+    sid: Uuid,
     organization_id: Uuid,
     tenant_id: Uuid,
     role: Role,
@@ -60,16 +63,26 @@ impl ManagementAuthenticator {
         Ok(Self {
             decoding_key,
             validation,
+            identity_repository: None,
         })
     }
 
-    fn authenticate(&self, token: &str) -> Result<AuthenticatedPrincipal, ApiError> {
+    pub fn with_identity_repository(
+        mut self,
+        repository: cloud_db::identity::IdentityRepository,
+    ) -> Self {
+        self.identity_repository = Some(repository);
+        self
+    }
+
+    async fn authenticate(&self, token: &str) -> Result<AuthenticatedPrincipal, ApiError> {
         let claims = decode::<ManagementClaims>(token, &self.decoding_key, &self.validation)
             .map_err(|_| ApiError::unauthorized())?
             .claims;
         let _validated_standard_claims =
             (&claims.iss, &claims.aud, claims.exp, claims.nbf, claims.iat);
-        if claims.organization_id.is_nil()
+        if claims.sid.is_nil()
+            || claims.organization_id.is_nil()
             || claims.tenant_id.is_nil()
             || claims.sub.is_empty()
             || claims.sub.len() > 120
@@ -77,6 +90,24 @@ impl ManagementAuthenticator {
             || claims.jti.len() > 160
         {
             return Err(ApiError::unauthorized());
+        }
+        if let Some(repository) = &self.identity_repository {
+            let user_id = Uuid::parse_str(&claims.sub).map_err(|_| ApiError::unauthorized())?;
+            let role = identity_role(claims.role);
+            let active = repository
+                .session_is_active(
+                    claims.sid,
+                    user_id,
+                    claims.organization_id,
+                    claims.tenant_id,
+                    role,
+                    Utc::now(),
+                )
+                .await
+                .map_err(|_| ApiError::authentication_unavailable())?;
+            if !active {
+                return Err(ApiError::unauthorized());
+            }
         }
         Ok(AuthenticatedPrincipal {
             actor_id: claims.sub,
@@ -101,9 +132,20 @@ pub async fn require_management_principal(
         .and_then(|value| value.strip_prefix("Bearer "))
         .filter(|value| !value.is_empty())
         .ok_or_else(ApiError::unauthorized)?;
-    let principal = authenticator.authenticate(token)?;
+    let principal = authenticator.authenticate(token).await?;
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
+}
+
+fn identity_role(role: Role) -> cloud_db::identity::MembershipRole {
+    use cloud_db::identity::MembershipRole;
+    match role {
+        Role::OrganizationOwner => MembershipRole::OrganizationOwner,
+        Role::TenantAdmin => MembershipRole::TenantAdmin,
+        Role::Operator => MembershipRole::Operator,
+        Role::BillingViewer => MembershipRole::BillingViewer,
+        Role::Auditor => MembershipRole::Auditor,
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +178,7 @@ MCowBQYDK2VwAyEA2+Jj2UvNCvQiUPNYRgSi0cJSPiJI6Rs6D0UTeEpQVj8=
             &Header::new(Algorithm::EdDSA),
             &ManagementClaims {
                 sub: "operator-1".into(),
+                sid: Uuid::new_v4(),
                 organization_id: Uuid::new_v4(),
                 tenant_id,
                 role: Role::TenantAdmin,

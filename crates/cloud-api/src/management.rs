@@ -56,6 +56,14 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn authentication_unavailable() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "AUTHENTICATION_UNAVAILABLE",
+            message: "identity session validation is unavailable",
+        }
+    }
+
     fn forbidden() -> Self {
         Self {
             status: StatusCode::FORBIDDEN,

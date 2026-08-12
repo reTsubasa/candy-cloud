@@ -191,6 +191,117 @@ paths:
         "204": { description: Session revoked. }
         "401": { $ref: "#/components/responses/IdentityUnauthorized" }
         "404": { description: Session was not found for the current account. }
+  /v1/auth/memberships:
+    get:
+      tags: [Identity]
+      operationId: listAccountMemberships
+      summary: List active organization contexts available to the current account
+      security: [{ managementBearer: [] }]
+      responses:
+        "200":
+          description: Active memberships.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/IdentityMembership" } }
+        "401": { $ref: "#/components/responses/IdentityUnauthorized" }
+  /v1/auth/switch-context:
+    post:
+      tags: [Identity]
+      operationId: switchAccountContext
+      summary: Revoke the current session and issue one for another active membership
+      security: [{ managementBearer: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SwitchContextRequest" } } }
+      responses:
+        "200": { description: New scoped session., content: { application/json: { schema: { $ref: "#/components/schemas/IdentitySessionResponse" } } } }
+        "401": { $ref: "#/components/responses/IdentityUnauthorized" }
+        "403": { description: Requested membership is unavailable. }
+  /v1/auth/invitations/accept:
+    post:
+      tags: [Identity]
+      operationId: acceptOrganizationInvitation
+      summary: Accept an invitation matching the authenticated account email
+      security: [{ managementBearer: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ActionTokenRequest" } } }
+      responses:
+        "200": { description: Invitation accepted. }
+        "400": { $ref: "#/components/responses/IdentityBadRequest" }
+        "401": { $ref: "#/components/responses/IdentityUnauthorized" }
+  /v1/auth/invitations/register:
+    post:
+      tags: [Identity]
+      operationId: registerFromOrganizationInvitation
+      summary: Create a verified account from an invitation when the email is not registered
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/InvitationRegistrationRequest" } } }
+      responses:
+        "200": { description: Account created and scoped session issued., content: { application/json: { schema: { $ref: "#/components/schemas/IdentitySessionResponse" } } } }
+        "400": { $ref: "#/components/responses/IdentityBadRequest" }
+        "409": { $ref: "#/components/responses/IdentityConflict" }
+  /v1/organization/members:
+    get:
+      tags: [Identity]
+      operationId: listOrganizationMembers
+      summary: List members when the current role permits membership visibility
+      security: [{ managementBearer: [] }]
+      responses:
+        "200": { description: Organization members., content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/OrganizationMember" } } } } }
+        "403": { description: Role is not permitted. }
+    post:
+      tags: [Identity]
+      operationId: inviteOrganizationMember
+      summary: Invite a member as organization owner
+      security: [{ managementBearer: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/InviteMemberRequest" } } }
+      responses:
+        "202": { description: Invitation sent. }
+        "403": { description: Role is not permitted. }
+  /v1/organization/members/{id}/role:
+    put:
+      tags: [Identity]
+      operationId: updateOrganizationMemberRole
+      summary: Change a non-owner role and revoke affected sessions
+      security: [{ managementBearer: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Uuid" } }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MemberRoleRequest" } } }
+      responses: { "204": { description: Role updated. }, "403": { description: Role is not permitted. }, "404": { description: Member not found. } }
+  /v1/organization/members/{id}/status:
+    put:
+      tags: [Identity]
+      operationId: updateOrganizationMemberStatus
+      summary: Suspend or reactivate a non-owner and revoke affected sessions
+      security: [{ managementBearer: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Uuid" } }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MemberStatusRequest" } } }
+      responses: { "204": { description: Status updated. }, "403": { description: Role is not permitted. }, "404": { description: Member not found. } }
+  /v1/organization/members/{id}:
+    delete:
+      tags: [Identity]
+      operationId: removeOrganizationMember
+      summary: Remove a non-owner and revoke affected sessions
+      security: [{ managementBearer: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Uuid" } }]
+      responses: { "204": { description: Member removed. }, "403": { description: Role is not permitted. }, "404": { description: Member not found. } }
+  /v1/organization/ownership:
+    post:
+      tags: [Identity]
+      operationId: transferOrganizationOwnership
+      summary: Atomically transfer ownership to an active member and revoke both sessions
+      security: [{ managementBearer: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/TransferOwnershipRequest" } } }
+      responses: { "204": { description: Ownership transferred. }, "403": { description: Current account is not owner. }, "404": { description: Target member not found. } }
   /health/live:
     get:
       tags: [Health]
@@ -705,6 +816,52 @@ components:
       properties:
         token: { type: string, minLength: 43, maxLength: 256, pattern: '^[A-Za-z0-9_-]+$' }
         password: { type: string, format: password, minLength: 12, maxLength: 1024 }
+    SwitchContextRequest:
+      type: object
+      additionalProperties: false
+      required: [organization_id]
+      properties: { organization_id: { $ref: "#/components/schemas/Uuid" } }
+    InviteMemberRequest:
+      type: object
+      additionalProperties: false
+      required: [email, role]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        role: { type: string, enum: [TENANT_ADMIN, OPERATOR, BILLING_VIEWER, AUDITOR] }
+    InvitationRegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [token, password, display_name]
+      properties:
+        token: { type: string, minLength: 43, maxLength: 256, pattern: '^[A-Za-z0-9_-]+$' }
+        password: { type: string, format: password, minLength: 12, maxLength: 1024 }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+    MemberRoleRequest:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties: { role: { type: string, enum: [TENANT_ADMIN, OPERATOR, BILLING_VIEWER, AUDITOR] } }
+    MemberStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [active]
+      properties: { active: { type: boolean } }
+    TransferOwnershipRequest:
+      type: object
+      additionalProperties: false
+      required: [user_id]
+      properties: { user_id: { $ref: "#/components/schemas/Uuid" } }
+    OrganizationMember:
+      type: object
+      additionalProperties: false
+      required: [id, email, display_name, role, active, created_at]
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        role: { $ref: "#/components/schemas/IdentityRole" }
+        active: { type: boolean }
+        created_at: { type: string, format: date-time }
     IdentityUser:
       type: object
       additionalProperties: false

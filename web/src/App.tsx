@@ -17,15 +17,16 @@ import {
   IconUser,
   IconWifi,
 } from '@arco-design/web-react/icon';
-import { logoutAccount, refreshStoredSession } from './api';
-import { clearSession, isSessionExpiringSoon, loadRefreshToken, loadSession } from './session';
-import type { ResourceDefinition, Session } from './types';
+import { acceptOrganizationInvitation, listAccountMemberships, logoutAccount, refreshStoredSession, switchAccountContext } from './api';
+import { clearSession, isSessionExpiringSoon, loadRefreshToken, loadSession, saveIdentitySession } from './session';
+import type { IdentityMembership, ResourceDefinition, Session } from './types';
 import { resourceDefinitions, pathDefinition } from './resource-definitions';
 import { SessionGate } from './components/SessionGate';
 import { Overview } from './components/Overview';
 import { ResourcePage } from './components/ResourcePage';
 import { SystemPage } from './components/SystemPage';
 import { AccountSecurity } from './components/AccountSecurity';
+import { OrganizationAccess } from './components/OrganizationAccess';
 
 const iconByKey: Record<string, React.ReactNode> = {
   sites: <IconLocation />,
@@ -53,6 +54,7 @@ export default function App() {
   const [selected, setSelected] = useState('overview');
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
+  const [memberships, setMemberships] = useState<IdentityMembership[]>([]);
 
   const selectedDefinition = useMemo(() => pageDefinition(selected), [selected]);
   const connect = useCallback((next: Session) => { setSession(next); }, []);
@@ -87,6 +89,21 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    if (!session) { setMemberships([]); return; }
+    void listAccountMemberships(session.token).then(setMemberships).catch(() => setMemberships(session.membership ? [session.membership] : []));
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    const token = new URLSearchParams(window.location.search).get('accept_invitation');
+    if (!token) return;
+    void acceptOrganizationInvitation(session.token, token).then(async () => {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      setMemberships(await listAccountMemberships(session.token));
+    }).catch(() => undefined);
+  }, [session]);
+
   if (restoring || !session) {
     return <SessionGate loading={restoring} onConnect={connect} />;
   }
@@ -109,6 +126,13 @@ export default function App() {
     </Menu>
   );
 
+  const switchContext = async (organizationId: string) => {
+    if (organizationId === session.membership?.organization_id) return;
+    const next = saveIdentitySession(await switchAccountContext(session.token, organizationId));
+    setSession(next);
+    setSelected('overview');
+  };
+
   return (
     <Layout className="app-layout">
       <Layout.Sider className={`app-sider ${mobileNav ? 'mobile-open' : ''}`} width={232} collapsedWidth={64} collapsed={collapsed}>
@@ -128,6 +152,7 @@ export default function App() {
           <Menu.Item key="peers"><IconWifi />对等与路径</Menu.Item>
           {resourceDefinitions.slice(5).map((item) => <Menu.Item key={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
           <Menu.Item key="system"><IconSettings />系统</Menu.Item>
+          {['ORGANIZATION_OWNER', 'TENANT_ADMIN', 'AUDITOR'].includes(session.membership?.role ?? session.claims.role ?? '') && <Menu.Item key="access"><IconSafe />成员与权限</Menu.Item>}
           <Menu.Item key="account"><IconUser />账户与安全</Menu.Item>
         </Menu>
         <div className="sidebar-foot">
@@ -141,8 +166,8 @@ export default function App() {
         <header className="topbar">
           <div className="topbar-context">
             <Button type="text" className="mobile-nav-button" icon={<IconMenuUnfold />} aria-label="打开导航" onClick={() => setMobileNav(true)} />
-            <Tag color="arcoblue">TENANT</Tag>
-            <Tooltip content={session.claims.tenant_id ?? 'JWT 未包含 tenant_id'}><span className="mono">{shortId(session.claims.tenant_id)}</span></Tooltip>
+            <Tag color="arcoblue">组织</Tag>
+            {memberships.length > 1 ? <Dropdown droplist={<Menu selectedKeys={[session.membership?.organization_id ?? '']} onClickMenuItem={(key) => void switchContext(key)}>{memberships.map((item) => <Menu.Item key={item.organization_id}>{item.organization_name}<small className="context-role">{item.role}</small></Menu.Item>)}</Menu>} position="bl"><button type="button" className="context-switch">{session.membership?.organization_name ?? shortId(session.claims.organization_id)} <IconDown /></button></Dropdown> : <Tooltip content={session.claims.tenant_id ?? 'JWT 未包含 tenant_id'}><span>{session.membership?.organization_name ?? shortId(session.claims.organization_id)}</span></Tooltip>}
           </div>
           <Dropdown droplist={accountMenu} position="br">
             <button className="account-button" type="button">
@@ -163,6 +188,7 @@ export default function App() {
           )}
           {selected === 'system' && <SystemPage session={session} />}
           {selected === 'account' && <AccountSecurity session={session} onDisconnect={clearLocalSession} />}
+          {selected === 'access' && <OrganizationAccess session={session} onSessionInvalidated={clearLocalSession} />}
         </Layout.Content>
         <footer className="workspace-footer">
           <Space size={6}><span className="secure-dot" /><Typography.Text type="secondary">Cloud API · same-origin /api</Typography.Text></Space>

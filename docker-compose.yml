@@ -27,7 +27,7 @@ services:
       target: runtime
       args: { PACKAGE: cloud-db, BINARY: cloud-db-migrate }
     environment:
-      DATABASE_URL: mysql://cloud_migrator:${MYSQL_MIGRATOR_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      DATABASE_URL: mysql://cloud_migrator:${MYSQL_MIGRATOR_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
     depends_on:
       mysql: { condition: service_healthy }
     networks: [candy-cloud-internal]
@@ -40,7 +40,7 @@ services:
       args: { PACKAGE: cloud-api, BINARY: cloud-api }
     restart: unless-stopped
     environment:
-      DATABASE_URL: mysql://cloud_api:${MYSQL_API_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      DATABASE_URL: mysql://cloud_api:${MYSQL_API_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
       CLOUD_API_BIND: 0.0.0.0:8080
       CLOUD_API_AUTH_PUBLIC_KEY_FILE: /run/secrets/cloud_api_auth_public_key
       CLOUD_API_AUTH_ISSUER: ${CLOUD_API_AUTH_ISSUER:?set CLOUD_API_AUTH_ISSUER}
@@ -65,7 +65,7 @@ services:
       args: { PACKAGE: cloud-identity, BINARY: cloud-identity }
     restart: unless-stopped
     environment:
-      DATABASE_URL: mysql://cloud_identity:${MYSQL_IDENTITY_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      DATABASE_URL: mysql://cloud_identity:${MYSQL_IDENTITY_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
       CLOUD_IDENTITY_BIND: 0.0.0.0:8082
       CLOUD_IDENTITY_SIGNING_KEY_FILE: /run/secrets/cloud_identity_signing_key
       CLOUD_IDENTITY_VERIFICATION_KEY_FILE: /run/secrets/cloud_identity_verification_key
@@ -109,7 +109,7 @@ services:
         CORE_MODULE_SHA256: ${CORE_MODULE_SHA256:?set CORE_MODULE_SHA256}
     restart: unless-stopped
     environment:
-      DATABASE_URL: mysql://cloud_auth:${MYSQL_AUTH_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      DATABASE_URL: mysql://cloud_auth:${MYSQL_AUTH_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
       CLOUD_AUTH_BIND: 0.0.0.0:8081
       CLOUD_SIGNING_KEY_FILE: /run/secrets/cloud_signing_key
       CLOUD_SIGNING_KEY_ID: ${CLOUD_SIGNING_KEY_ID:?set CLOUD_SIGNING_KEY_ID}
@@ -152,7 +152,7 @@ services:
         CORE_MODULE_SHA256: ${CORE_MODULE_SHA256:?set CORE_MODULE_SHA256}
     restart: unless-stopped
     environment:
-      DATABASE_URL: mysql://cloud_worker:${MYSQL_WORKER_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      DATABASE_URL: mysql://cloud_worker:${MYSQL_WORKER_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
       CANDY_ROUTE_SIGNING_KEY_ID: ${CANDY_ROUTE_SIGNING_KEY_ID:?set CANDY_ROUTE_SIGNING_KEY_ID}
       CANDY_ROUTE_SIGNING_KEY_HEX: ${CANDY_ROUTE_SIGNING_KEY_HEX:?set CANDY_ROUTE_SIGNING_KEY_HEX}
     depends_on:
@@ -180,7 +180,7 @@ services:
   reverse-proxy:
     image: caddy:2.9-alpine
     restart: unless-stopped
-    ports: ["443:443"]
+    ports: ["${CLOUD_HTTPS_PORT:-443}:443"]
     volumes:
       - ./docker/reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
       - candy-cloud-web-assets:/srv/web:ro

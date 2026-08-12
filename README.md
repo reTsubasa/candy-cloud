@@ -41,9 +41,15 @@ in [`docs/openapi-v1.yaml`](docs/openapi-v1.yaml) and
 
 Production also requires `CLOUD_IDENTITY_EMAIL_WEBHOOK_URL`: an HTTPS
 transactional-mail adapter that receives the one-time verification or reset
-token and constructs the customer-facing link. Verification links must target
+token and constructs the customer-facing link. Its `purpose` field may be
+`verify_email`, `reset_password`, or `organization_invitation`. Verification links must target
 `https://<cloud-host>/?verify_email=<token>`. The service will not start in
 production without it, so account recovery cannot silently degrade.
+
+Reset links target `https://<cloud-host>/?reset_password=<token>`. Organization
+invitation links target `https://<cloud-host>/?accept_invitation=<token>`; the
+recipient must sign in with the invited email before accepting, which prevents
+an invitation from taking over a different account identity.
 
 For local UI development:
 

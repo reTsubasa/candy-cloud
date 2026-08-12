@@ -92,6 +92,15 @@ def main() -> None:
         "/v1/auth/login": {"post:"},
         "/v1/auth/refresh": {"post:"},
         "/v1/auth/logout": {"post:"},
+        "/v1/auth/memberships": {"get:"},
+        "/v1/auth/switch-context": {"post:"},
+        "/v1/auth/invitations/accept": {"post:"},
+        "/v1/auth/invitations/register": {"post:"},
+        "/v1/organization/members": {"get:", "post:"},
+        "/v1/organization/members/{id}/role": {"put:"},
+        "/v1/organization/members/{id}/status": {"put:"},
+        "/v1/organization/members/{id}": {"delete:"},
+        "/v1/organization/ownership": {"post:"},
         "/health/live": {"get:"},
         "/health/ready": {"get:"},
         "/health/degraded": {"get:"},
@@ -128,7 +137,7 @@ def main() -> None:
     require(blocks["/v1/auth/register"], '"202"', "identity registration")
     require(blocks["/v1/auth/verify-email"], "IdentitySessionResponse", "identity verification")
     require(blocks["/v1/auth/logout"], "managementBearer", "identity logout security")
-    for route in ["/v1/auth/register", "/v1/auth/login", "/v1/auth/refresh", "/v1/auth/logout", "/v1/auth/verify-email", "/v1/auth/request-email-verification", "/v1/auth/request-password-reset", "/v1/auth/reset-password", "/v1/auth/sessions"]:
+    for route in ["/v1/auth/register", "/v1/auth/login", "/v1/auth/refresh", "/v1/auth/logout", "/v1/auth/verify-email", "/v1/auth/request-email-verification", "/v1/auth/request-password-reset", "/v1/auth/reset-password", "/v1/auth/sessions", "/v1/auth/memberships", "/v1/auth/switch-context", "/v1/auth/invitations/accept", "/v1/auth/invitations/register", "/v1/organization/members", "/v1/organization/ownership"]:
         require(identity, route, "cloud-identity router")
     for boundary in ["Argon2", "rotate_refresh_token", "hash_token", "session_is_active"]:
         require(identity, boundary, "cloud-identity security boundary")

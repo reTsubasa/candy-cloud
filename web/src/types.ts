@@ -57,6 +57,15 @@ export type HumanSession = {
   revoked_at: string | null;
 };
 
+export type OrganizationMember = {
+  id: string;
+  email: string;
+  display_name: string;
+  role: string;
+  active: boolean;
+  created_at: string;
+};
+
 export type HealthState = {
   live: EndpointHealth;
   ready: EndpointHealth;

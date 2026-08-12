@@ -46,6 +46,7 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "human_sessions",
         "human_refresh_tokens",
         "human_action_tokens",
+        "organization_invitations",
     ];
     for table in required {
         let count: i64 = sqlx::query_scalar(
@@ -57,6 +58,18 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+}
+
+#[test]
+fn organization_access_migration_models_invites_and_membership_status_without_plaintext_tokens() {
+    let migration = include_str!("../migrations/0011_organization_access.sql");
+    assert!(migration.contains("CREATE TABLE organization_invitations"));
+    assert!(migration.contains("token_hash BINARY(32)"));
+    assert!(migration.contains("ADD COLUMN status ENUM('ACTIVE','SUSPENDED')"));
+    assert!(migration.contains("uq_organization_single_owner"));
+    assert!(migration.contains("owner_guard"));
+    assert!(!migration.contains("invitation_token VARCHAR"));
+    assert!(!migration.contains("ORGANIZATION_OWNER') NOT NULL"));
 }
 
 #[test]

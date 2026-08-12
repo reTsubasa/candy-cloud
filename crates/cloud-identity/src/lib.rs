@@ -22,8 +22,9 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 pub use cloud_db::identity::{
-    ActionTokenPurpose, IdentityRepository, IdentityRepositoryError, MembershipRole,
-    RegistrationWrite, SessionRecord,
+    ActionTokenPurpose, ContextSessionReplacement, IdentityRepository, IdentityRepositoryError,
+    InvitedRegistrationWrite, MembershipRole, OrganizationInvitation, RegistrationWrite,
+    SessionRecord,
 };
 
 const MIN_PASSWORD_LEN: usize = 12;
@@ -83,9 +84,16 @@ impl IdentityConfig {
 
 #[derive(Debug, Clone)]
 pub struct EmailMessage {
-    pub purpose: ActionTokenPurpose,
+    pub purpose: EmailPurpose,
     pub recipient: String,
     pub token: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmailPurpose {
+    VerifyEmail,
+    ResetPassword,
+    OrganizationInvitation,
 }
 
 #[async_trait::async_trait]
@@ -135,8 +143,9 @@ impl EmailDelivery for WebhookEmailDelivery {
             token: &'a str,
         }
         let purpose = match message.purpose {
-            ActionTokenPurpose::VerifyEmail => "verify_email",
-            ActionTokenPurpose::ResetPassword => "reset_password",
+            EmailPurpose::VerifyEmail => "verify_email",
+            EmailPurpose::ResetPassword => "reset_password",
+            EmailPurpose::OrganizationInvitation => "organization_invitation",
         };
         let mut request = self.client.post(&self.url).json(&Payload {
             purpose,
@@ -241,6 +250,10 @@ pub fn build_app(state: IdentityState) -> Router {
             post(request_password_reset),
         )
         .route("/v1/auth/reset-password", post(reset_password))
+        .route(
+            "/v1/auth/invitations/register",
+            post(register_from_invitation),
+        )
         .merge(authenticated_routes(state.clone()))
         .with_state(state)
 }
@@ -249,9 +262,30 @@ fn authenticated_routes(state: Arc<IdentityState>) -> Router<Arc<IdentityState>>
     Router::new()
         .route("/v1/auth/logout", post(logout))
         .route("/v1/auth/sessions", get(sessions))
+        .route("/v1/auth/memberships", get(list_memberships))
+        .route("/v1/auth/switch-context", post(switch_context))
+        .route("/v1/auth/invitations/accept", post(accept_invitation))
         .route(
             "/v1/auth/sessions/{id}",
             axum::routing::delete(revoke_session),
+        )
+        .route("/v1/organization/members", get(list_members))
+        .route("/v1/organization/invitations", post(invite_member))
+        .route(
+            "/v1/organization/members/{id}/role",
+            axum::routing::put(update_member_role),
+        )
+        .route(
+            "/v1/organization/members/{id}/status",
+            axum::routing::put(update_member_status),
+        )
+        .route(
+            "/v1/organization/members/{id}",
+            axum::routing::delete(remove_member),
+        )
+        .route(
+            "/v1/organization/ownership",
+            axum::routing::post(transfer_ownership),
         )
         .route_layer(middleware::from_fn_with_state(state, require_access_token))
 }
@@ -298,6 +332,44 @@ struct ResetPasswordRequest {
     token: String,
     password: String,
 }
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InviteMemberRequest {
+    email: String,
+    role: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcceptInvitationRequest {
+    token: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InvitationRegistrationRequest {
+    token: String,
+    password: String,
+    display_name: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateRoleRequest {
+    role: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateStatusRequest {
+    active: bool,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransferOwnershipRequest {
+    user_id: Uuid,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SwitchContextRequest {
+    organization_id: Uuid,
+}
 
 #[derive(Debug, Serialize)]
 struct AuthResponse {
@@ -336,11 +408,22 @@ struct SessionResponse {
     expires_at: DateTime<Utc>,
     revoked_at: Option<DateTime<Utc>>,
 }
+#[derive(Debug, Serialize)]
+struct MemberResponse {
+    id: Uuid,
+    email: String,
+    display_name: String,
+    role: &'static str,
+    active: bool,
+    created_at: DateTime<Utc>,
+}
 
 #[derive(Debug, Clone)]
 struct AccessContext {
     user_id: Uuid,
     session_id: Uuid,
+    organization_id: Uuid,
+    role: MembershipRole,
 }
 
 impl<S> FromRequestParts<S> for AccessContext
@@ -404,7 +487,7 @@ async fn register(
     let delivery = state
         .delivery
         .send(EmailMessage {
-            purpose: ActionTokenPurpose::VerifyEmail,
+            purpose: EmailPurpose::VerifyEmail,
             recipient: email,
             token,
         })
@@ -614,6 +697,220 @@ async fn reset_password(
     }))
 }
 
+async fn accept_invitation(
+    State(state): State<Arc<IdentityState>>,
+    access: AccessContext,
+    Json(req): Json<AcceptInvitationRequest>,
+) -> Result<Json<MessageResponse>, ApiError> {
+    let user = state
+        .repository
+        .find_user_by_session_id(access.session_id)
+        .await
+        .map_err(ApiError::Repository)?
+        .ok_or(ApiError::Unauthenticated)?;
+    state
+        .repository
+        .accept_organization_invitation(
+            access.user_id,
+            &user.email,
+            &hash_token(&req.token),
+            Utc::now(),
+        )
+        .await
+        .map_err(ApiError::Repository)?
+        .ok_or(ApiError::InvalidToken)?;
+    Ok(Json(MessageResponse {
+        message: "invitation_accepted",
+    }))
+}
+
+async fn register_from_invitation(
+    State(state): State<Arc<IdentityState>>,
+    Json(req): Json<InvitationRegistrationRequest>,
+) -> Result<Json<AuthResponse>, ApiError> {
+    validate_password(&req.password)?;
+    if req.display_name.trim().is_empty() || req.display_name.len() > 200 {
+        return Err(ApiError::InvalidRequest);
+    }
+    let result = state
+        .repository
+        .register_from_organization_invitation(
+            &InvitedRegistrationWrite {
+                user_id: Uuid::now_v7(),
+                display_name: req.display_name.trim().into(),
+                password_hash: hash_password(&req.password)?,
+            },
+            &hash_token(&req.token),
+            Utc::now(),
+        )
+        .await
+        .map_err(ApiError::Repository)?
+        .ok_or(ApiError::InvalidToken)?;
+    issue_session(&state, result.0, result.1, None).await
+}
+
+async fn list_members(
+    State(state): State<Arc<IdentityState>>,
+    access: AccessContext,
+) -> Result<Json<Vec<MemberResponse>>, ApiError> {
+    require_permission(access.role, Permission::ReadMembers)?;
+    let members = state
+        .repository
+        .list_organization_members(access.organization_id)
+        .await
+        .map_err(ApiError::Repository)?;
+    Ok(Json(
+        members
+            .into_iter()
+            .map(|member| MemberResponse {
+                id: member.user_id,
+                email: member.email,
+                display_name: member.display_name,
+                role: role_string(member.role),
+                active: member.active,
+                created_at: member.created_at,
+            })
+            .collect(),
+    ))
+}
+
+async fn invite_member(
+    State(state): State<Arc<IdentityState>>,
+    access: AccessContext,
+    Json(req): Json<InviteMemberRequest>,
+) -> Result<(StatusCode, Json<MessageResponse>), ApiError> {
+    require_permission(access.role, Permission::ManageMembers)?;
+    let email = canonical_email(&req.email)?;
+    let role = parse_assignable_role(&req.role)?;
+    let token = random_token();
+    let invitation = OrganizationInvitation {
+        id: Uuid::now_v7(),
+        organization_id: access.organization_id,
+        email: email.clone(),
+        role,
+        expires_at: Utc::now() + ChronoDuration::days(7),
+    };
+    state
+        .repository
+        .create_organization_invitation(&invitation, &hash_token(&token), access.user_id)
+        .await
+        .map_err(ApiError::Repository)?;
+    if let Err(error) = state
+        .delivery
+        .send(EmailMessage {
+            purpose: EmailPurpose::OrganizationInvitation,
+            recipient: email,
+            token,
+        })
+        .await
+    {
+        tracing::error!(event = "identity_invitation_delivery_failed", error = %error);
+        state
+            .repository
+            .revoke_organization_invitation(invitation.id, access.organization_id)
+            .await
+            .map_err(ApiError::Repository)?;
+        return Err(ApiError::Unavailable);
+    }
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(MessageResponse {
+            message: "invitation_sent",
+        }),
+    ))
+}
+
+async fn update_member_role(
+    State(state): State<Arc<IdentityState>>,
+    access: AccessContext,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Json(req): Json<UpdateRoleRequest>,
+) -> Result<StatusCode, ApiError> {
+    require_permission(access.role, Permission::ManageMembers)?;
+    let changed = state
+        .repository
+        .update_member_role_and_revoke_sessions(
+            access.organization_id,
+            access.user_id,
+            id,
+            parse_assignable_role(&req.role)?,
+            Utc::now(),
+        )
+        .await
+        .map_err(ApiError::Repository)?;
+    if changed {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+async fn update_member_status(
+    State(state): State<Arc<IdentityState>>,
+    access: AccessContext,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Json(req): Json<UpdateStatusRequest>,
+) -> Result<StatusCode, ApiError> {
+    require_permission(access.role, Permission::ManageMembers)?;
+    let changed = state
+        .repository
+        .set_member_active_and_revoke_sessions(
+            access.organization_id,
+            access.user_id,
+            id,
+            req.active,
+            Utc::now(),
+        )
+        .await
+        .map_err(ApiError::Repository)?;
+    if changed {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+async fn remove_member(
+    State(state): State<Arc<IdentityState>>,
+    access: AccessContext,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    require_permission(access.role, Permission::ManageMembers)?;
+    let changed = state
+        .repository
+        .remove_member_and_revoke_sessions(access.organization_id, access.user_id, id, Utc::now())
+        .await
+        .map_err(ApiError::Repository)?;
+    if changed {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+async fn transfer_ownership(
+    State(state): State<Arc<IdentityState>>,
+    access: AccessContext,
+    Json(req): Json<TransferOwnershipRequest>,
+) -> Result<StatusCode, ApiError> {
+    require_permission(access.role, Permission::TransferOwnership)?;
+    let changed = state
+        .repository
+        .transfer_organization_ownership(
+            access.organization_id,
+            access.user_id,
+            req.user_id,
+            Utc::now(),
+        )
+        .await
+        .map_err(ApiError::Repository)?;
+    if changed {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
 async fn logout(
     State(state): State<Arc<IdentityState>>,
     AccessContext { session_id, .. }: AccessContext,
@@ -638,6 +935,49 @@ async fn sessions(
         .await
         .map_err(ApiError::Repository)?;
     Ok(Json(records.into_iter().map(session_response).collect()))
+}
+
+async fn list_memberships(
+    State(state): State<Arc<IdentityState>>,
+    access: AccessContext,
+) -> Result<Json<Vec<MembershipResponse>>, ApiError> {
+    let memberships = state
+        .repository
+        .memberships_for_user(access.user_id)
+        .await
+        .map_err(ApiError::Repository)?;
+    Ok(Json(
+        memberships
+            .into_iter()
+            .map(|membership| MembershipResponse {
+                organization_id: membership.organization_id,
+                organization_name: membership.organization_name,
+                tenant_id: membership.tenant_id,
+                tenant_name: membership.tenant_name,
+                role: role_string(membership.role),
+            })
+            .collect(),
+    ))
+}
+
+async fn switch_context(
+    State(state): State<Arc<IdentityState>>,
+    access: AccessContext,
+    Json(req): Json<SwitchContextRequest>,
+) -> Result<Json<AuthResponse>, ApiError> {
+    let user = state
+        .repository
+        .find_user_by_session_id(access.session_id)
+        .await
+        .map_err(ApiError::Repository)?
+        .ok_or(ApiError::Unauthenticated)?;
+    let membership = state
+        .repository
+        .membership_in_organization(access.user_id, req.organization_id)
+        .await
+        .map_err(ApiError::Repository)?
+        .ok_or(ApiError::Forbidden)?;
+    issue_replacement_session(&state, access.session_id, user, membership).await
 }
 
 async fn revoke_session(
@@ -688,6 +1028,8 @@ async fn require_access_token(
     request.extensions_mut().insert(AccessContext {
         user_id: claims.sub,
         session_id: claims.sid,
+        organization_id: claims.organization_id,
+        role,
     });
     Ok(next.run(request).await)
 }
@@ -736,10 +1078,44 @@ async fn issue_rotated_session(
         .ok_or(ApiError::Unauthenticated)?;
     let membership = state
         .repository
-        .primary_membership(session.user_id)
+        .membership_in_organization(session.user_id, session.organization_id)
         .await
         .map_err(ApiError::Repository)?
         .ok_or(ApiError::Unavailable)?;
+    auth_response(state, &session, refresh, &user, &membership)
+}
+
+async fn issue_replacement_session(
+    state: &IdentityState,
+    previous_session_id: Uuid,
+    user: cloud_db::identity::HumanUser,
+    membership: cloud_db::identity::Membership,
+) -> Result<Json<AuthResponse>, ApiError> {
+    let now = Utc::now();
+    let session = SessionRecord {
+        id: Uuid::now_v7(),
+        family_id: Uuid::now_v7(),
+        user_id: user.id,
+        organization_id: membership.organization_id,
+        tenant_id: membership.tenant_id,
+        role: membership.role,
+        expires_at: now + chrono_duration(state.refresh_ttl),
+        revoked_at: None,
+    };
+    let refresh = random_token();
+    state
+        .repository
+        .replace_context_session(ContextSessionReplacement {
+            previous_session_id,
+            session: &session,
+            token_id: Uuid::now_v7(),
+            token_hash: &hash_token(&refresh),
+            token_expires_at: session.expires_at,
+            device_label: Some("context switch"),
+            now,
+        })
+        .await
+        .map_err(ApiError::Repository)?;
     auth_response(state, &session, refresh, &user, &membership)
 }
 
@@ -835,6 +1211,40 @@ fn role_string(role: MembershipRole) -> &'static str {
 fn parse_role(value: &str) -> Option<MembershipRole> {
     MembershipRole::parse(value).ok()
 }
+fn parse_assignable_role(value: &str) -> Result<MembershipRole, ApiError> {
+    let role = parse_role(value).ok_or(ApiError::InvalidRequest)?;
+    if role == MembershipRole::OrganizationOwner {
+        Err(ApiError::InvalidRequest)
+    } else {
+        Ok(role)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Permission {
+    ReadMembers,
+    ManageMembers,
+    TransferOwnership,
+}
+
+fn require_permission(role: MembershipRole, permission: Permission) -> Result<(), ApiError> {
+    let allowed = match permission {
+        Permission::ReadMembers => matches!(
+            role,
+            MembershipRole::OrganizationOwner
+                | MembershipRole::TenantAdmin
+                | MembershipRole::Auditor
+        ),
+        Permission::ManageMembers | Permission::TransferOwnership => {
+            role == MembershipRole::OrganizationOwner
+        }
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden)
+    }
+}
 fn canonical_email(value: &str) -> Result<String, ApiError> {
     let email = value.trim().to_ascii_lowercase();
     if email.is_empty() || email.len() > 254 || !email.contains('@') || email.contains(['\r', '\n'])
@@ -899,7 +1309,10 @@ async fn send_action_token(
     state
         .delivery
         .send(EmailMessage {
-            purpose,
+            purpose: match purpose {
+                ActionTokenPurpose::VerifyEmail => EmailPurpose::VerifyEmail,
+                ActionTokenPurpose::ResetPassword => EmailPurpose::ResetPassword,
+            },
             recipient,
             token,
         })
@@ -922,6 +1335,7 @@ pub enum ApiError {
     InvalidToken,
     InvalidRequest,
     NotFound,
+    Forbidden,
     Unavailable,
     Repository(IdentityRepositoryError),
 }
@@ -934,6 +1348,7 @@ impl IntoResponse for ApiError {
             Self::InvalidToken => (StatusCode::BAD_REQUEST, "invalid_token"),
             Self::InvalidRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
             Self::Unavailable | Self::Repository(IdentityRepositoryError::Database(_)) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
             }
@@ -971,6 +1386,37 @@ mod tests {
     fn opaque_token_is_never_stored_as_digest() {
         let token = random_token();
         assert_ne!(token.as_bytes(), hash_token(&token));
+    }
+    #[test]
+    fn organization_rbac_defaults_to_denied() {
+        assert!(
+            require_permission(MembershipRole::OrganizationOwner, Permission::ManageMembers)
+                .is_ok()
+        );
+        assert!(require_permission(MembershipRole::TenantAdmin, Permission::ReadMembers).is_ok());
+        assert!(require_permission(MembershipRole::Auditor, Permission::ReadMembers).is_ok());
+        for role in [
+            MembershipRole::TenantAdmin,
+            MembershipRole::Operator,
+            MembershipRole::BillingViewer,
+            MembershipRole::Auditor,
+        ] {
+            assert!(require_permission(role, Permission::ManageMembers).is_err());
+            assert!(require_permission(role, Permission::TransferOwnership).is_err());
+        }
+        assert!(require_permission(MembershipRole::Operator, Permission::ReadMembers).is_err());
+        assert!(
+            require_permission(MembershipRole::BillingViewer, Permission::ReadMembers).is_err()
+        );
+    }
+
+    #[test]
+    fn owner_role_cannot_be_assigned_through_member_mutation() {
+        assert!(parse_assignable_role("ORGANIZATION_OWNER").is_err());
+        assert_eq!(
+            parse_assignable_role("OPERATOR").unwrap(),
+            MembershipRole::Operator
+        );
     }
 
     #[tokio::test]

@@ -10,6 +10,8 @@ import type {
   IdentityRegistrationResponse,
   IdentityMessageResponse,
   HumanSession,
+  IdentityMembership,
+  OrganizationMember,
 } from './types';
 
 export class CloudApiError extends Error {
@@ -79,6 +81,69 @@ export function listAccountSessions(accessToken: string): Promise<HumanSession[]
 export function revokeAccountSession(accessToken: string, sessionId: string): Promise<void> {
   return authenticatedIdentityRequest<unknown>(`/v1/auth/sessions/${encodeURIComponent(sessionId)}`, accessToken, {
     method: 'DELETE',
+  }).then(() => undefined);
+}
+
+export function listAccountMemberships(accessToken: string): Promise<IdentityMembership[]> {
+  return authenticatedIdentityRequest('/v1/auth/memberships', accessToken);
+}
+
+export function switchAccountContext(accessToken: string, organizationId: string): Promise<IdentitySessionResponse> {
+  return authenticatedIdentityRequest('/v1/auth/switch-context', accessToken, {
+    method: 'POST',
+    body: JSON.stringify({ organization_id: organizationId }),
+  });
+}
+
+export function acceptOrganizationInvitation(accessToken: string, token: string): Promise<IdentityMessageResponse> {
+  return authenticatedIdentityRequest('/v1/auth/invitations/accept', accessToken, {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  });
+}
+
+export function registerFromOrganizationInvitation(token: string, displayName: string, password: string): Promise<IdentitySessionResponse> {
+  return identityRequest('/v1/auth/invitations/register', {
+    method: 'POST',
+    body: JSON.stringify({ token, display_name: displayName, password }),
+  });
+}
+
+export function listOrganizationMembers(accessToken: string): Promise<OrganizationMember[]> {
+  return authenticatedIdentityRequest('/v1/organization/members', accessToken);
+}
+
+export function inviteOrganizationMember(accessToken: string, email: string, role: string): Promise<IdentityMessageResponse> {
+  return authenticatedIdentityRequest('/v1/organization/members', accessToken, {
+    method: 'POST',
+    body: JSON.stringify({ email, role }),
+  });
+}
+
+export function updateOrganizationMemberRole(accessToken: string, memberId: string, role: string): Promise<void> {
+  return authenticatedIdentityRequest<unknown>(`/v1/organization/members/${encodeURIComponent(memberId)}/role`, accessToken, {
+    method: 'PUT',
+    body: JSON.stringify({ role }),
+  }).then(() => undefined);
+}
+
+export function updateOrganizationMemberStatus(accessToken: string, memberId: string, active: boolean): Promise<void> {
+  return authenticatedIdentityRequest<unknown>(`/v1/organization/members/${encodeURIComponent(memberId)}/status`, accessToken, {
+    method: 'PUT',
+    body: JSON.stringify({ active }),
+  }).then(() => undefined);
+}
+
+export function removeOrganizationMember(accessToken: string, memberId: string): Promise<void> {
+  return authenticatedIdentityRequest<unknown>(`/v1/organization/members/${encodeURIComponent(memberId)}`, accessToken, {
+    method: 'DELETE',
+  }).then(() => undefined);
+}
+
+export function transferOrganizationOwnership(accessToken: string, userId: string): Promise<void> {
+  return authenticatedIdentityRequest<unknown>('/v1/organization/ownership', accessToken, {
+    method: 'POST',
+    body: JSON.stringify({ user_id: userId }),
   }).then(() => undefined);
 }
 

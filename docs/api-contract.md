@@ -40,9 +40,9 @@ for enrollment, Grant, and Runtime delivery.
   and `ORGANIZATION_OWNER` membership. Passwords are Argon2id hashes. Access
   tokens expire in at most one hour; refresh credentials are random opaque
   values stored only as SHA-256 digests, rotate once per use, and revoke the
-  whole session family on reuse. A disabled user, removed membership, or
-  revoked session is denied by Identity immediately and by Cloud API when the
-  issued access token expires.
+  whole session family on reuse. A disabled user, changed or removed membership,
+  or revoked session is denied immediately by both Identity and Cloud API; both
+  services validate the active session and current membership against storage.
 - Roles are `ORGANIZATION_OWNER`, `TENANT_ADMIN`, `OPERATOR`,
   `BILLING_VIEWER`, and `AUDITOR`. Cloud API derives authorization from the
   signed tenant context; the Web client never supplies a role or tenant scope.
@@ -58,6 +58,14 @@ for enrollment, Grant, and Runtime delivery.
   recovery path; reset revokes every session. `POST /logout`, `GET /sessions`,
   and `DELETE /sessions/{id}` require a bearer token and perform immediate
   session checks.
+- Organization membership is server-authorized. Owners may invite members,
+  change non-owner roles, suspend or remove members, and transfer ownership.
+  Tenant administrators and auditors may list membership; all other member
+  management operations default to denied. Invitation credentials are opaque,
+  single-use values stored only as SHA-256 digests. Role, status, removal, and
+  ownership changes revoke affected sessions in the same database transaction.
+  Accounts can list their organization memberships and switch context by
+  rotating into a new session scoped to the selected membership.
 - Production requires `CLOUD_IDENTITY_EMAIL_WEBHOOK_URL` using HTTPS. Its
   optional authorization header is supplied by
   `CLOUD_IDENTITY_EMAIL_WEBHOOK_AUTHORIZATION`. The webhook payload contains

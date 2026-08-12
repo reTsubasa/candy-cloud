@@ -27,6 +27,21 @@ BACKUP_FILE=./backups/candy-cloud-YYYYMMDDTHHMMSSZ.sql ./docker/restore-smoke.sh
 
 Backups and signing keys must remain mode `0600`. MySQL data and backup files use separate storage locations.
 
+## SaaS identity release gate
+
+Run `tests/compose_saas_identity_e2e.sh` before an identity or reverse-proxy
+release. The gate creates disposable Ed25519 identity keys, Grant key material,
+TLS certificates and a Device CA, then exercises registration, verified-email
+session issuance, login, refresh rotation/reuse detection, management API
+authorization and logout against the real Compose MySQL deployment. It also
+asserts that management JWT and device mTLS credentials cannot cross API
+boundaries. All generated credentials and the database volume are deleted when
+the test exits.
+
+The production transactional-email webhook must use HTTPS. Private or
+enterprise webhook CAs belong in the operating-system trust store used by
+`cloud-identity`; do not disable certificate verification.
+
 ## Failure behavior
 
 When MySQL is unavailable, new writes and Grant issuance fail closed. Existing unexpired Grants remain locally verifiable by Candy Cloud Server and the customer data plane does not depend on this Compose stack.

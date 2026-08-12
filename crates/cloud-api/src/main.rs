@@ -12,7 +12,8 @@ async fn main() -> anyhow::Result<()> {
         std::path::Path::new(&std::env::var("CLOUD_API_AUTH_PUBLIC_KEY_FILE")?),
         &std::env::var("CLOUD_API_AUTH_ISSUER")?,
         &std::env::var("CLOUD_API_AUTH_AUDIENCE")?,
-    )?;
+    )?
+    .with_identity_repository(cloud_db::identity::IdentityRepository::new(pool.clone()));
     let app = cloud_api::app_with_authentication(
         cloud_db::control::ControlRepository::new(pool),
         authenticator,
