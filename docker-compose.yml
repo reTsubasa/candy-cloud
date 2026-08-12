@@ -125,7 +125,6 @@ services:
       timeout: 3s
       retries: 3
   cloud-web:
-    platform: linux/amd64
     build:
       context: .
       dockerfile: docker/web.Dockerfile

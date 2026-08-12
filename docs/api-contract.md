@@ -116,8 +116,7 @@ authorized data-plane session.
 
 ## Runtime configuration synchronization
 
-The Runtime delivery endpoints are part of the V1 contract being implemented
-in this delivery branch:
+The Runtime delivery endpoints are implemented as part of the V1 contract:
 
 ```text
 GET  /auth/v1/runtime/capabilities
