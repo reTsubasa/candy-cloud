@@ -157,7 +157,13 @@ services:
       - $work:/run/test-secrets:ro
 EOF
 
-compose up -d --build reverse-proxy
+# Compose Bake may compile every Rust service concurrently and exhaust a
+# developer workstation. Build explicitly in dependency order, then start the
+# exact same images without allowing Compose to trigger a parallel rebuild.
+for service in cloud-web migrate cloud-api cloud-identity cloud-auth; do
+  compose build "$service"
+done
+compose up -d --no-build reverse-proxy
 
 base="https://localhost:$https_port"
 for _ in $(seq 1 120); do
