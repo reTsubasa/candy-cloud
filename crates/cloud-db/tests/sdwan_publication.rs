@@ -1,6 +1,8 @@
 use cloud_db::sdwan::{
-    ExpansionObjectKind, ExpansionObjectPublicationWrite, PublicationOutcome, SdwanError,
-    SdwanRepository, SegmentPublicationWrite, SignedObjectWrite, SiteProjectionPublicationWrite,
+    ExpansionObjectKind, ExpansionObjectPublicationWrite, PublicationOutcome,
+    RuntimeConfigurationApplyState, RuntimeConfigurationError, RuntimeConfigurationLookup,
+    RuntimeConfigurationState, RuntimeConfigurationStatusWrite, SdwanError, SdwanRepository,
+    SegmentPublicationWrite, SignedObjectWrite, SiteProjectionPublicationWrite,
 };
 use uuid::Uuid;
 
@@ -154,6 +156,19 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         .execute(&pool)
         .await
         .unwrap();
+    let runtime_lookup = RuntimeConfigurationLookup {
+        tenant_id,
+        device_id,
+        device_key_id,
+    };
+    let repository = SdwanRepository::new(pool.clone());
+    assert!(matches!(
+        repository
+            .current_runtime_configuration(&runtime_lookup)
+            .await
+            .unwrap(),
+        RuntimeConfigurationState::Unassigned
+    ));
     sqlx::query("INSERT INTO segment_attachments (id, tenant_id, segment_id, site_id, principal_kind, device_id, device_key_id, overlay_router_ipv4, state, epoch_floor) VALUES (?, ?, ?, ?, 'DEVICE', ?, ?, ?, 'ACTIVE', 1)")
         .bind(attachment_id)
         .bind(tenant_id)
@@ -165,8 +180,12 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         .execute(&pool)
         .await
         .unwrap();
-
-    let repository = SdwanRepository::new(pool.clone());
+    assert!(matches!(
+        repository
+            .current_runtime_configuration(&runtime_lookup)
+            .await,
+        Err(RuntimeConfigurationError::MissingCurrentProjection)
+    ));
     let mut write = publication(tenant_id, segment_id);
     write.projections[0].site_id = site_id;
     write.projections[0].attachment_id = attachment_id;
@@ -230,6 +249,42 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
             .unwrap(),
         Some((1, [8_u8; 32]))
     );
+    let RuntimeConfigurationState::Current(first_runtime) = repository
+        .current_runtime_configuration(&runtime_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("expected current Runtime configuration");
+    };
+    assert_eq!(
+        first_runtime.projection_publication_id,
+        write.projections[0].publication_id
+    );
+    assert_eq!(
+        first_runtime.signed_envelope,
+        write.projections[0].object.signed_envelope
+    );
+    repository
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: runtime_lookup.clone(),
+            projection_publication_id: first_runtime.projection_publication_id,
+            projection_content_hash: first_runtime.projection_content_hash,
+            envelope_sha256: first_runtime.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Active,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    let applied: String = sqlx::query_scalar(
+        "SELECT apply_state FROM runtime_configuration_status WHERE tenant_id = ? AND device_id = ? AND device_key_id = ?",
+    )
+    .bind(tenant_id)
+    .bind(device_id)
+    .bind(device_key_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(applied, "ACTIVE");
 
     let mut second = write.clone();
     second.publication_id = Uuid::new_v4();
@@ -267,6 +322,19 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
             .unwrap(),
         Some((2, [18_u8; 32]))
     );
+    assert!(matches!(
+        repository
+            .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+                lookup: runtime_lookup,
+                projection_publication_id: first_runtime.projection_publication_id,
+                projection_content_hash: first_runtime.projection_content_hash,
+                envelope_sha256: first_runtime.envelope_sha256(),
+                apply_state: RuntimeConfigurationApplyState::Active,
+                error_code: None,
+            })
+            .await,
+        Err(RuntimeConfigurationError::StaleConfiguration)
+    ));
 
     let mut gap = second.clone();
     gap.publication_id = Uuid::new_v4();

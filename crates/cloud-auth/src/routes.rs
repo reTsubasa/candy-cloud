@@ -1,11 +1,12 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use axum::{
+    body::Body,
     extract::{FromRequestParts, Json, Request, State},
-    http::{request::Parts, HeaderName, StatusCode},
+    http::{header, request::Parts, HeaderMap, HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post, put},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -187,6 +188,56 @@ pub enum GrantServiceError {
     Internal,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeConfigurationDelivery {
+    pub projection_publication_id: Uuid,
+    pub projection_id: Uuid,
+    pub segment_id: Uuid,
+    pub attachment_id: Uuid,
+    pub segment_generation: u64,
+    pub projection_generation: u64,
+    pub projection_content_hash: [u8; 32],
+    pub envelope_sha256: [u8; 32],
+    pub signed_envelope: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeConfigurationApplyState {
+    Active,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeConfigurationStatusCommand {
+    pub actor: AuthenticatedDevice,
+    pub projection_publication_id: Uuid,
+    pub projection_content_hash: [u8; 32],
+    pub envelope_sha256: [u8; 32],
+    pub apply_state: RuntimeConfigurationApplyState,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeConfigurationServiceError {
+    Conflict,
+    Unavailable,
+}
+
+pub trait RuntimeConfigurationService: Send + Sync + 'static {
+    fn current(
+        &self,
+        actor: AuthenticatedDevice,
+    ) -> ServiceFuture<
+        '_,
+        Result<Option<RuntimeConfigurationDelivery>, RuntimeConfigurationServiceError>,
+    >;
+
+    fn record_status(
+        &self,
+        command: RuntimeConfigurationStatusCommand,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>>;
+}
+
 /// The implementation owns database transactions, authorization snapshots, signing and audit.
 /// Handlers never create a database substitute and never receive a signing key or Grant envelope.
 pub trait TenantAuthService: Send + Sync + 'static {
@@ -249,6 +300,36 @@ where
     S: TenantAuthService,
 {
     authenticated_app(service).route_layer(middleware::from_fn_with_state(
+        Arc::new(authenticator),
+        require_device_identity,
+    ))
+}
+
+pub fn runtime_configuration_app<S>(service: Arc<S>) -> Router
+where
+    S: RuntimeConfigurationService,
+{
+    Router::new()
+        .route("/v1/runtime/capabilities", get(runtime_capabilities))
+        .route(
+            "/v1/runtime/configuration",
+            get(current_runtime_configuration::<S>),
+        )
+        .route(
+            "/v1/runtime/configuration/status",
+            put(record_runtime_configuration_status::<S>),
+        )
+        .with_state(service)
+}
+
+pub fn device_authenticated_runtime_app<S>(
+    service: Arc<S>,
+    authenticator: DeviceIdentityAuthenticator,
+) -> Router
+where
+    S: RuntimeConfigurationService,
+{
+    runtime_configuration_app(service).route_layer(middleware::from_fn_with_state(
         Arc::new(authenticator),
         require_device_identity,
     ))
@@ -391,6 +472,214 @@ where
     }))
 }
 
+const RUNTIME_CONFIGURATION_MEDIA_TYPE: &str =
+    "application/vnd.candy.site-projection-envelope.v1+octet-stream";
+const RUNTIME_REFRESH_SECONDS: u64 = 30;
+
+async fn runtime_capabilities(_actor: AuthenticatedDevice) -> Json<RuntimeCapabilitiesResponse> {
+    Json(RuntimeCapabilitiesResponse {
+        api_version: "v1",
+        wire_protocol: "0.3",
+        configuration_object: "site_projection_v1",
+        configuration_media_type: RUNTIME_CONFIGURATION_MEDIA_TYPE,
+        conditional_requests: ["etag", "if-none-match"],
+        status_values: ["active", "rejected"],
+        refresh: RuntimeRefreshCapabilities {
+            minimum_seconds: 15,
+            recommended_seconds: RUNTIME_REFRESH_SECONDS,
+            maximum_seconds: 300,
+            jitter_percent: 20,
+        },
+    })
+}
+
+async fn current_runtime_configuration<S>(
+    actor: AuthenticatedDevice,
+    State(service): State<Arc<S>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError>
+where
+    S: RuntimeConfigurationService,
+{
+    let delivery = service
+        .current(actor)
+        .await
+        .map_err(ApiError::RuntimeConfiguration)?;
+    let Some(delivery) = delivery else {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, max-age=30"),
+        );
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+        return Ok(response);
+    };
+    let etag = configuration_etag(&delivery.envelope_sha256);
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| if_none_match(value, &etag))
+    {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        insert_configuration_response_headers(&mut response, &delivery, &etag)?;
+        return Ok(response);
+    }
+    let mut response = Response::new(Body::empty());
+    insert_configuration_response_headers(&mut response, &delivery, &etag)?;
+    *response.body_mut() = Body::from(delivery.signed_envelope);
+    Ok(response)
+}
+
+async fn record_runtime_configuration_status<S>(
+    actor: AuthenticatedDevice,
+    State(service): State<Arc<S>>,
+    headers: HeaderMap,
+    Json(request): Json<RuntimeConfigurationStatusHttpRequest>,
+) -> Result<StatusCode, ApiError>
+where
+    S: RuntimeConfigurationService,
+{
+    let if_match = headers
+        .get(header::IF_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .ok_or(ApiError::InvalidRuntimeConfigurationStatus)?;
+    let envelope_sha256 =
+        parse_configuration_etag(if_match).ok_or(ApiError::InvalidRuntimeConfigurationStatus)?;
+    let projection_content_hash = decode_hash(&request.projection_content_hash)
+        .ok_or(ApiError::InvalidRuntimeConfigurationStatus)?;
+    let (apply_state, error_code) = match request.state {
+        RuntimeConfigurationApplyStateHttp::Active if request.error_code.is_none() => {
+            (RuntimeConfigurationApplyState::Active, None)
+        }
+        RuntimeConfigurationApplyStateHttp::Rejected => {
+            let error = request
+                .error_code
+                .filter(|value| valid_runtime_error_code(value))
+                .ok_or(ApiError::InvalidRuntimeConfigurationStatus)?;
+            (RuntimeConfigurationApplyState::Rejected, Some(error))
+        }
+        _ => return Err(ApiError::InvalidRuntimeConfigurationStatus),
+    };
+    service
+        .record_status(RuntimeConfigurationStatusCommand {
+            actor,
+            projection_publication_id: request.projection_publication_id,
+            projection_content_hash,
+            envelope_sha256,
+            apply_state,
+            error_code,
+        })
+        .await
+        .map_err(ApiError::RuntimeConfiguration)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn insert_configuration_response_headers(
+    response: &mut Response,
+    delivery: &RuntimeConfigurationDelivery,
+    etag: &str,
+) -> Result<(), ApiError> {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(RUNTIME_CONFIGURATION_MEDIA_TYPE),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-cache"),
+    );
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(etag).map_err(|_| ApiError::InvalidRuntimeConfigurationStatus)?,
+    );
+    for (name, value) in [
+        (
+            "x-candy-projection-publication-id",
+            delivery.projection_publication_id.to_string(),
+        ),
+        ("x-candy-projection-id", delivery.projection_id.to_string()),
+        ("x-candy-segment-id", delivery.segment_id.to_string()),
+        ("x-candy-attachment-id", delivery.attachment_id.to_string()),
+        (
+            "x-candy-segment-generation",
+            delivery.segment_generation.to_string(),
+        ),
+        (
+            "x-candy-projection-generation",
+            delivery.projection_generation.to_string(),
+        ),
+        (
+            "x-candy-projection-content-hash",
+            hex(&delivery.projection_content_hash),
+        ),
+        ("x-candy-refresh-after", RUNTIME_REFRESH_SECONDS.to_string()),
+    ] {
+        headers.insert(
+            HeaderName::from_static(name),
+            HeaderValue::from_str(&value)
+                .map_err(|_| ApiError::InvalidRuntimeConfigurationStatus)?,
+        );
+    }
+    Ok(())
+}
+
+fn configuration_etag(digest: &[u8; 32]) -> String {
+    format!("\"sha256-{}\"", hex(digest))
+}
+
+fn parse_configuration_etag(value: &str) -> Option<[u8; 32]> {
+    let value = value.trim().strip_prefix("\"sha256-")?.strip_suffix('"')?;
+    decode_hash(value)
+}
+
+fn if_none_match(header_value: &str, current: &str) -> bool {
+    header_value.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        candidate == "*" || candidate == current || candidate.strip_prefix("W/") == Some(current)
+    })
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(TABLE[(byte >> 4) as usize] as char);
+        output.push(TABLE[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn decode_hash(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64 {
+        return None;
+    }
+    let mut result = [0; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let high = hex_nibble(pair[0])?;
+        let low = hex_nibble(pair[1])?;
+        result[index] = (high << 4) | low;
+    }
+    Some(result)
+}
+
+fn hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn valid_runtime_error_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 80
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnrollmentChallengeHttpRequest {
@@ -469,6 +758,41 @@ struct GrantIssuanceHttpResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct RuntimeCapabilitiesResponse {
+    api_version: &'static str,
+    wire_protocol: &'static str,
+    configuration_object: &'static str,
+    configuration_media_type: &'static str,
+    conditional_requests: [&'static str; 2],
+    status_values: [&'static str; 2],
+    refresh: RuntimeRefreshCapabilities,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeRefreshCapabilities {
+    minimum_seconds: u64,
+    recommended_seconds: u64,
+    maximum_seconds: u64,
+    jitter_percent: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeConfigurationStatusHttpRequest {
+    projection_publication_id: Uuid,
+    projection_content_hash: String,
+    state: RuntimeConfigurationApplyStateHttp,
+    error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RuntimeConfigurationApplyStateHttp {
+    Active,
+    Rejected,
+}
+
+#[derive(Debug, Serialize)]
 struct ProblemResponse {
     code: &'static str,
 }
@@ -480,6 +804,8 @@ pub enum ApiError {
     InvalidRequest(DomainError),
     Enrollment(EnrollmentCoordinatorError),
     Service(GrantServiceError),
+    InvalidRuntimeConfigurationStatus,
+    RuntimeConfiguration(RuntimeConfigurationServiceError),
 }
 
 impl IntoResponse for ApiError {
@@ -509,6 +835,16 @@ impl IntoResponse for ApiError {
             }
             Self::Service(GrantServiceError::Internal) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+            }
+            Self::InvalidRuntimeConfigurationStatus => (
+                StatusCode::BAD_REQUEST,
+                "invalid_runtime_configuration_status",
+            ),
+            Self::RuntimeConfiguration(RuntimeConfigurationServiceError::Conflict) => {
+                (StatusCode::CONFLICT, "configuration_changed")
+            }
+            Self::RuntimeConfiguration(RuntimeConfigurationServiceError::Unavailable) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "configuration_unavailable")
             }
         };
         (status, Json(ProblemResponse { code })).into_response()

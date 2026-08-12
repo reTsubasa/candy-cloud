@@ -12,8 +12,10 @@ use crate::{
     grants::GrantSigner,
     issuance::IssuerConfig,
     keyring::load_signing_key,
-    routes::{device_authenticated_app, enrollment_app},
-    service::{DatabaseTenantAuthService, GrantIssuanceCoordinator},
+    routes::{device_authenticated_app, device_authenticated_runtime_app, enrollment_app},
+    service::{
+        DatabaseRuntimeConfigurationService, DatabaseTenantAuthService, GrantIssuanceCoordinator,
+    },
 };
 
 #[derive(Clone)]
@@ -97,7 +99,13 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
     let device_authenticator =
         DeviceIdentityAuthenticator::new(pool.clone(), config.environment.clone())
             .map_err(anyhow::Error::msg)?;
-    let grants = device_authenticated_app(grant_service, device_authenticator);
+    let grants = device_authenticated_app(grant_service, device_authenticator.clone());
+    let runtime_configuration = device_authenticated_runtime_app(
+        Arc::new(DatabaseRuntimeConfigurationService::new(
+            cloud_db::sdwan::SdwanRepository::new(pool.clone()),
+        )),
+        device_authenticator,
+    );
     let readiness = Arc::new(ReadinessState {
         control,
         config,
@@ -107,7 +115,10 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
         .with_state(readiness);
-    Ok(enrollment.merge(grants).merge(health))
+    Ok(enrollment
+        .merge(grants)
+        .merge(runtime_configuration)
+        .merge(health))
 }
 
 async fn live() -> &'static str {

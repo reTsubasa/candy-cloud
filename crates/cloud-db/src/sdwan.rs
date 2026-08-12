@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use chrono::Utc;
+use sha2::{Digest, Sha256};
 use sqlx::{MySql, Row, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
@@ -10,6 +12,145 @@ const MAX_SIGNED_ENVELOPE_LEN: usize = 1024 * 1024;
 const MAX_ACTOR_ID_LEN: usize = 120;
 const MAX_PROJECTIONS: usize = 4096;
 const MAX_EXPANSION_OBJECTS: usize = 4096;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeConfigurationLookup {
+    pub tenant_id: Uuid,
+    pub device_id: Uuid,
+    pub device_key_id: Uuid,
+}
+
+impl RuntimeConfigurationLookup {
+    fn validate(&self) -> Result<(), RuntimeConfigurationError> {
+        if self.tenant_id.is_nil() || self.device_id.is_nil() || self.device_key_id.is_nil() {
+            return Err(RuntimeConfigurationError::InvalidScope);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeConfigurationRecord {
+    pub projection_publication_id: Uuid,
+    pub projection_id: Uuid,
+    pub tenant_id: Uuid,
+    pub segment_id: Uuid,
+    pub site_id: Uuid,
+    pub attachment_id: Uuid,
+    pub device_id: Uuid,
+    pub device_key_id: Uuid,
+    pub segment_generation: u64,
+    pub segment_content_hash: [u8; 32],
+    pub projection_generation: u64,
+    pub projection_content_hash: [u8; 32],
+    pub signed_envelope: Vec<u8>,
+}
+
+impl RuntimeConfigurationRecord {
+    pub fn envelope_sha256(&self) -> [u8; 32] {
+        Sha256::digest(&self.signed_envelope).into()
+    }
+
+    fn validate(
+        &self,
+        lookup: &RuntimeConfigurationLookup,
+    ) -> Result<(), RuntimeConfigurationError> {
+        if self.projection_publication_id.is_nil()
+            || self.projection_id.is_nil()
+            || self.segment_id.is_nil()
+            || self.site_id.is_nil()
+            || self.attachment_id.is_nil()
+            || self.segment_generation == 0
+            || self.projection_generation == 0
+            || self.segment_content_hash == [0; 32]
+            || self.projection_content_hash == [0; 32]
+            || self.signed_envelope.is_empty()
+            || self.signed_envelope.len() > MAX_SIGNED_ENVELOPE_LEN
+            || self.tenant_id != lookup.tenant_id
+            || self.device_id != lookup.device_id
+            || self.device_key_id != lookup.device_key_id
+        {
+            return Err(RuntimeConfigurationError::InvalidRecord);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeConfigurationState {
+    Unassigned,
+    Current(Box<RuntimeConfigurationRecord>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeConfigurationApplyState {
+    Active,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeConfigurationStatusWrite {
+    pub lookup: RuntimeConfigurationLookup,
+    pub projection_publication_id: Uuid,
+    pub projection_content_hash: [u8; 32],
+    pub envelope_sha256: [u8; 32],
+    pub apply_state: RuntimeConfigurationApplyState,
+    pub error_code: Option<String>,
+}
+
+impl RuntimeConfigurationStatusWrite {
+    fn validate(&self) -> Result<(), RuntimeConfigurationError> {
+        self.lookup.validate()?;
+        let error_is_valid = self.error_code.as_deref().is_none_or(|value| {
+            !value.is_empty()
+                && value.len() <= 80
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        });
+        if self.projection_publication_id.is_nil()
+            || self.projection_content_hash == [0; 32]
+            || self.envelope_sha256 == [0; 32]
+            || !error_is_valid
+            || matches!(self.apply_state, RuntimeConfigurationApplyState::Active)
+                != self.error_code.is_none()
+        {
+            return Err(RuntimeConfigurationError::InvalidScope);
+        }
+        Ok(())
+    }
+}
+
+impl RuntimeConfigurationApplyState {
+    fn database_value(self) -> &'static str {
+        match self {
+            Self::Active => "ACTIVE",
+            Self::Rejected => "REJECTED",
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum RuntimeConfigurationError {
+    #[error("invalid Runtime configuration scope")]
+    InvalidScope,
+    #[error("device has multiple active Runtime attachments or projections")]
+    AmbiguousConfiguration,
+    #[error("an active attachment has no projection for the current Segment publication")]
+    MissingCurrentProjection,
+    #[error("persisted Runtime configuration is invalid")]
+    InvalidRecord,
+    #[error("the reported Runtime configuration is no longer current")]
+    StaleConfiguration,
+    #[error("database error: {0}")]
+    Database(String),
+}
+
+impl From<sqlx::Error> for RuntimeConfigurationError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Database(error.to_string())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ipv4Prefix {
@@ -435,6 +576,72 @@ impl SdwanRepository {
         Self { pool }
     }
 
+    pub async fn current_runtime_configuration(
+        &self,
+        lookup: &RuntimeConfigurationLookup,
+    ) -> Result<RuntimeConfigurationState, RuntimeConfigurationError> {
+        lookup.validate()?;
+        let mut transaction = self.pool.begin().await?;
+        let result = load_current_runtime_configuration(&mut transaction, lookup, false).await;
+        match result {
+            Ok(configuration) => {
+                transaction.commit().await?;
+                Ok(configuration)
+            }
+            Err(error) => {
+                transaction.rollback().await?;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn record_runtime_configuration_status(
+        &self,
+        status: &RuntimeConfigurationStatusWrite,
+    ) -> Result<(), RuntimeConfigurationError> {
+        status.validate()?;
+        let mut transaction = self.pool.begin().await?;
+        let configuration =
+            load_current_runtime_configuration(&mut transaction, &status.lookup, true).await?;
+        let RuntimeConfigurationState::Current(configuration) = configuration else {
+            transaction.rollback().await?;
+            return Err(RuntimeConfigurationError::StaleConfiguration);
+        };
+        if configuration.projection_publication_id != status.projection_publication_id
+            || configuration.projection_content_hash != status.projection_content_hash
+            || configuration.envelope_sha256() != status.envelope_sha256
+        {
+            transaction.rollback().await?;
+            return Err(RuntimeConfigurationError::StaleConfiguration);
+        }
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO runtime_configuration_status (tenant_id, device_id, device_key_id, projection_publication_id, envelope_sha256, apply_state, error_code, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE projection_publication_id = VALUES(projection_publication_id), envelope_sha256 = VALUES(envelope_sha256), apply_state = VALUES(apply_state), error_code = VALUES(error_code), reported_at = VALUES(reported_at)",
+        )
+        .bind(status.lookup.tenant_id)
+        .bind(status.lookup.device_id)
+        .bind(status.lookup.device_key_id)
+        .bind(configuration.projection_publication_id)
+        .bind(status.envelope_sha256.as_slice())
+        .bind(status.apply_state.database_value())
+        .bind(status.error_code.as_deref())
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?;
+        let device_update = sqlx::query("UPDATE devices SET last_seen_at = ? WHERE tenant_id = ? AND id = ? AND status = 'ACTIVE'")
+            .bind(now)
+            .bind(status.lookup.tenant_id)
+            .bind(status.lookup.device_id)
+            .execute(&mut *transaction)
+            .await?;
+        if device_update.rows_affected() != 1 {
+            transaction.rollback().await?;
+            return Err(RuntimeConfigurationError::StaleConfiguration);
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
     pub async fn current_head(
         &self,
         tenant_id: Uuid,
@@ -627,6 +834,66 @@ impl SdwanRepository {
         transaction.commit().await?;
         Ok(PublicationOutcome::Published)
     }
+}
+
+async fn load_current_runtime_configuration(
+    transaction: &mut Transaction<'_, MySql>,
+    lookup: &RuntimeConfigurationLookup,
+    lock: bool,
+) -> Result<RuntimeConfigurationState, RuntimeConfigurationError> {
+    let suffix = if lock { " FOR UPDATE" } else { "" };
+    let attachment_query = format!(
+        "SELECT a.id FROM segment_attachments a JOIN tenants t ON t.id = a.tenant_id AND t.status = 'ACTIVE' JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN devices d ON d.id = a.device_id AND d.tenant_id = a.tenant_id AND d.status = 'ACTIVE' JOIN device_keys dk ON dk.id = a.device_key_id AND dk.tenant_id = a.tenant_id AND dk.device_id = d.id AND dk.status = 'ACTIVE' WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY'){suffix}"
+    );
+    let attachments = sqlx::query(&attachment_query)
+        .bind(lookup.tenant_id)
+        .bind(lookup.device_id)
+        .bind(lookup.device_key_id)
+        .fetch_all(&mut **transaction)
+        .await?;
+    match attachments.len() {
+        0 => return Ok(RuntimeConfigurationState::Unassigned),
+        1 => {}
+        _ => return Err(RuntimeConfigurationError::AmbiguousConfiguration),
+    }
+
+    let projection_query = format!(
+        "SELECT p.id AS projection_publication_id, p.projection_id, p.tenant_id, p.segment_id, p.site_id, p.attachment_id, p.device_id, p.device_key_id, p.segment_generation, p.segment_content_hash, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope FROM segment_attachments a JOIN tenants t ON t.id = a.tenant_id AND t.status = 'ACTIVE' JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = seg.current_generation AND p.segment_content_hash = seg.current_content_hash JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY'){suffix}"
+    );
+    let rows = sqlx::query(&projection_query)
+        .bind(lookup.tenant_id)
+        .bind(lookup.device_id)
+        .bind(lookup.device_key_id)
+        .fetch_all(&mut **transaction)
+        .await?;
+    if rows.is_empty() {
+        return Err(RuntimeConfigurationError::MissingCurrentProjection);
+    }
+    if rows.len() != 1 {
+        return Err(RuntimeConfigurationError::AmbiguousConfiguration);
+    }
+    let row = &rows[0];
+    let record = RuntimeConfigurationRecord {
+        projection_publication_id: row.try_get("projection_publication_id")?,
+        projection_id: row.try_get("projection_id")?,
+        tenant_id: row.try_get("tenant_id")?,
+        segment_id: row.try_get("segment_id")?,
+        site_id: row.try_get("site_id")?,
+        attachment_id: row.try_get("attachment_id")?,
+        device_id: row.try_get("device_id")?,
+        device_key_id: row.try_get("device_key_id")?,
+        segment_generation: row.try_get("segment_generation")?,
+        segment_content_hash: decode_hash(&row.try_get::<Vec<u8>, _>("segment_content_hash")?)
+            .map_err(|_| RuntimeConfigurationError::InvalidRecord)?,
+        projection_generation: row.try_get("projection_generation")?,
+        projection_content_hash: decode_hash(
+            &row.try_get::<Vec<u8>, _>("projection_content_hash")?,
+        )
+        .map_err(|_| RuntimeConfigurationError::InvalidRecord)?,
+        signed_envelope: row.try_get("signed_envelope")?,
+    };
+    record.validate(lookup)?;
+    Ok(RuntimeConfigurationState::Current(Box::new(record)))
 }
 
 async fn validate_projection_ownership(

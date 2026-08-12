@@ -5,6 +5,11 @@ use cloud_db::{
     repositories::{
         GrantIssuanceRepository, GrantIssuanceWrite, GrantRecordOutcome, StoredGrantRecord,
     },
+    sdwan::{
+        RuntimeConfigurationApplyState as DbRuntimeConfigurationApplyState,
+        RuntimeConfigurationError, RuntimeConfigurationLookup, RuntimeConfigurationState,
+        RuntimeConfigurationStatusWrite, SdwanRepository,
+    },
 };
 
 use crate::{
@@ -16,7 +21,9 @@ use crate::{
     },
     routes::{
         AuthenticatedTenant, EnrollmentReceipt, GrantIssuanceReceipt, GrantIssueCommand,
-        GrantServiceError, ServiceFuture, TenantAuthService,
+        GrantServiceError, RuntimeConfigurationApplyState, RuntimeConfigurationDelivery,
+        RuntimeConfigurationService, RuntimeConfigurationServiceError,
+        RuntimeConfigurationStatusCommand, ServiceFuture, TenantAuthService,
     },
 };
 
@@ -105,6 +112,87 @@ impl TenantAuthService for DatabaseTenantAuthService {
                 replayed: delivery.replayed,
                 access_grant: delivery.raw().to_vec(),
             })
+        })
+    }
+}
+
+pub struct DatabaseRuntimeConfigurationService {
+    repository: SdwanRepository,
+}
+
+impl DatabaseRuntimeConfigurationService {
+    pub fn new(repository: SdwanRepository) -> Self {
+        Self { repository }
+    }
+}
+
+impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
+    fn current(
+        &self,
+        actor: crate::routes::AuthenticatedDevice,
+    ) -> ServiceFuture<
+        '_,
+        Result<Option<RuntimeConfigurationDelivery>, RuntimeConfigurationServiceError>,
+    > {
+        Box::pin(async move {
+            let lookup = RuntimeConfigurationLookup {
+                tenant_id: actor.tenant_id(),
+                device_id: actor.device_id(),
+                device_key_id: actor.device_key_id(),
+            };
+            match self.repository.current_runtime_configuration(&lookup).await {
+                Ok(RuntimeConfigurationState::Unassigned) => Ok(None),
+                Ok(RuntimeConfigurationState::Current(record)) => {
+                    Ok(Some(RuntimeConfigurationDelivery {
+                        projection_publication_id: record.projection_publication_id,
+                        projection_id: record.projection_id,
+                        segment_id: record.segment_id,
+                        attachment_id: record.attachment_id,
+                        segment_generation: record.segment_generation,
+                        projection_generation: record.projection_generation,
+                        projection_content_hash: record.projection_content_hash,
+                        envelope_sha256: record.envelope_sha256(),
+                        signed_envelope: record.signed_envelope,
+                    }))
+                }
+                Err(_) => Err(RuntimeConfigurationServiceError::Unavailable),
+            }
+        })
+    }
+
+    fn record_status(
+        &self,
+        command: RuntimeConfigurationStatusCommand,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async move {
+            let status = RuntimeConfigurationStatusWrite {
+                lookup: RuntimeConfigurationLookup {
+                    tenant_id: command.actor.tenant_id(),
+                    device_id: command.actor.device_id(),
+                    device_key_id: command.actor.device_key_id(),
+                },
+                projection_publication_id: command.projection_publication_id,
+                projection_content_hash: command.projection_content_hash,
+                envelope_sha256: command.envelope_sha256,
+                apply_state: match command.apply_state {
+                    RuntimeConfigurationApplyState::Active => {
+                        DbRuntimeConfigurationApplyState::Active
+                    }
+                    RuntimeConfigurationApplyState::Rejected => {
+                        DbRuntimeConfigurationApplyState::Rejected
+                    }
+                },
+                error_code: command.error_code,
+            };
+            self.repository
+                .record_runtime_configuration_status(&status)
+                .await
+                .map_err(|error| match error {
+                    RuntimeConfigurationError::StaleConfiguration => {
+                        RuntimeConfigurationServiceError::Conflict
+                    }
+                    _ => RuntimeConfigurationServiceError::Unavailable,
+                })
         })
     }
 }

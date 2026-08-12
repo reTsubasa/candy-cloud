@@ -44,7 +44,7 @@ impl DeviceCertificateIdentityRepository {
             return Err(RepositoryError::InvalidDeviceCertificateScope);
         }
         let row = sqlx::query(
-            "SELECT dc.organization_id, dc.tenant_id, d.id AS device_id, dk.id AS device_key_id, dc.assurance_level FROM device_certificates dc JOIN devices d ON d.id = dc.device_id AND d.tenant_id = dc.tenant_id JOIN device_keys dk ON dk.id = dc.device_key_id AND dk.device_id = d.id AND dk.tenant_id = dc.tenant_id WHERE d.id = ? AND dk.id = ? AND dc.certificate_der = ? AND dc.environment = ? AND d.status = 'ACTIVE' AND dk.status = 'ACTIVE' AND dc.status = 'ACTIVE' AND dc.not_before <= ? AND dc.not_after > ?",
+            "SELECT dc.organization_id, dc.tenant_id, d.id AS device_id, dk.id AS device_key_id, dc.assurance_level FROM device_certificates dc JOIN organizations org ON org.id = dc.organization_id AND org.status = 'ACTIVE' JOIN tenants t ON t.id = dc.tenant_id AND t.organization_id = org.id AND t.status = 'ACTIVE' JOIN devices d ON d.id = dc.device_id AND d.tenant_id = dc.tenant_id JOIN device_keys dk ON dk.id = dc.device_key_id AND dk.device_id = d.id AND dk.tenant_id = dc.tenant_id WHERE d.id = ? AND dk.id = ? AND dc.certificate_der = ? AND dc.environment = ? AND d.status = 'ACTIVE' AND dk.status = 'ACTIVE' AND dc.status = 'ACTIVE' AND dc.not_before <= ? AND dc.not_after > ?",
         )
         .bind(device_id)
         .bind(device_key_id)

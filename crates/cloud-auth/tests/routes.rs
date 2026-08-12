@@ -11,9 +11,12 @@ use cloud_auth::{
         EnrollmentCompleteReceipt, EnrollmentCoordinatorError,
     },
     routes::{
-        authenticated_app, enrollment_app, AuthenticatedDevice, AuthenticatedTenant,
-        EnrollmentHttpService, EnrollmentReceipt, GrantIssuanceReceipt, GrantIssueCommand,
-        GrantServiceError, ServiceFuture, TenantAuthService,
+        authenticated_app, enrollment_app, runtime_configuration_app, AuthenticatedDevice,
+        AuthenticatedTenant, EnrollmentHttpService, EnrollmentReceipt, GrantIssuanceReceipt,
+        GrantIssueCommand, GrantServiceError, RuntimeConfigurationApplyState,
+        RuntimeConfigurationDelivery, RuntimeConfigurationService,
+        RuntimeConfigurationServiceError, RuntimeConfigurationStatusCommand, ServiceFuture,
+        TenantAuthService,
     },
 };
 use http_body_util::BodyExt;
@@ -68,6 +71,44 @@ fn device_actor(
 struct RecordingEnrollmentService {
     challenges: Mutex<Vec<EnrollmentChallengeCommand>>,
     completions: Mutex<Vec<EnrollmentCompleteCommand>>,
+}
+
+struct RecordingRuntimeConfigurationService {
+    delivery: Mutex<Option<RuntimeConfigurationDelivery>>,
+    statuses: Mutex<Vec<RuntimeConfigurationStatusCommand>>,
+    status_result: Mutex<Result<(), RuntimeConfigurationServiceError>>,
+}
+
+impl RecordingRuntimeConfigurationService {
+    fn with_delivery(delivery: Option<RuntimeConfigurationDelivery>) -> Self {
+        Self {
+            delivery: Mutex::new(delivery),
+            statuses: Mutex::new(Vec::new()),
+            status_result: Mutex::new(Ok(())),
+        }
+    }
+}
+
+impl RuntimeConfigurationService for RecordingRuntimeConfigurationService {
+    fn current(
+        &self,
+        _actor: AuthenticatedDevice,
+    ) -> ServiceFuture<
+        '_,
+        Result<Option<RuntimeConfigurationDelivery>, RuntimeConfigurationServiceError>,
+    > {
+        Box::pin(async move { Ok(self.delivery.lock().unwrap().clone()) })
+    }
+
+    fn record_status(
+        &self,
+        command: RuntimeConfigurationStatusCommand,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async move {
+            self.statuses.lock().unwrap().push(command);
+            *self.status_result.lock().unwrap()
+        })
+    }
 }
 
 impl EnrollmentHttpService for RecordingEnrollmentService {
@@ -294,4 +335,127 @@ fn grant_request_type_remains_domain_owned() {
         service_permission: "private.connect".into(),
     };
     assert_eq!(request.service_class, ServiceClass::Private);
+}
+
+fn runtime_delivery() -> RuntimeConfigurationDelivery {
+    RuntimeConfigurationDelivery {
+        projection_publication_id: Uuid::from_bytes([1; 16]),
+        projection_id: Uuid::from_bytes([2; 16]),
+        segment_id: Uuid::from_bytes([3; 16]),
+        attachment_id: Uuid::from_bytes([4; 16]),
+        segment_generation: 5,
+        projection_generation: 6,
+        projection_content_hash: [7; 32],
+        envelope_sha256: [8; 32],
+        signed_envelope: vec![0, 1, 2, 0xff],
+    }
+}
+
+#[tokio::test]
+async fn runtime_configuration_returns_raw_signed_envelope_and_honors_etag() {
+    let delivery = runtime_delivery();
+    let service = Arc::new(RecordingRuntimeConfigurationService::with_delivery(Some(
+        delivery.clone(),
+    )));
+    let app = runtime_configuration_app(service);
+    let actor = device_actor(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/runtime/configuration")
+                .extension(actor.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["content-type"],
+        "application/vnd.candy.site-projection-envelope.v1+octet-stream"
+    );
+    let etag = response.headers()["etag"].clone();
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        delivery.signed_envelope
+    );
+
+    let unchanged = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/runtime/configuration")
+                .header("if-none-match", etag)
+                .extension(actor)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unchanged.status(), StatusCode::NOT_MODIFIED);
+    assert!(unchanged
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn runtime_configuration_distinguishes_unassigned_and_records_bounded_status() {
+    let service = Arc::new(RecordingRuntimeConfigurationService::with_delivery(None));
+    let actor = device_actor(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+    let app = runtime_configuration_app(service.clone());
+
+    let unassigned = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/runtime/configuration")
+                .extension(actor.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unassigned.status(), StatusCode::NO_CONTENT);
+    assert_eq!(unassigned.headers()["retry-after"], "30");
+
+    let status = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/runtime/configuration/status")
+                .header("content-type", "application/json")
+                .header("if-match", format!("\"sha256-{}\"", "08".repeat(32)))
+                .extension(actor)
+                .body(Body::from(format!(
+                    r#"{{"projection_publication_id":"{}","projection_content_hash":"{}","state":"rejected","error_code":"signature_verification_failed"}}"#,
+                    Uuid::from_bytes([1; 16]),
+                    "07".repeat(32)
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.status(), StatusCode::NO_CONTENT);
+    let command = service.statuses.lock().unwrap().pop().unwrap();
+    assert_eq!(
+        command.apply_state,
+        RuntimeConfigurationApplyState::Rejected
+    );
+    assert_eq!(command.envelope_sha256, [8; 32]);
+    assert_eq!(command.projection_content_hash, [7; 32]);
 }
