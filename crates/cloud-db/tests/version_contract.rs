@@ -13,7 +13,7 @@ fn cloud_and_core_version_contract_is_pinned() {
     assert_eq!(candy["core_version"].as_str(), Some("0.3.10"));
     assert_eq!(
         candy["core_revision"].as_str(),
-        Some("37757a70a8b94d787b50fc612c276f80176ac355")
+        Some("a2ace9cb524dc5fcc2e01481ba9d515588a61936")
     );
     assert_eq!(candy["wire_line"].as_str(), Some("0.3"));
     assert_eq!(candy["auth_profile"].as_str(), Some("cloud_grant_v1"));
