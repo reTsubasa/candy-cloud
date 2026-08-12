@@ -6,6 +6,7 @@ pub mod control;
 pub mod device_identity;
 pub mod enrollment;
 pub mod enrollment_completion;
+pub mod identity;
 pub mod repositories;
 pub mod sdwan;
 
