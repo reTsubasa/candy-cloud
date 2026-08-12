@@ -4,5 +4,7 @@
 **/.git
 **/secrets
 **/.env*
+web/node_modules
+web/dist
 secrets
 *.log

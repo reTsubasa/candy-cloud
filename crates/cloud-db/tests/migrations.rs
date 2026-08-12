@@ -35,6 +35,7 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "site_route_projection_publications",
         "segment_route_publication_members",
         "segment_expansion_publications",
+        "runtime_configuration_status",
         "sdwan_control_resources",
         "sdwan_control_resource_references",
         "management_idempotency_records",
@@ -51,6 +52,18 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+}
+
+#[test]
+fn runtime_configuration_status_is_current_projection_scoped() {
+    let migration = include_str!("../migrations/0009_runtime_configuration_status.sql");
+    assert!(migration.contains("CREATE TABLE runtime_configuration_status"));
+    assert!(migration.contains("PRIMARY KEY (tenant_id, device_id, device_key_id)"));
+    assert!(migration.contains("UNIQUE KEY uq_projection_runtime_identity"));
+    assert!(migration
+        .contains("FOREIGN KEY (tenant_id, device_id, device_key_id, projection_publication_id)"));
+    assert!(migration.contains("apply_state ENUM('ACTIVE','REJECTED')"));
+    assert!(migration.contains("envelope_sha256 BINARY(32)"));
 }
 
 #[test]

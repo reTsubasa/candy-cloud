@@ -91,6 +91,20 @@ async fn runtime_mounts_enrollment_only_after_database_and_both_key_sets_load() 
         grant_requires_verified_device.status(),
         StatusCode::UNAUTHORIZED
     );
+    let runtime_requires_verified_device = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/runtime/configuration")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime_requires_verified_device.status(),
+        StatusCode::UNAUTHORIZED
+    );
 
     fs::remove_file(device_ca_key_path).unwrap();
     let unavailable = app

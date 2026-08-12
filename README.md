@@ -16,8 +16,27 @@
 ```bash
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+python3 tests/api_contract.py
+(cd web && corepack pnpm install --frozen-lockfile && corepack pnpm run build)
 tests/sdwan_route_contract.sh
 docker compose config
+```
+
+## Management console
+
+The Arco Design React console is served by the reverse proxy at `/`. It uses
+same-origin `/api` requests and accepts an externally issued EdDSA management
+JWT; the token is held only in `sessionStorage`. The complete V1 management,
+enrollment, Grant, and Runtime synchronization contract is available in
+[`docs/openapi-v1.yaml`](docs/openapi-v1.yaml) and
+[`docs/api-contract.md`](docs/api-contract.md).
+
+For local UI development:
+
+```bash
+cd web
+corepack pnpm install --frozen-lockfile
+corepack pnpm run dev
 ```
 
 ## SD-WAN signed control
