@@ -37,6 +37,7 @@ pub struct IdentityConfig {
     pub signing_key_id: String,
     pub issuer: String,
     pub audience: String,
+    pub environment: String,
     pub bind: String,
     pub access_ttl: Duration,
     pub refresh_ttl: Duration,
@@ -69,6 +70,8 @@ impl IdentityConfig {
             signing_key_id: required("CLOUD_IDENTITY_SIGNING_KEY_ID")?,
             issuer: required("CLOUD_IDENTITY_ISSUER")?,
             audience: required("CLOUD_IDENTITY_AUDIENCE")?,
+            environment: std::env::var("CLOUD_IDENTITY_ENVIRONMENT")
+                .unwrap_or_else(|_| "production".into()),
             bind: std::env::var("CLOUD_IDENTITY_BIND").unwrap_or_else(|_| "0.0.0.0:8082".into()),
             access_ttl: seconds("CLOUD_IDENTITY_ACCESS_TOKEN_TTL_SECONDS", 900, 3600)?,
             refresh_ttl: seconds(
@@ -101,6 +104,54 @@ pub struct UnconfiguredEmailDelivery;
 impl EmailDelivery for UnconfiguredEmailDelivery {
     async fn send(&self, _message: EmailMessage) -> Result<()> {
         anyhow::bail!("identity email delivery is not configured")
+    }
+}
+
+pub struct WebhookEmailDelivery {
+    client: reqwest::Client,
+    url: String,
+    authorization: Option<String>,
+}
+
+impl WebhookEmailDelivery {
+    pub fn new(url: String, authorization: Option<String>) -> Result<Self> {
+        let url = reqwest::Url::parse(&url).context("parse CLOUD_IDENTITY_EMAIL_WEBHOOK_URL")?;
+        if url.scheme() != "https" {
+            anyhow::bail!("CLOUD_IDENTITY_EMAIL_WEBHOOK_URL must use HTTPS");
+        }
+        Ok(Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()?,
+            url: url.into(),
+            authorization,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl EmailDelivery for WebhookEmailDelivery {
+    async fn send(&self, message: EmailMessage) -> Result<()> {
+        #[derive(Serialize)]
+        struct Payload<'a> {
+            purpose: &'a str,
+            recipient: &'a str,
+            token: &'a str,
+        }
+        let purpose = match message.purpose {
+            ActionTokenPurpose::VerifyEmail => "verify_email",
+            ActionTokenPurpose::ResetPassword => "reset_password",
+        };
+        let mut request = self.client.post(&self.url).json(&Payload {
+            purpose,
+            recipient: &message.recipient,
+            token: &message.token,
+        });
+        if let Some(authorization) = &self.authorization {
+            request = request.header("authorization", authorization);
+        }
+        request.send().await?.error_for_status()?;
+        Ok(())
     }
 }
 
