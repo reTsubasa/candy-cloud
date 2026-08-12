@@ -10,18 +10,20 @@ object version. A normal Candy data-plane connection does not call Cloud.
 
 ## Deployment paths
 
-The reference reverse proxy exposes two path prefixes and strips them before
+The reference reverse proxy exposes three path prefixes and strips them before
 forwarding:
 
 | Public path | Internal service | Identity |
 | --- | --- | --- |
 | `/api/v1/tenants/...` | `cloud-api:8080/v1/tenants/...` | EdDSA management bearer JWT |
+| `/identity/v1/auth/...` | `cloud-identity:8082/v1/auth/...` | Candy Cloud human account identity |
 | `/auth/v1/enrollment/...` | `cloud-auth:8081/v1/enrollment/...` | activation credential, then key proof |
 | `/auth/v1/access-grants` | `cloud-auth:8081/v1/access-grants` | Candy Device CA mTLS |
 | `/auth/v1/runtime/...` | `cloud-auth:8081/v1/runtime/...` | Candy Device CA mTLS |
 
 Health routes exist on both services. Use `/api/health/ready` for management
-readiness and `/auth/health/ready` for enrollment, Grant, and Runtime delivery.
+readiness, `/identity/health/ready` for human identity, and `/auth/health/ready`
+for enrollment, Grant, and Runtime delivery.
 
 ## Identity and security boundaries
 
@@ -34,6 +36,34 @@ readiness and `/auth/health/ready` for enrollment, Grant, and Runtime delivery.
   HTTP header. Caddy requests a client certificate, validates it against the
   Candy Device CA, removes any caller-supplied verified-certificate header, and
   forwards only the certificate it observed on the TLS connection.
+- Human registration atomically creates the user, organization, first tenant,
+  and `ORGANIZATION_OWNER` membership. Passwords are Argon2id hashes. Access
+  tokens expire in at most one hour; refresh credentials are random opaque
+  values stored only as SHA-256 digests, rotate once per use, and revoke the
+  whole session family on reuse. A disabled user, removed membership, or
+  revoked session is denied by Identity immediately and by Cloud API when the
+  issued access token expires.
+- Roles are `ORGANIZATION_OWNER`, `TENANT_ADMIN`, `OPERATOR`,
+  `BILLING_VIEWER`, and `AUDITOR`. Cloud API derives authorization from the
+  signed tenant context; the Web client never supplies a role or tenant scope.
+- Human API endpoints are available at `/identity/v1/auth/...`. Registration
+  accepts email, an at-least-12-character password, display name, and
+  organization name, and returns the first short-lived access token plus a
+  rotating opaque refresh credential. A verification email is dispatched in
+  the same request; delivery failure rolls the response back to `503` rather
+  than pretending that the account is verified. `POST /verify-email` consumes
+  that one-time credential. The `/request-email-verification`,
+  `/request-password-reset`, and `/reset-password` endpoints provide the
+  recovery path; reset revokes every session. `POST /logout`, `GET /sessions`,
+  and `DELETE /sessions/{id}` require a bearer token and perform immediate
+  session checks.
+- Production requires `CLOUD_IDENTITY_EMAIL_WEBHOOK_URL` using HTTPS. Its
+  optional authorization header is supplied by
+  `CLOUD_IDENTITY_EMAIL_WEBHOOK_AUTHORIZATION`. The webhook payload contains
+  only `purpose`, `recipient`, and an opaque single-use token; neither the
+  service nor its logs store that token. In a non-production environment,
+  delivery remains deliberately unavailable unless an explicit delivery
+  implementation is injected for tests.
 - Enrollment is intentionally public. The 32-byte activation credential owns
   organization and tenant scope. Body-supplied scope is rejected by strict JSON
   decoding.

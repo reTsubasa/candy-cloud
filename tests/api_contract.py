@@ -15,6 +15,7 @@ CONTROL = ROOT / "crates" / "cloud-control" / "src" / "lib.rs"
 CLOUD_API = ROOT / "crates" / "cloud-api" / "src" / "lib.rs"
 CLOUD_AUTH_ROUTES = ROOT / "crates" / "cloud-auth" / "src" / "routes.rs"
 CLOUD_AUTH_RUNTIME = ROOT / "crates" / "cloud-auth" / "src" / "runtime.rs"
+CLOUD_IDENTITY = ROOT / "crates" / "cloud-identity" / "src" / "lib.rs"
 CADDYFILE = ROOT / "docker" / "reverse-proxy" / "Caddyfile"
 
 
@@ -79,6 +80,7 @@ def main() -> None:
     cloud_api = read(CLOUD_API)
     auth_routes = read(CLOUD_AUTH_ROUTES)
     auth_runtime = read(CLOUD_AUTH_RUNTIME)
+    identity = read(CLOUD_IDENTITY)
     caddy = read(CADDYFILE)
 
     require(openapi, "openapi: 3.1.0", "OpenAPI")
@@ -86,6 +88,10 @@ def main() -> None:
     require(guide, "Candy Cloud V1 API and Runtime Integration Contract", "Runtime guide")
 
     expected_paths = {
+        "/v1/auth/register": {"post:"},
+        "/v1/auth/login": {"post:"},
+        "/v1/auth/refresh": {"post:"},
+        "/v1/auth/logout": {"post:"},
         "/health/live": {"get:"},
         "/health/ready": {"get:"},
         "/health/degraded": {"get:"},
@@ -114,6 +120,15 @@ def main() -> None:
     require(management_item, "IfMatch", "management mutation contract")
     require(management_item, '"412"', "management revision contract")
     require(management_item, '"428"', "management precondition contract")
+
+    for path in ["/v1/auth/register", "/v1/auth/login", "/v1/auth/refresh"]:
+        block = blocks[path]
+        require(block, "IdentitySessionResponse", f"identity path {path}")
+    require(blocks["/v1/auth/logout"], "managementBearer", "identity logout security")
+    for route in ["/v1/auth/register", "/v1/auth/login", "/v1/auth/refresh", "/v1/auth/logout", "/v1/auth/verify-email", "/v1/auth/request-email-verification", "/v1/auth/request-password-reset", "/v1/auth/reset-password", "/v1/auth/sessions"]:
+        require(identity, route, "cloud-identity router")
+    for boundary in ["Argon2", "rotate_refresh_token", "hash_token", "session_is_active"]:
+        require(identity, boundary, "cloud-identity security boundary")
 
     enrollment = blocks["/v1/enrollment/challenges"] + blocks["/v1/enrollment/complete"]
     reject(enrollment, "deviceMtls", "public enrollment contract")
@@ -191,6 +206,7 @@ def main() -> None:
         fail("Runtime routes being synchronized must retain all OpenAPI markers")
 
     require(caddy, "header_up -X-Candy-Verified-Device-Certificate-Der", "Caddy identity boundary")
+    require(caddy, "handle_path /identity/*", "Caddy human identity boundary")
     require(caddy, "{tls_client_certificate_der_base64}", "Caddy verified certificate forwarding")
     for statement in [
         "Cloud never instructs Runtime to remove the last-known-good configuration",

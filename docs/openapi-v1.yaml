@@ -2,10 +2,11 @@ openapi: 3.1.0
 info:
   title: Candy Cloud API
   version: 1.0.0
-  summary: Versioned management, enrollment, Grant, and Runtime synchronization API
+  summary: Versioned identity, management, enrollment, Grant, and Runtime synchronization API
   description: |-
-    Candy Cloud V1 has two identity planes. Management resources use an EdDSA
-    bearer token scoped to one organization and tenant. Device enrollment is a
+    Candy Cloud V1 separates human identity from device identity. Human
+    accounts receive an EdDSA bearer token scoped to one organization and
+    tenant. Device enrollment is a
     public, activation-credential-bound exchange. Grant issuance and Runtime
     synchronization require a device certificate authenticated by the trusted
     reverse proxy. Candy data-plane traffic never traverses this API.
@@ -21,14 +22,171 @@ servers:
     description: Management API through the reference reverse proxy
   - url: https://cloud.example.com/auth
     description: Enrollment, Grant, and Runtime synchronization API
+  - url: https://cloud.example.com/identity
+    description: Human account identity API through the reference reverse proxy
 tags:
   - name: Health
+  - name: Identity
   - name: Management
   - name: Enrollment
   - name: Grants
   - name: Runtime synchronization
 security: []
 paths:
+  /v1/auth/register:
+    post:
+      tags: [Identity]
+      operationId: registerAccount
+      summary: Create a human account, organization, tenant, and owner membership
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterAccountRequest" }
+      responses:
+        "201":
+          description: Account and first workspace created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IdentitySessionResponse" }
+        "400": { $ref: "#/components/responses/IdentityBadRequest" }
+        "409": { $ref: "#/components/responses/IdentityConflict" }
+        "503": { $ref: "#/components/responses/IdentityUnavailable" }
+  /v1/auth/login:
+    post:
+      tags: [Identity]
+      operationId: loginAccount
+      summary: Authenticate a human account and issue a rotated session family
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginAccountRequest" }
+      responses:
+        "200":
+          description: Authenticated session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IdentitySessionResponse" }
+        "400": { $ref: "#/components/responses/IdentityBadRequest" }
+        "401": { $ref: "#/components/responses/IdentityUnauthorized" }
+        "403": { $ref: "#/components/responses/IdentityEmailVerificationRequired" }
+        "503": { $ref: "#/components/responses/IdentityUnavailable" }
+  /v1/auth/refresh:
+    post:
+      tags: [Identity]
+      operationId: refreshAccountSession
+      summary: Exchange an opaque refresh credential exactly once
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefreshAccountSessionRequest" }
+      responses:
+        "200":
+          description: Rotated session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IdentitySessionResponse" }
+        "400": { $ref: "#/components/responses/IdentityBadRequest" }
+        "401": { $ref: "#/components/responses/IdentityUnauthorized" }
+        "503": { $ref: "#/components/responses/IdentityUnavailable" }
+  /v1/auth/logout:
+    post:
+      tags: [Identity]
+      operationId: logoutAccount
+      summary: Revoke the current human session
+      security: [{ managementBearer: [] }]
+      responses:
+        "200": { description: Current session revoked. }
+        "401": { $ref: "#/components/responses/IdentityUnauthorized" }
+        "503": { $ref: "#/components/responses/IdentityUnavailable" }
+  /v1/auth/verify-email:
+    post:
+      tags: [Identity]
+      operationId: verifyEmail
+      summary: Consume a single-use email verification credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActionTokenRequest" }
+      responses:
+        "200": { description: Email address verified. }
+        "400": { $ref: "#/components/responses/IdentityBadRequest" }
+        "503": { $ref: "#/components/responses/IdentityUnavailable" }
+  /v1/auth/request-email-verification:
+    post:
+      tags: [Identity]
+      operationId: requestEmailVerification
+      summary: Request a fresh verification email without leaking account existence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CredentialRequest" }
+      responses:
+        "200": { description: A generic delivery acknowledgement. }
+        "400": { $ref: "#/components/responses/IdentityBadRequest" }
+        "503": { $ref: "#/components/responses/IdentityUnavailable" }
+  /v1/auth/request-password-reset:
+    post:
+      tags: [Identity]
+      operationId: requestPasswordReset
+      summary: Request a password-reset email without leaking account existence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmailRequest" }
+      responses:
+        "200": { description: A generic delivery acknowledgement. }
+        "400": { $ref: "#/components/responses/IdentityBadRequest" }
+        "503": { $ref: "#/components/responses/IdentityUnavailable" }
+  /v1/auth/reset-password:
+    post:
+      tags: [Identity]
+      operationId: resetPassword
+      summary: Reset password and revoke every existing human session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResetPasswordRequest" }
+      responses:
+        "200": { description: Password updated and sessions revoked. }
+        "400": { $ref: "#/components/responses/IdentityBadRequest" }
+        "503": { $ref: "#/components/responses/IdentityUnavailable" }
+  /v1/auth/sessions:
+    get:
+      tags: [Identity]
+      operationId: listHumanSessions
+      summary: List non-expired sessions for the current human account
+      security: [{ managementBearer: [] }]
+      responses:
+        "200":
+          description: Sessions owned by the current account.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/HumanSession" }
+        "401": { $ref: "#/components/responses/IdentityUnauthorized" }
+  /v1/auth/sessions/{id}:
+    delete:
+      tags: [Identity]
+      operationId: revokeHumanSession
+      summary: Revoke a specific session owned by the current account
+      security: [{ managementBearer: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/Uuid" }
+      responses:
+        "204": { description: Session revoked. }
+        "401": { $ref: "#/components/responses/IdentityUnauthorized" }
+        "404": { description: Session was not found for the current account. }
   /health/live:
     get:
       tags: [Health]
@@ -493,6 +651,102 @@ components:
     Sha256Hex: { type: string, pattern: '^[0-9a-f]{64}$' }
     Base64Url32: { type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$' }
     Base64Url64: { type: string, minLength: 86, maxLength: 86, pattern: '^[A-Za-z0-9_-]{86}$' }
+    IdentityRole: { type: string, enum: [ORGANIZATION_OWNER, TENANT_ADMIN, OPERATOR, BILLING_VIEWER, AUDITOR] }
+    RegisterAccountRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password, display_name, organization_name]
+      properties:
+        email: { type: string, format: email, minLength: 3, maxLength: 254 }
+        password: { type: string, format: password, minLength: 12, maxLength: 1024 }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        organization_name: { type: string, minLength: 1, maxLength: 200 }
+    LoginAccountRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, minLength: 3, maxLength: 254 }
+        password: { type: string, format: password, minLength: 12, maxLength: 1024 }
+        device_label: { type: string, minLength: 1, maxLength: 200 }
+    RefreshAccountSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [refresh_token]
+      properties:
+        refresh_token: { type: string, minLength: 43, maxLength: 256, pattern: '^[A-Za-z0-9_-]+$' }
+    ActionTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: { type: string, minLength: 43, maxLength: 256, pattern: '^[A-Za-z0-9_-]+$' }
+    CredentialRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, minLength: 3, maxLength: 254 }
+        password: { type: string, format: password, minLength: 12, maxLength: 1024 }
+    EmailRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email: { type: string, format: email, minLength: 3, maxLength: 254 }
+    ResetPasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [token, password]
+      properties:
+        token: { type: string, minLength: 43, maxLength: 256, pattern: '^[A-Za-z0-9_-]+$' }
+        password: { type: string, format: password, minLength: 12, maxLength: 1024 }
+    IdentityUser:
+      type: object
+      additionalProperties: false
+      required: [id, email, display_name, email_verified]
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        email: { type: string, format: email }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        email_verified: { type: boolean }
+    IdentityMembership:
+      type: object
+      additionalProperties: false
+      required: [organization_id, organization_name, tenant_id, tenant_name, role]
+      properties:
+        organization_id: { $ref: "#/components/schemas/Uuid" }
+        organization_name: { type: string, minLength: 1, maxLength: 200 }
+        tenant_id: { $ref: "#/components/schemas/Uuid" }
+        tenant_name: { type: string, minLength: 1, maxLength: 200 }
+        role: { $ref: "#/components/schemas/IdentityRole" }
+    IdentitySessionResponse:
+      type: object
+      additionalProperties: false
+      required: [access_token, token_type, expires_in, refresh_token, user, membership]
+      properties:
+        access_token: { type: string, minLength: 1 }
+        token_type: { type: string, const: Bearer }
+        expires_in: { type: integer, minimum: 1, maximum: 3600 }
+        refresh_token: { type: string, minLength: 43, maxLength: 256, pattern: '^[A-Za-z0-9_-]+$' }
+        user: { $ref: "#/components/schemas/IdentityUser" }
+        membership: { $ref: "#/components/schemas/IdentityMembership" }
+    HumanSession:
+      type: object
+      additionalProperties: false
+      required: [id, organization_id, tenant_id, role, expires_at, revoked_at]
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        organization_id: { $ref: "#/components/schemas/Uuid" }
+        tenant_id: { $ref: "#/components/schemas/Uuid" }
+        role: { $ref: "#/components/schemas/IdentityRole" }
+        expires_at: { type: string, format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
+    IdentityProblem:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties: { code: { type: string } }
     ResourceState: { type: string, enum: [ACTIVE, DISABLED, DELETED] }
     ResourceMetadata:
       type: object
@@ -878,6 +1132,21 @@ components:
       properties:
         code: { type: string }
   responses:
+    IdentityBadRequest:
+      description: Invalid or unsupported identity request.
+      content: { application/json: { schema: { $ref: "#/components/schemas/IdentityProblem" } } }
+    IdentityUnauthorized:
+      description: Human account credentials, access token, or refresh credential are invalid.
+      content: { application/json: { schema: { $ref: "#/components/schemas/IdentityProblem" } } }
+    IdentityEmailVerificationRequired:
+      description: Account credentials are valid but the account is not yet active.
+      content: { application/json: { schema: { $ref: "#/components/schemas/IdentityProblem" } } }
+    IdentityConflict:
+      description: Account email is already registered.
+      content: { application/json: { schema: { $ref: "#/components/schemas/IdentityProblem" } } }
+    IdentityUnavailable:
+      description: Identity service cannot safely complete the operation.
+      content: { application/json: { schema: { $ref: "#/components/schemas/IdentityProblem" } } }
     MutationApplied:
       description: Mutation applied.
       content:
