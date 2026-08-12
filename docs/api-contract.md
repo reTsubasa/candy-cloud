@@ -48,11 +48,12 @@ for enrollment, Grant, and Runtime delivery.
   signed tenant context; the Web client never supplies a role or tenant scope.
 - Human API endpoints are available at `/identity/v1/auth/...`. Registration
   accepts email, an at-least-12-character password, display name, and
-  organization name, and returns the first short-lived access token plus a
-  rotating opaque refresh credential. A verification email is dispatched in
-  the same request; delivery failure rolls the response back to `503` rather
-  than pretending that the account is verified. `POST /verify-email` consumes
-  that one-time credential. The `/request-email-verification`,
+  organization name, and returns `202 verification_required`. A verification
+  email is dispatched in the same request; delivery failure removes the
+  pending account/workspace and returns `503`, so no unusable registration is
+  retained. `POST /verify-email` consumes that one-time credential, after
+  which login returns a short-lived access token plus a rotating opaque refresh
+  credential. The `/request-email-verification`,
   `/request-password-reset`, and `/reset-password` endpoints provide the
   recovery path; reset revokes every session. `POST /logout`, `GET /sessions`,
   and `DELETE /sessions/{id}` require a bearer token and perform immediate

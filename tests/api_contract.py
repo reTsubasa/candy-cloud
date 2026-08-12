@@ -121,9 +121,11 @@ def main() -> None:
     require(management_item, '"412"', "management revision contract")
     require(management_item, '"428"', "management precondition contract")
 
-    for path in ["/v1/auth/register", "/v1/auth/login", "/v1/auth/refresh"]:
+    for path in ["/v1/auth/login", "/v1/auth/refresh"]:
         block = blocks[path]
         require(block, "IdentitySessionResponse", f"identity path {path}")
+    require(blocks["/v1/auth/register"], "IdentityMessageResponse", "identity registration")
+    require(blocks["/v1/auth/register"], '"202"', "identity registration")
     require(blocks["/v1/auth/logout"], "managementBearer", "identity logout security")
     for route in ["/v1/auth/register", "/v1/auth/login", "/v1/auth/refresh", "/v1/auth/logout", "/v1/auth/verify-email", "/v1/auth/request-email-verification", "/v1/auth/request-password-reset", "/v1/auth/reset-password", "/v1/auth/sessions"]:
         require(identity, route, "cloud-identity router")

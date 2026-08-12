@@ -153,7 +153,7 @@ impl IdentityRepository {
         }
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
-            "INSERT INTO human_users (id, email_normalized, display_name, password_hash, email_verified_at, status) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(6), 'ACTIVE')",
+            "INSERT INTO human_users (id, email_normalized, display_name, password_hash) VALUES (?, ?, ?, ?)",
         )
         .bind(registration.user_id)
         .bind(&registration.email)
@@ -300,6 +300,46 @@ impl IdentityRepository {
     ) -> Result<(), IdentityRepositoryError> {
         sqlx::query("UPDATE human_users SET email_verified_at = COALESCE(email_verified_at, ?), status = 'ACTIVE' WHERE id = ?")
             .bind(now).bind(user_id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Removes a registration that could not dispatch its verification email. No session can
+    /// exist at this point; the operation is tenant-scoped and runs in reverse FK order.
+    pub async fn rollback_pending_registration(
+        &self,
+        user_id: Uuid,
+        organization_id: Uuid,
+        tenant_id: Uuid,
+    ) -> Result<(), IdentityRepositoryError> {
+        if user_id.is_nil() || organization_id.is_nil() || tenant_id.is_nil() {
+            return Err(IdentityRepositoryError::InvalidInput);
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM human_action_tokens WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "DELETE FROM organization_memberships WHERE organization_id = ? AND user_id = ?",
+        )
+        .bind(organization_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM tenants WHERE id = ? AND organization_id = ?")
+            .bind(tenant_id)
+            .bind(organization_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM organizations WHERE id = ?")
+            .bind(organization_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM human_users WHERE id = ? AND status = 'PENDING_VERIFICATION'")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 

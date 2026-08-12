@@ -360,7 +360,7 @@ where
 async fn register(
     State(state): State<Arc<IdentityState>>,
     Json(req): Json<RegisterRequest>,
-) -> Result<(StatusCode, Json<AuthResponse>), ApiError> {
+) -> Result<(StatusCode, Json<MessageResponse>), ApiError> {
     let email = canonical_email(&req.email)?;
     validate_password(&req.password)?;
     if req.organization_name.trim().is_empty()
@@ -387,20 +387,6 @@ async fn register(
         })
         .await
         .map_err(ApiError::Repository)?;
-    let membership = state
-        .repository
-        .primary_membership(user_id)
-        .await
-        .map_err(ApiError::Repository)?
-        .ok_or(ApiError::Unavailable)?;
-    let user = state
-        .repository
-        .find_user_by_email(&email)
-        .await
-        .map_err(ApiError::Repository)?
-        .ok_or(ApiError::Unavailable)?;
-    let user_id = user.id;
-    let recipient = user.email.clone();
     let token = random_token();
     // Delivery happens before session issuance so a failed provider cannot leave a
     // browser authenticated to an account whose verification flow cannot begin.
@@ -415,20 +401,32 @@ async fn register(
         )
         .await
         .map_err(ApiError::Repository)?;
-    state
+    let delivery = state
         .delivery
         .send(EmailMessage {
             purpose: ActionTokenPurpose::VerifyEmail,
-            recipient,
+            recipient: email,
             token,
         })
         .await
         .map_err(|error| {
             tracing::error!(event = "identity_email_delivery_failed", error = %error);
             ApiError::Unavailable
-        })?;
-    let response = issue_session(&state, user, membership, None).await?;
-    Ok((StatusCode::CREATED, response))
+        });
+    if let Err(error) = delivery {
+        state
+            .repository
+            .rollback_pending_registration(user_id, org_id, tenant_id)
+            .await
+            .map_err(ApiError::Repository)?;
+        return Err(error);
+    }
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(MessageResponse {
+            message: "verification_required",
+        }),
+    ))
 }
 
 async fn ready(State(state): State<Arc<IdentityState>>) -> Result<&'static str, ApiError> {
