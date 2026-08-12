@@ -106,6 +106,8 @@ def main() -> None:
         "/health/degraded": {"get:"},
         "/v1/tenants/{tenant_id}/{collection}": {"get:", "post:"},
         "/v1/tenants/{tenant_id}/{collection}/{id}": {"get:", "put:", "delete:"},
+        "/v1/tenants/{tenant_id}/enrollment/activations": {"get:", "post:"},
+        "/v1/tenants/{tenant_id}/enrollment/activations/{activation_id}": {"delete:"},
         "/v1/enrollment/challenges": {"post:"},
         "/v1/enrollment/complete": {"post:"},
         "/v1/access-grants": {"post:"},
@@ -129,6 +131,13 @@ def main() -> None:
     require(management_item, "IfMatch", "management mutation contract")
     require(management_item, '"412"', "management revision contract")
     require(management_item, '"428"', "management precondition contract")
+    for path in [
+        "/v1/tenants/{tenant_id}/enrollment/activations",
+        "/v1/tenants/{tenant_id}/enrollment/activations/{activation_id}",
+    ]:
+        require(blocks[path], "managementBearer", f"activation path {path}")
+    require(blocks["/v1/tenants/{tenant_id}/enrollment/activations"], "ActivationCreateResponse", "activation create contract")
+    require(blocks["/v1/tenants/{tenant_id}/enrollment/activations"], "EnrollmentActivation", "activation list contract")
 
     for path in ["/v1/auth/login", "/v1/auth/refresh"]:
         block = blocks[path]

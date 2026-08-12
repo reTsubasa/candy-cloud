@@ -12,6 +12,8 @@ import type {
   HumanSession,
   IdentityMembership,
   OrganizationMember,
+  EnrollmentActivation,
+  EnrollmentActivationSecret,
 } from './types';
 
 export class CloudApiError extends Error {
@@ -185,6 +187,7 @@ async function requestJson<T>(path: string, token: string, init: RequestInit = {
     if (refreshed) response = await perform(refreshed);
   }
   if (!response.ok) throw await responseError(response);
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -299,4 +302,28 @@ export function deleteResource(
       'If-Match': String(revision),
     },
   });
+}
+
+export function listEnrollmentActivations(token: string, tenantId: string): Promise<EnrollmentActivation[]> {
+  return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/enrollment/activations`, token);
+}
+
+export function createEnrollmentActivation(
+  token: string,
+  tenantId: string,
+  expiresInSeconds = 86_400,
+): Promise<EnrollmentActivationSecret> {
+  return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/enrollment/activations`, token, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expires_in_seconds: expiresInSeconds }),
+  });
+}
+
+export function revokeEnrollmentActivation(token: string, tenantId: string, activationId: string): Promise<void> {
+  return requestJson<unknown>(
+    `/v1/tenants/${encodeURIComponent(tenantId)}/enrollment/activations/${encodeURIComponent(activationId)}`,
+    token,
+    { method: 'DELETE' },
+  ).then(() => undefined);
 }

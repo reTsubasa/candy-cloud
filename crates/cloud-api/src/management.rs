@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{Duration, Utc};
 use cloud_control::{
     ControlResourceV1, ResourceKind, ResourceMetadataV1, ResourceSpecV1, ResourceState,
@@ -15,6 +16,7 @@ use cloud_db::control::{
     ControlRepository, ControlStoreError, MutationContext, MutationOutcome, ResourceMutation,
     ResourcePageRequest,
 };
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -30,6 +32,7 @@ pub struct AuthenticatedPrincipal {
 #[derive(Clone)]
 pub struct ManagementState {
     pub repository: Option<ControlRepository>,
+    pub enrollment: Option<cloud_db::enrollment::EnrollmentRepository>,
     pub authentication_ready: bool,
 }
 
@@ -150,6 +153,171 @@ pub struct MutationResponse {
     pub schema_version: u16,
     pub replayed: bool,
     pub resource: ControlResourceV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivationCreateRequest {
+    pub expires_in_seconds: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivationCreateResponse {
+    pub id: Uuid,
+    pub credential: String,
+    pub expires_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivationResponse {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub status: String,
+    pub expires_at: chrono::DateTime<Utc>,
+    pub created_at: chrono::DateTime<Utc>,
+    pub reserved_at: Option<chrono::DateTime<Utc>>,
+    pub consumed_at: Option<chrono::DateTime<Utc>>,
+}
+
+pub async fn list_activations(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path(tenant_id): Path<Uuid>,
+) -> Result<Json<Vec<ActivationResponse>>, ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::ManageDevices)?;
+    let repository = state.enrollment.as_ref().ok_or(ApiError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        code: "ENROLLMENT_UNAVAILABLE",
+        message: "device enrollment is not configured",
+    })?;
+    let records = repository
+        .list_activation_codes(tenant_id, Utc::now())
+        .await
+        .map_err(|error| {
+            tracing::error!(event = "enrollment_activation_list_failed", error = %error);
+            ApiError {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                code: "ENROLLMENT_UNAVAILABLE",
+                message: "device enrollment is temporarily unavailable",
+            }
+        })?;
+    Ok(Json(
+        records
+            .into_iter()
+            .map(|record| ActivationResponse {
+                id: record.id,
+                tenant_id: record.tenant_id,
+                status: record.status,
+                expires_at: record.expires_at,
+                created_at: record.created_at,
+                reserved_at: record.reserved_at,
+                consumed_at: record.consumed_at,
+            })
+            .collect(),
+    ))
+}
+
+pub async fn create_activation(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path(tenant_id): Path<Uuid>,
+    Json(body): Json<ActivationCreateRequest>,
+) -> Result<(StatusCode, Json<ActivationCreateResponse>), ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::ManageDevices)?;
+    let seconds = body.expires_in_seconds.unwrap_or(86_400);
+    if !(300..=2_592_000).contains(&seconds) {
+        return Err(ApiError {
+            status: StatusCode::BAD_REQUEST,
+            code: "INVALID_EXPIRATION",
+            message: "expires_in_seconds must be between 300 and 2592000",
+        });
+    }
+    let repository = state.enrollment.as_ref().ok_or(ApiError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        code: "ENROLLMENT_UNAVAILABLE",
+        message: "device enrollment is not configured",
+    })?;
+    let mut credential = [0u8; 32];
+    OsRng.fill_bytes(&mut credential);
+    let expires_at = Utc::now()
+        + Duration::seconds(i64::try_from(seconds).map_err(|_| ApiError {
+            status: StatusCode::BAD_REQUEST,
+            code: "INVALID_EXPIRATION",
+            message: "expiration is outside the allowed range",
+        })?);
+    let id = Uuid::now_v7();
+    let outcome = repository
+        .insert_activation_code(&cloud_db::enrollment::ActivationCodeWrite {
+            id,
+            organization_id: principal.context.organization_id,
+            tenant_id,
+            code_hash: cloud_db::enrollment::hash_activation_credential(&credential),
+            expires_at,
+            created_by: principal.actor_id,
+        })
+        .await
+        .map_err(|error| {
+            tracing::error!(event = "enrollment_activation_create_failed", error = %error);
+            ApiError {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                code: "ENROLLMENT_UNAVAILABLE",
+                message: "device enrollment is temporarily unavailable",
+            }
+        })?;
+    if !matches!(
+        outcome,
+        cloud_db::enrollment::ActivationCodeOutcome::Inserted
+    ) {
+        return Err(ApiError {
+            status: StatusCode::CONFLICT,
+            code: "ACTIVATION_CONFLICT",
+            message: "activation credential could not be created; retry the request",
+        });
+    }
+    Ok((
+        StatusCode::CREATED,
+        Json(ActivationCreateResponse {
+            id,
+            credential: URL_SAFE_NO_PAD.encode(credential),
+            expires_at,
+        }),
+    ))
+}
+
+pub async fn revoke_activation(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path((tenant_id, activation_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::ManageDevices)?;
+    let repository = state.enrollment.as_ref().ok_or(ApiError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        code: "ENROLLMENT_UNAVAILABLE",
+        message: "device enrollment is not configured",
+    })?;
+    let changed = repository
+        .revoke_activation_code(tenant_id, activation_id, &principal.actor_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(event = "enrollment_activation_revoke_failed", error = %error);
+            ApiError {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                code: "ENROLLMENT_UNAVAILABLE",
+                message: "device enrollment is temporarily unavailable",
+            }
+        })?;
+    if changed {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError {
+            status: StatusCode::NOT_FOUND,
+            code: "ACTIVATION_NOT_FOUND",
+            message: "activation credential was not found or is already finalized",
+        })
+    }
 }
 
 pub async fn list(

@@ -286,11 +286,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "chrono",
  "cloud-control",
  "cloud-db",
  "http-body-util",
  "jsonwebtoken",
+ "rand 0.8.7",
  "serde",
  "serde_json",
  "sha2",

@@ -115,6 +115,14 @@ X-Page-After: non-zero UUID returned in next_cursor
 
 ## Device enrollment
 
+Management operators create credentials through
+`POST /api/v1/tenants/{tenant_id}/enrollment/activations`. The response contains
+the 32-byte URL-safe credential exactly once; Cloud stores only its scoped hash.
+`GET` returns status, expiry, reservation, and consumption timestamps without
+the secret. `DELETE` revokes an `ACTIVE` or `RESERVED` credential. The Web
+console exposes this as **节点加入** and does not claim a node is online until
+the device completes the public enrollment exchange below.
+
 Runtime creates a root key and operational key locally, then performs:
 
 1. `POST /auth/v1/enrollment/challenges` with activation credential, stable

@@ -11,7 +11,6 @@ use cloud_db::{
     DbPool,
 };
 use rand::{rngs::OsRng, RngCore};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
@@ -246,12 +245,7 @@ impl EnrollmentCoordinator {
     }
 }
 
-pub fn hash_activation_credential(credential: &[u8; 32]) -> [u8; 32] {
-    let mut hash = Sha256::new();
-    hash.update(b"candy/enrollment-activation/v1");
-    hash.update(credential);
-    hash.finalize().into()
-}
+pub use cloud_db::enrollment::hash_activation_credential;
 
 fn validate_challenge_command(
     command: &EnrollmentChallengeCommand,

@@ -27,6 +27,7 @@ import { ResourcePage } from './components/ResourcePage';
 import { SystemPage } from './components/SystemPage';
 import { AccountSecurity } from './components/AccountSecurity';
 import { OrganizationAccess } from './components/OrganizationAccess';
+import { NodeEnrollment } from './components/NodeEnrollment';
 
 const iconByKey: Record<string, React.ReactNode> = {
   sites: <IconLocation />,
@@ -149,6 +150,7 @@ export default function App() {
         >
           <Menu.Item key="overview"><IconDashboard />运营概览</Menu.Item>
           {resourceDefinitions.slice(0, 4).map((item) => <Menu.Item key={item.key} key-path={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
+          <Menu.Item key="enrollment"><IconSafe />节点加入</Menu.Item>
           <Menu.Item key="peers"><IconWifi />对等与路径</Menu.Item>
           {resourceDefinitions.slice(5).map((item) => <Menu.Item key={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
           <Menu.Item key="system"><IconSettings />系统</Menu.Item>
@@ -179,6 +181,7 @@ export default function App() {
         </header>
         <Layout.Content className="workspace">
           {selected === 'overview' && <Overview session={session} />}
+          {selected === 'enrollment' && <NodeEnrollment session={session} />}
           {selectedDefinition && selected !== 'peers' && <ResourcePage definition={selectedDefinition} session={session} />}
           {selected === 'peers' && (
             <div className="dual-page">

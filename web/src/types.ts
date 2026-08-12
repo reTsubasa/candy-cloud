@@ -109,6 +109,22 @@ export type MutationResponse = {
   resource: ControlResource;
 };
 
+export type EnrollmentActivation = {
+  id: string;
+  tenant_id: string;
+  status: 'ACTIVE' | 'RESERVED' | 'CONSUMED' | 'REVOKED' | 'EXPIRED';
+  expires_at: string;
+  created_at: string;
+  reserved_at: string | null;
+  consumed_at: string | null;
+};
+
+export type EnrollmentActivationSecret = {
+  id: string;
+  credential: string;
+  expires_at: string;
+};
+
 export type ApiErrorBody = {
   schema_version?: number;
   code?: string;

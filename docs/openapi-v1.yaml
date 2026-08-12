@@ -406,6 +406,61 @@ paths:
         "404": { $ref: "#/components/responses/UnknownCollection" }
         "409": { $ref: "#/components/responses/ManagementConflict" }
         "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/tenants/{tenant_id}/enrollment/activations:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    get:
+      tags: [Management]
+      operationId: listEnrollmentActivations
+      summary: List device activation credential status without revealing credentials
+      security: [{ managementBearer: [] }]
+      responses:
+        "200":
+          description: Bounded activation status inventory.
+          content:
+            application/json:
+              schema: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/EnrollmentActivation" } }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+    post:
+      tags: [Management]
+      operationId: createEnrollmentActivation
+      summary: Create a one-time device activation credential
+      security: [{ managementBearer: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActivationCreateRequest" }
+      responses:
+        "201":
+          description: The credential is returned exactly once and is never persisted in plaintext.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivationCreateResponse" }
+        "400": { $ref: "#/components/responses/ManagementBadRequest" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/tenants/{tenant_id}/enrollment/activations/{activation_id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+      - name: activation_id
+        in: path
+        required: true
+        schema: { $ref: "#/components/schemas/Uuid" }
+    delete:
+      tags: [Management]
+      operationId: revokeEnrollmentActivation
+      summary: Revoke an unused or reserved activation credential
+      security: [{ managementBearer: [] }]
+      responses:
+        "204": { description: Activation revoked. }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "404": { $ref: "#/components/responses/ManagementNotFound" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
   /v1/tenants/{tenant_id}/{collection}/{id}:
     parameters:
       - $ref: "#/components/parameters/TenantId"
@@ -783,6 +838,31 @@ components:
       properties:
         email: { type: string, format: email, minLength: 3, maxLength: 254 }
         password: { type: string, format: password, minLength: 12, maxLength: 1024 }
+    ActivationCreateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        expires_in_seconds: { type: integer, minimum: 300, maximum: 2592000, default: 86400 }
+    ActivationCreateResponse:
+      type: object
+      additionalProperties: false
+      required: [id, credential, expires_at]
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        credential: { $ref: "#/components/schemas/Base64Url32" }
+        expires_at: { type: string, format: date-time }
+    EnrollmentActivation:
+      type: object
+      additionalProperties: false
+      required: [id, tenant_id, status, expires_at, created_at, reserved_at, consumed_at]
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        tenant_id: { $ref: "#/components/schemas/Uuid" }
+        status: { type: string, enum: [ACTIVE, RESERVED, CONSUMED, REVOKED, EXPIRED] }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        reserved_at: { oneOf: [{ type: string, format: date-time }, { type: "null" }] }
+        consumed_at: { oneOf: [{ type: string, format: date-time }, { type: "null" }] }
         device_label: { type: string, minLength: 1, maxLength: 200 }
     RefreshAccountSessionRequest:
       type: object

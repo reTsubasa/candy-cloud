@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -37,6 +38,17 @@ pub struct ActivationCodeWrite {
 pub enum ActivationCodeOutcome {
     Inserted,
     Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationCodeRecord {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub status: String,
+    pub expires_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+    pub reserved_at: Option<DateTime<Utc>>,
+    pub consumed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +119,13 @@ pub enum ChallengeCreationOutcome {
 #[derive(Clone)]
 pub struct EnrollmentRepository {
     pool: DbPool,
+}
+
+pub fn hash_activation_credential(credential: &[u8; 32]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"candy/enrollment-activation/v1");
+    hash.update(credential);
+    hash.finalize().into()
 }
 
 impl EnrollmentRepository {
@@ -230,6 +249,80 @@ impl EnrollmentRepository {
         .await?;
         transaction.commit().await?;
         Ok(ActivationCodeOutcome::Inserted)
+    }
+
+    pub async fn list_activation_codes(
+        &self,
+        tenant_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<ActivationCodeRecord>, RepositoryError> {
+        if tenant_id.is_nil() {
+            return Err(RepositoryError::InvalidActivationScope);
+        }
+        sqlx::query(
+            "UPDATE enrollment_activation_codes SET status = 'EXPIRED' WHERE tenant_id = ? AND status = 'ACTIVE' AND expires_at <= ?",
+        )
+        .bind(tenant_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, status, expires_at, created_at, reserved_at, consumed_at FROM enrollment_activation_codes WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT 100",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(activation_from_row).collect()
+    }
+
+    pub async fn revoke_activation_code(
+        &self,
+        tenant_id: Uuid,
+        activation_id: Uuid,
+        actor_id: &str,
+    ) -> Result<bool, RepositoryError> {
+        if tenant_id.is_nil()
+            || activation_id.is_nil()
+            || actor_id.is_empty()
+            || actor_id.len() > 120
+        {
+            return Err(RepositoryError::InvalidActivationScope);
+        }
+        let mut transaction = self.pool.begin().await?;
+        let organization_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT organization_id FROM enrollment_activation_codes WHERE tenant_id = ? AND id = ? FOR UPDATE",
+        )
+        .bind(tenant_id)
+        .bind(activation_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(organization_id) = organization_id else {
+            transaction.rollback().await?;
+            return Ok(false);
+        };
+        let changed = sqlx::query(
+            "UPDATE enrollment_activation_codes SET status = 'REVOKED' WHERE tenant_id = ? AND id = ? AND status IN ('ACTIVE', 'RESERVED')",
+        )
+        .bind(tenant_id)
+        .bind(activation_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected()
+            == 1;
+        if changed {
+            sqlx::query(
+                "INSERT INTO audit_events (id, organization_id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, ?, 'USER', ?, 'ENROLLMENT_ACTIVATION_REVOKED', 'ENROLLMENT_ACTIVATION', ?, JSON_OBJECT('status', 'REVOKED'))",
+            )
+            .bind(Uuid::new_v4())
+            .bind(organization_id)
+            .bind(tenant_id)
+            .bind(actor_id)
+            .bind(activation_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(changed)
     }
 
     pub async fn reserve_challenge(
@@ -392,6 +485,20 @@ impl EnrollmentRepository {
 
         row.map(proof_challenge_from_row).transpose()
     }
+}
+
+fn activation_from_row(
+    row: sqlx::mysql::MySqlRow,
+) -> Result<ActivationCodeRecord, RepositoryError> {
+    Ok(ActivationCodeRecord {
+        id: row.try_get("id")?,
+        tenant_id: row.try_get("tenant_id")?,
+        status: row.try_get("status")?,
+        expires_at: row.try_get("expires_at")?,
+        created_at: row.try_get("created_at")?,
+        reserved_at: row.try_get("reserved_at")?,
+        consumed_at: row.try_get("consumed_at")?,
+    })
 }
 
 fn classify_existing_challenge(
