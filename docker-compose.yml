@@ -89,7 +89,9 @@ services:
     depends_on:
       mysql: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
-    networks: [candy-cloud-internal]
+    networks:
+      - candy-cloud-egress
+      - candy-cloud-internal
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8082/health/ready"]
       interval: 10s
@@ -199,13 +201,17 @@ services:
       - source: cloud_device_ca_certificate
         target: cloud_device_ca_certificate
         mode: 0444
-    networks: [candy-cloud-internal]
+    networks:
+      - candy-cloud-edge
+      - candy-cloud-internal
 
 volumes:
   candy-cloud-mysql-data:
   candy-cloud-web-assets:
 
 networks:
+  candy-cloud-edge:
+  candy-cloud-egress:
   candy-cloud-internal:
     internal: true
 

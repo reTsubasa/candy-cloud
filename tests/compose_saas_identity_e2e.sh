@@ -41,7 +41,10 @@ cleanup() {
     compose logs --no-color reverse-proxy cloud-api cloud-identity cloud-auth migrate mysql >&2 || :
   fi
   compose down --volumes --remove-orphans >/dev/null 2>&1 || :
-  test -z "$webhook_pid" || kill "$webhook_pid" >/dev/null 2>&1 || :
+  if test -n "$webhook_pid"; then
+    kill "$webhook_pid" >/dev/null 2>&1 || :
+    wait "$webhook_pid" 2>/dev/null || :
+  fi
   rm -rf "$work"
   exit "$status"
 }
@@ -56,7 +59,7 @@ openssl rand 32 > "$secrets/cloud-signing.key"
 chmod 0400 "$secrets/cloud-api-auth-private.pem" "$secrets/cloud-api-auth-public.pem" \
   "$secrets/cloud-signing.key"
 
-openssl req -x509 -newkey ed25519 -nodes -days 2 \
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
   -subj '/CN=Candy E2E Device CA' \
   -keyout "$secrets/device-ca.key" -out "$secrets/device-ca.pem" >/dev/null 2>&1
 chmod 0400 "$secrets/device-ca.key"
@@ -68,7 +71,7 @@ keyUsage=critical,digitalSignature
 extendedKeyUsage=clientAuth
 subjectAltName=URI:candy:device:00000000-0000-0000-0000-000000000010,URI:candy:device-key:00000000-0000-0000-0000-000000000011,URI:candy:environment:e2e,URI:candy:assurance:A1
 EOF
-openssl req -newkey ed25519 -nodes -subj '/CN=Candy E2E Device' \
+openssl req -newkey rsa:2048 -nodes -subj '/CN=Candy E2E Device' \
   -keyout "$work/device-client.key" -out "$work/device-client.csr" >/dev/null 2>&1
 openssl x509 -req -days 1 -in "$work/device-client.csr" \
   -CA "$secrets/device-ca.pem" -CAkey "$secrets/device-ca.key" -CAcreateserial \
@@ -180,7 +183,17 @@ if test "${CANDY_CLOUD_E2E_SKIP_BUILD:-0}" != 1; then
 fi
 compose up -d --no-build reverse-proxy
 
-base="https://localhost:$https_port"
+published_endpoint=$(compose port reverse-proxy 443)
+test -n "$published_endpoint" || {
+  echo "compose_saas_identity_e2e: reverse-proxy port 443 was not published" >&2
+  exit 1
+}
+published_port=${published_endpoint##*:}
+test "$published_port" = "$https_port" || {
+  echo "compose_saas_identity_e2e: expected HTTPS port $https_port, got $published_endpoint" >&2
+  exit 1
+}
+base="https://localhost:$published_port"
 for _ in $(seq 1 120); do
   curl --silent --fail --cacert "$secrets/cloud-tls.pem" "$base/identity/health/ready" >/dev/null && break
   sleep 1
@@ -195,15 +208,17 @@ request() {
   path=$2
   data=${3:-}
   shift 3 || true
+  : > "$headers"
+  : > "$body"
   if test -n "$data"; then
     curl --silent --show-error --cacert "$secrets/cloud-tls.pem" \
       -D "$headers" -o "$body" -X "$method" -H 'Content-Type: application/json' \
-      "$@" --data "$data" "$base$path"
+      "$@" --data "$data" "$base$path" || true
   else
     curl --silent --show-error --cacert "$secrets/cloud-tls.pem" \
-      -D "$headers" -o "$body" -X "$method" "$@" "$base$path"
+      -D "$headers" -o "$body" -X "$method" "$@" "$base$path" || true
   fi
-  awk 'NR == 1 {print $2}' "$headers"
+  awk '/^HTTP\// { status = $2 } END { print status }' "$headers"
 }
 expect_status() {
   actual=$1
@@ -256,7 +271,7 @@ expect_status "$(request GET /auth/v1/runtime/capabilities '' \
 
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=untrusted-client' \
   -keyout "$work/untrusted-client.key" -out "$work/untrusted-client.pem" >/dev/null 2>&1
-untrusted_code=$(curl --silent --show-error --cacert "$secrets/cloud-tls.pem" \
+untrusted_code=$(curl --silent --cacert "$secrets/cloud-tls.pem" \
   --cert "$work/untrusted-client.pem" --key "$work/untrusted-client.key" \
   -o "$body" -w '%{http_code}' "$base/auth/v1/runtime/capabilities" || true)
 test "$untrusted_code" = 000 || test "$untrusted_code" = 400 || test "$untrusted_code" = 403

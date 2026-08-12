@@ -886,11 +886,14 @@ impl IdentityRepository {
             return Ok(None);
         }
         let token_id: Uuid = token.try_get("id")?;
-        sqlx::query("UPDATE human_refresh_tokens SET used_at = ?, replaced_by_id = ? WHERE id = ? AND used_at IS NULL")
-            .bind(now).bind(replacement_id).bind(token_id).execute(&mut *tx).await?;
         let refresh_expires_at = replacement_expires_at.min(token.try_get("session_expires_at")?);
         sqlx::query("INSERT INTO human_refresh_tokens (id, session_id, token_hash, expires_at) VALUES (?, ?, ?, ?)")
             .bind(replacement_id).bind(session_id).bind(replacement_hash).bind(refresh_expires_at).execute(&mut *tx).await?;
+        let rotation = sqlx::query("UPDATE human_refresh_tokens SET used_at = ?, replaced_by_id = ? WHERE id = ? AND used_at IS NULL")
+            .bind(now).bind(replacement_id).bind(token_id).execute(&mut *tx).await?;
+        if rotation.rows_affected() != 1 {
+            return Err(IdentityRepositoryError::Conflict);
+        }
         sqlx::query("UPDATE human_sessions SET last_seen_at = ? WHERE id = ?")
             .bind(now)
             .bind(session_id)
