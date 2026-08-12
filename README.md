@@ -51,6 +51,22 @@ invitation links target `https://<cloud-host>/?accept_invitation=<token>`; the
 recipient must sign in with the invited email before accepting, which prevents
 an invitation from taking over a different account identity.
 
+For a disposable development environment, an already-verified owner account
+can be bootstrapped through the normal account, organization, tenant, and RBAC
+tables:
+
+```bash
+CLOUD_ENVIRONMENT=development
+CLOUD_DEV_DEMO_ENABLED=1
+CLOUD_DEV_DEMO_EMAIL=demo-owner@candy.local
+CLOUD_DEV_DEMO_PASSWORD='inject-a-local-password-of-at-least-12-bytes'
+```
+
+The bootstrap is idempotent and refreshes the injected password while revoking
+old sessions on restart. The email defaults to `demo-owner@candy.local`; the
+password has no default and is never written to the image or logs. Enabling the
+bootstrap in production, staging, or E2E makes `cloud-identity` refuse to start.
+
 For local UI development:
 
 ```bash

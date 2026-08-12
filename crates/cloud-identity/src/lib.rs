@@ -22,13 +22,88 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 pub use cloud_db::identity::{
-    ActionTokenPurpose, ContextSessionReplacement, IdentityRepository, IdentityRepositoryError,
-    InvitedRegistrationWrite, MembershipRole, OrganizationInvitation, RegistrationWrite,
-    SessionRecord,
+    ActionTokenPurpose, ContextSessionReplacement, DemoAccountBootstrap, IdentityRepository,
+    IdentityRepositoryError, InvitedRegistrationWrite, MembershipRole, OrganizationInvitation,
+    RegistrationWrite, SessionRecord,
 };
 
 const MIN_PASSWORD_LEN: usize = 12;
 const MAX_PASSWORD_LEN: usize = 1024;
+const DEFAULT_DEMO_EMAIL: &str = "demo-owner@candy.local";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevelopmentDemoConfig {
+    pub email: String,
+    pub password: String,
+    pub display_name: String,
+    pub organization_name: String,
+}
+
+impl DevelopmentDemoConfig {
+    pub fn from_values(
+        environment: &str,
+        enabled: Option<&str>,
+        password: Option<String>,
+        email: Option<String>,
+    ) -> Result<Option<Self>> {
+        let enabled = match enabled {
+            None | Some("") | Some("0") | Some("false") => false,
+            Some("1") | Some("true") => true,
+            Some(_) => anyhow::bail!("CLOUD_DEV_DEMO_ENABLED must be 0, 1, false, or true"),
+        };
+        if !enabled {
+            return Ok(None);
+        }
+        if environment != "development" {
+            anyhow::bail!("development demo account is forbidden outside CLOUD_IDENTITY_ENVIRONMENT=development");
+        }
+        let password = password.context(
+            "CLOUD_DEV_DEMO_PASSWORD is required when CLOUD_DEV_DEMO_ENABLED is enabled",
+        )?;
+        validate_password(&password).map_err(|_| {
+            anyhow::anyhow!("CLOUD_DEV_DEMO_PASSWORD must contain 12 to 1024 bytes")
+        })?;
+        let email = canonical_email(email.as_deref().unwrap_or(DEFAULT_DEMO_EMAIL))
+            .map_err(|_| anyhow::anyhow!("CLOUD_DEV_DEMO_EMAIL is invalid"))?;
+        Ok(Some(Self {
+            email,
+            password,
+            display_name: "Demo Owner".into(),
+            organization_name: "Candy Demo".into(),
+        }))
+    }
+
+    pub fn from_env(environment: &str) -> Result<Option<Self>> {
+        Self::from_values(
+            environment,
+            std::env::var("CLOUD_DEV_DEMO_ENABLED").ok().as_deref(),
+            std::env::var("CLOUD_DEV_DEMO_PASSWORD").ok(),
+            std::env::var("CLOUD_DEV_DEMO_EMAIL").ok(),
+        )
+    }
+}
+
+pub async fn bootstrap_development_demo(
+    repository: &IdentityRepository,
+    config: DevelopmentDemoConfig,
+) -> Result<DemoAccountBootstrap> {
+    let result = repository
+        .bootstrap_verified_demo_owner(
+            &RegistrationWrite {
+                user_id: Uuid::now_v7(),
+                email: config.email,
+                display_name: config.display_name,
+                password_hash: hash_password(&config.password)
+                    .map_err(|_| anyhow::anyhow!("hash development demo password"))?,
+                organization_id: Uuid::now_v7(),
+                organization_name: config.organization_name,
+                tenant_id: Uuid::now_v7(),
+            },
+            Utc::now(),
+        )
+        .await?;
+    Ok(result)
+}
 
 #[derive(Debug, Clone)]
 pub struct IdentityConfig {
@@ -1417,6 +1492,31 @@ mod tests {
             parse_assignable_role("OPERATOR").unwrap(),
             MembershipRole::Operator
         );
+    }
+
+    #[test]
+    fn development_demo_requires_explicit_safe_configuration() {
+        assert_eq!(
+            DevelopmentDemoConfig::from_values("production", Some("0"), None, None).unwrap(),
+            None
+        );
+        assert!(DevelopmentDemoConfig::from_values(
+            "production",
+            Some("1"),
+            Some("long-enough-demo-password".into()),
+            None,
+        )
+        .is_err());
+        assert!(DevelopmentDemoConfig::from_values("development", Some("1"), None, None,).is_err());
+        let config = DevelopmentDemoConfig::from_values(
+            "development",
+            Some("true"),
+            Some("long-enough-demo-password".into()),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(config.email, DEFAULT_DEMO_EMAIL);
     }
 
     #[tokio::test]

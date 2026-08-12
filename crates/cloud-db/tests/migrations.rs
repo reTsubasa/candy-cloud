@@ -47,6 +47,7 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "human_refresh_tokens",
         "human_action_tokens",
         "organization_invitations",
+        "development_demo_accounts",
     ];
     for table in required {
         let count: i64 = sqlx::query_scalar(
@@ -58,6 +59,14 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+}
+
+#[test]
+fn development_demo_marker_never_stores_a_password() {
+    let migration = include_str!("../migrations/0012_development_demo_accounts.sql");
+    assert!(migration.contains("CREATE TABLE development_demo_accounts"));
+    assert!(migration.contains("FOREIGN KEY (user_id) REFERENCES human_users(id)"));
+    assert!(!migration.contains("password"));
 }
 
 #[test]

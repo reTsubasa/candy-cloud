@@ -73,6 +73,12 @@ pub struct RegistrationWrite {
     pub tenant_id: Uuid,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DemoAccountBootstrap {
+    Created,
+    Updated,
+}
+
 #[derive(Debug, Clone)]
 pub struct Membership {
     pub organization_id: Uuid,
@@ -222,6 +228,100 @@ impl IdentityRepository {
             .bind(registration.organization_id).bind(registration.user_id).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Creates or refreshes the explicitly enabled development demo owner.
+    ///
+    /// The caller is responsible for enforcing the development-only environment gate. Existing
+    /// accounts are accepted only when they already own an organization, so a configured demo
+    /// email cannot silently take over an unrelated user.
+    pub async fn bootstrap_verified_demo_owner(
+        &self,
+        registration: &RegistrationWrite,
+        now: DateTime<Utc>,
+    ) -> Result<DemoAccountBootstrap, IdentityRepositoryError> {
+        validate_email(&registration.email)?;
+        if registration.user_id.is_nil()
+            || registration.organization_id.is_nil()
+            || registration.tenant_id.is_nil()
+            || !bounded(&registration.display_name, MAX_NAME_LEN)
+            || !bounded(&registration.organization_name, MAX_NAME_LEN)
+            || registration.password_hash.is_empty()
+            || registration.password_hash.len() > 255
+        {
+            return Err(IdentityRepositoryError::InvalidInput);
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let existing = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM human_users WHERE email_normalized = ? FOR UPDATE",
+        )
+        .bind(&registration.email)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if let Some(user_id) = existing {
+            let is_marked_demo = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM development_demo_accounts WHERE user_id = ? AND email_normalized = ?",
+            )
+            .bind(user_id)
+            .bind(&registration.email)
+            .fetch_one(&mut *tx)
+            .await?
+                > 0;
+            if !is_marked_demo {
+                tx.rollback().await?;
+                return Err(IdentityRepositoryError::Conflict);
+            }
+            sqlx::query("UPDATE human_users SET display_name = ?, password_hash = ?, email_verified_at = COALESCE(email_verified_at, ?), status = 'ACTIVE' WHERE id = ?")
+                .bind(&registration.display_name)
+                .bind(&registration.password_hash)
+                .bind(now)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("UPDATE human_sessions SET revoked_at = COALESCE(revoked_at, ?), revoke_reason = COALESCE(revoke_reason, 'PASSWORD_RESET') WHERE user_id = ?")
+                .bind(now)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            return Ok(DemoAccountBootstrap::Updated);
+        }
+
+        sqlx::query("INSERT INTO human_users (id, email_normalized, display_name, password_hash, email_verified_at, status) VALUES (?, ?, ?, ?, ?, 'ACTIVE')")
+            .bind(registration.user_id)
+            .bind(&registration.email)
+            .bind(&registration.display_name)
+            .bind(&registration.password_hash)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO organizations (id, name) VALUES (?, ?)")
+            .bind(registration.organization_id)
+            .bind(&registration.organization_name)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO tenants (id, organization_id, name) VALUES (?, ?, ?)")
+            .bind(registration.tenant_id)
+            .bind(registration.organization_id)
+            .bind(&registration.organization_name)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO organization_memberships (organization_id, user_id, role, status) VALUES (?, ?, 'ORGANIZATION_OWNER', 'ACTIVE')")
+            .bind(registration.organization_id)
+            .bind(registration.user_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO development_demo_accounts (user_id, email_normalized) VALUES (?, ?)",
+        )
+        .bind(registration.user_id)
+        .bind(&registration.email)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(DemoAccountBootstrap::Created)
     }
 
     pub async fn find_user_by_email(

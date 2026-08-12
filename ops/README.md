@@ -42,6 +42,11 @@ The production transactional-email webhook must use HTTPS. Private or
 enterprise webhook CAs belong in the operating-system trust store used by
 `cloud-identity`; do not disable certificate verification.
 
+Never enable `CLOUD_DEV_DEMO_ENABLED` in a deployed environment. It is accepted
+only when `CLOUD_ENVIRONMENT=development`, requires an injected
+`CLOUD_DEV_DEMO_PASSWORD`, and intentionally refuses to start in every other
+environment. No fixed demo password is present in the image or repository.
+
 ## Failure behavior
 
 When MySQL is unavailable, new writes and Grant issuance fail closed. Existing unexpired Grants remain locally verifiable by Candy Cloud Server and the customer data plane does not depend on this Compose stack.
