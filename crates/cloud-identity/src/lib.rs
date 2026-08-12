@@ -403,6 +403,8 @@ async fn register(
         .await
         .map_err(ApiError::Repository)?
         .ok_or(ApiError::Unavailable)?;
+    let user_id = user.id;
+    let recipient = user.email.clone();
     let response = issue_session(&state, user, membership, None).await?;
     let token = random_token();
     state
@@ -420,7 +422,7 @@ async fn register(
         .delivery
         .send(EmailMessage {
             purpose: ActionTokenPurpose::VerifyEmail,
-            recipient: email,
+            recipient,
             token,
         })
         .await
