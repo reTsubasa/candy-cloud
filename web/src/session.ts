@@ -2,6 +2,9 @@ import type { IdentitySessionResponse, Session, SessionClaims } from './types';
 
 export const SESSION_KEY = 'candy.cloud.management.session.v1';
 export const REFRESH_SESSION_KEY = 'candy.cloud.management.refresh.v1';
+export const IDENTITY_CONTEXT_KEY = 'candy.cloud.management.identity.v1';
+
+type IdentityContext = Pick<IdentitySessionResponse, 'user' | 'membership'>;
 
 function decodeBase64Url(value: string): string {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
@@ -36,9 +39,14 @@ export function loadSession(): Session | null {
   const token = sessionStorage.getItem(SESSION_KEY);
   if (!token) return null;
   try {
-    return createSession(token);
+    const session = createSession(token);
+    const encodedContext = sessionStorage.getItem(IDENTITY_CONTEXT_KEY);
+    if (!encodedContext) return session;
+    const context = JSON.parse(encodedContext) as IdentityContext;
+    return { ...session, user: context.user, membership: context.membership };
   } catch {
     sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(IDENTITY_CONTEXT_KEY);
     return null;
   }
 }
@@ -48,9 +56,10 @@ export function saveSession(session: Session): void {
 }
 
 export function saveIdentitySession(session: IdentitySessionResponse): Session {
-  const management = createSession(session.access_token);
+  const management = { ...createSession(session.access_token), user: session.user, membership: session.membership };
   sessionStorage.setItem(SESSION_KEY, management.token);
   sessionStorage.setItem(REFRESH_SESSION_KEY, session.refresh_token);
+  sessionStorage.setItem(IDENTITY_CONTEXT_KEY, JSON.stringify({ user: session.user, membership: session.membership }));
   return management;
 }
 
@@ -61,6 +70,7 @@ export function loadRefreshToken(): string | null {
 export function clearSession(): void {
   sessionStorage.removeItem(SESSION_KEY);
   sessionStorage.removeItem(REFRESH_SESSION_KEY);
+  sessionStorage.removeItem(IDENTITY_CONTEXT_KEY);
 }
 
 export function isSessionExpired(session: Session): boolean {

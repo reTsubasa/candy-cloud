@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { clearSession, createSession, isSessionExpiringSoon, loadRefreshToken, loadSession, parseJwtClaims, saveIdentitySession, saveSession, SESSION_KEY } from './session';
+import { clearSession, createSession, IDENTITY_CONTEXT_KEY, isSessionExpiringSoon, loadRefreshToken, loadSession, parseJwtClaims, saveIdentitySession, saveSession, SESSION_KEY } from './session';
 
 function encode(value: unknown): string {
   return btoa(JSON.stringify(value)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -44,7 +44,17 @@ describe('management session', () => {
       membership: { organization_id: 'org-1', organization_name: 'Org', tenant_id: 'tenant-1', tenant_name: 'Tenant', role: 'TENANT_ADMIN' },
     });
     expect(loadRefreshToken()).toBe('refresh-secret');
+    expect(loadSession()?.user?.email).toBe('name@example.test');
+    expect(loadSession()?.membership?.organization_name).toBe('Org');
+    expect(sessionStorage.getItem(IDENTITY_CONTEXT_KEY)).not.toBeNull();
     expect(localStorage.getItem('candy.cloud.management.refresh.v1')).toBeNull();
     expect(isSessionExpiringSoon(session)).toBe(true);
+  });
+
+  it('removes account context together with session credentials', () => {
+    sessionStorage.setItem(SESSION_KEY, token({ tenant_id: 'tenant-1' }));
+    sessionStorage.setItem(IDENTITY_CONTEXT_KEY, JSON.stringify({ user: {}, membership: {} }));
+    clearSession();
+    expect(sessionStorage.getItem(IDENTITY_CONTEXT_KEY)).toBeNull();
   });
 });

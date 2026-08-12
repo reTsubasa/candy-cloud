@@ -1,5 +1,6 @@
 export type SessionClaims = {
   sub?: string;
+  sid?: string;
   organization_id?: string;
   tenant_id?: string;
   role?: string;
@@ -11,6 +12,8 @@ export type SessionClaims = {
 export type Session = {
   token: string;
   claims: SessionClaims;
+  user?: IdentityUser;
+  membership?: IdentityMembership;
 };
 
 export type IdentityUser = {
@@ -39,6 +42,19 @@ export type IdentitySessionResponse = {
 
 export type IdentityRegistrationResponse = {
   message: 'verification_required';
+};
+
+export type IdentityMessageResponse = {
+  message: string;
+};
+
+export type HumanSession = {
+  id: string;
+  organization_id: string;
+  tenant_id: string;
+  role: string;
+  expires_at: string;
+  revoked_at: string | null;
 };
 
 export type HealthState = {

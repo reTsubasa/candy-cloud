@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Avatar, Button, Dropdown, Layout, Menu, Space, Tag, Tooltip, Typography } from '@arco-design/web-react';
 import {
   IconApps,
@@ -25,6 +25,7 @@ import { SessionGate } from './components/SessionGate';
 import { Overview } from './components/Overview';
 import { ResourcePage } from './components/ResourcePage';
 import { SystemPage } from './components/SystemPage';
+import { AccountSecurity } from './components/AccountSecurity';
 
 const iconByKey: Record<string, React.ReactNode> = {
   sites: <IconLocation />,
@@ -54,6 +55,7 @@ export default function App() {
   const [mobileNav, setMobileNav] = useState(false);
 
   const selectedDefinition = useMemo(() => pageDefinition(selected), [selected]);
+  const connect = useCallback((next: Session) => { setSession(next); }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,18 +88,23 @@ export default function App() {
   }, []);
 
   if (restoring || !session) {
-    return <SessionGate loading={restoring} onConnect={(next) => { setSession(next); }} />;
+    return <SessionGate loading={restoring} onConnect={connect} />;
   }
 
-  const disconnect = () => {
-    void logoutAccount(session.token).catch(() => undefined);
+  const clearLocalSession = () => {
     clearSession();
     setSession(null);
     setSelected('overview');
   };
 
+  const disconnect = () => {
+    void logoutAccount(session.token).catch(() => undefined);
+    clearLocalSession();
+  };
+
   const accountMenu = (
     <Menu>
+      <Menu.Item key="account" onClick={() => setSelected('account')}><IconSafe /> 账户与安全</Menu.Item>
       <Menu.Item key="disconnect" onClick={disconnect}><IconPoweroff /> 断开会话</Menu.Item>
     </Menu>
   );
@@ -121,6 +128,7 @@ export default function App() {
           <Menu.Item key="peers"><IconWifi />对等与路径</Menu.Item>
           {resourceDefinitions.slice(5).map((item) => <Menu.Item key={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
           <Menu.Item key="system"><IconSettings />系统</Menu.Item>
+          <Menu.Item key="account"><IconUser />账户与安全</Menu.Item>
         </Menu>
         <div className="sidebar-foot">
           <Tooltip content={collapsed ? '展开导航' : '收起导航'} position="right">
@@ -139,7 +147,7 @@ export default function App() {
           <Dropdown droplist={accountMenu} position="br">
             <button className="account-button" type="button">
               <Avatar size={30}><IconUser /></Avatar>
-              <span className="account-copy"><strong>{session.claims.sub ?? 'Cloud Operator'}</strong><small>{session.claims.role ?? 'role unavailable'}</small></span>
+              <span className="account-copy"><strong>{session.user?.display_name ?? session.claims.sub ?? 'Cloud Operator'}</strong><small>{session.membership?.role ?? session.claims.role ?? 'role unavailable'}</small></span>
               <IconDown />
             </button>
           </Dropdown>
@@ -154,6 +162,7 @@ export default function App() {
             </div>
           )}
           {selected === 'system' && <SystemPage session={session} />}
+          {selected === 'account' && <AccountSecurity session={session} onDisconnect={clearLocalSession} />}
         </Layout.Content>
         <footer className="workspace-footer">
           <Space size={6}><span className="secure-dot" /><Typography.Text type="secondary">Cloud API · same-origin /api</Typography.Text></Space>

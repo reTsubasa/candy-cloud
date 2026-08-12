@@ -1,4 +1,4 @@
-import { clearSession, loadRefreshToken, saveIdentitySession } from './session';
+import { clearSession, loadRefreshToken, loadSession, saveIdentitySession } from './session';
 import type {
   ApiErrorBody,
   ControlResource,
@@ -8,6 +8,8 @@ import type {
   ResourceSpec,
   IdentitySessionResponse,
   IdentityRegistrationResponse,
+  IdentityMessageResponse,
+  HumanSession,
 } from './types';
 
 export class CloudApiError extends Error {
@@ -27,6 +29,7 @@ async function identityRequest<T>(path: string, init: RequestInit): Promise<T> {
     headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...init.headers },
   });
   if (!response.ok) throw await responseError(response);
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -47,15 +50,48 @@ export function verifyAccountEmail(token: string): Promise<IdentitySessionRespon
   return identityRequest('/v1/auth/verify-email', { method: 'POST', body: JSON.stringify({ token }) });
 }
 
+export function requestEmailVerification(email: string, password: string): Promise<IdentityMessageResponse> {
+  return identityRequest('/v1/auth/request-email-verification', { method: 'POST', body: JSON.stringify({ email, password }) });
+}
+
+export function requestPasswordReset(email: string): Promise<IdentityMessageResponse> {
+  return identityRequest('/v1/auth/request-password-reset', { method: 'POST', body: JSON.stringify({ email }) });
+}
+
+export function resetAccountPassword(token: string, password: string): Promise<IdentityMessageResponse> {
+  return identityRequest('/v1/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password }) });
+}
+
 export function refreshAccountSession(refresh_token: string): Promise<IdentitySessionResponse> {
   return identityRequest('/v1/auth/refresh', { method: 'POST', body: JSON.stringify({ refresh_token }) });
 }
 
 export function logoutAccount(accessToken: string): Promise<void> {
-  return identityRequest<unknown>('/v1/auth/logout', {
+  return authenticatedIdentityRequest<unknown>('/v1/auth/logout', accessToken, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${accessToken}` },
   }).then(() => undefined);
+}
+
+export function listAccountSessions(accessToken: string): Promise<HumanSession[]> {
+  return authenticatedIdentityRequest('/v1/auth/sessions', accessToken);
+}
+
+export function revokeAccountSession(accessToken: string, sessionId: string): Promise<void> {
+  return authenticatedIdentityRequest<unknown>(`/v1/auth/sessions/${encodeURIComponent(sessionId)}`, accessToken, {
+    method: 'DELETE',
+  }).then(() => undefined);
+}
+
+async function authenticatedIdentityRequest<T>(path: string, accessToken: string, init: RequestInit = {}): Promise<T> {
+  try {
+    const currentToken = loadSession()?.token ?? accessToken;
+    return await identityRequest(path, { ...init, headers: { Authorization: `Bearer ${currentToken}`, ...init.headers } });
+  } catch (error) {
+    if (!(error instanceof CloudApiError) || error.status !== 401) throw error;
+    const refreshed = await refreshStoredSession();
+    if (!refreshed) throw error;
+    return identityRequest(path, { ...init, headers: { Authorization: `Bearer ${refreshed}`, ...init.headers } });
+  }
 }
 
 async function responseError(response: Response): Promise<CloudApiError> {

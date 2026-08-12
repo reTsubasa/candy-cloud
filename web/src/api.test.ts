@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createResource, fetchHealth, listResources, replaceResource, verifyAccountEmail } from './api';
+import { createResource, fetchHealth, listAccountSessions, listResources, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
 import { saveIdentitySession } from './session';
 
 describe('same-origin Cloud API client', () => {
@@ -34,6 +34,27 @@ describe('same-origin Cloud API client', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } }));
     await verifyAccountEmail('one-time-token');
     expect(fetchMock).toHaveBeenCalledWith('/identity/v1/auth/verify-email', expect.objectContaining({ method: 'POST', body: JSON.stringify({ token: 'one-time-token' }) }));
+  });
+
+  it('uses non-enumerating identity recovery endpoints', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ message: 'if_account_exists_email_sent' }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await requestEmailVerification('name@example.test', 'long-enough-password');
+    await requestPasswordReset('name@example.test');
+    await resetAccountPassword('reset-token', 'new-long-enough-password');
+    expect(fetchMock.mock.calls[0][0]).toBe('/identity/v1/auth/request-email-verification');
+    expect(fetchMock.mock.calls[0][1]).toEqual(expect.objectContaining({ body: JSON.stringify({ email: 'name@example.test', password: 'long-enough-password' }) }));
+    expect(fetchMock.mock.calls[1][0]).toBe('/identity/v1/auth/request-password-reset');
+    expect(fetchMock.mock.calls[2][0]).toBe('/identity/v1/auth/reset-password');
+  });
+
+  it('lists and revokes account sessions with bearer authorization', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await listAccountSessions('access-token');
+    await revokeAccountSession('access-token', 'session/id');
+    expect(fetchMock.mock.calls[0]).toEqual(['/identity/v1/auth/sessions', expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer access-token' }) })]);
+    expect(fetchMock.mock.calls[1]).toEqual(['/identity/v1/auth/sessions/session%2Fid', expect.objectContaining({ method: 'DELETE', headers: expect.objectContaining({ Authorization: 'Bearer access-token' }) })]);
   });
 
   it('rotates a stored session once then retries a rejected management request', async () => {
