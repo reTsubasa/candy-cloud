@@ -150,22 +150,37 @@ CLOUD_HTTPS_PORT=$https_port
 EOF
 cat > "$work/compose.override.yml" <<EOF
 services:
+  migrate:
+    image: candy-cloud-saas-e2e-migrate:local
+  cloud-api:
+    image: candy-cloud-saas-e2e-cloud-api:local
   cloud-identity:
+    image: candy-cloud-saas-e2e-cloud-identity:local
     environment:
       SSL_CERT_FILE: /run/test-secrets/identity-ca-bundle.pem
     volumes:
       - $work:/run/test-secrets:ro
   reverse-proxy:
+    image: caddy:2.9-alpine
     ports:
-      - "$https_port:443"
+      - target: 443
+        published: "$https_port"
+        protocol: tcp
+        mode: host
+  cloud-auth:
+    image: candy-cloud-saas-e2e-cloud-auth:local
+  cloud-web:
+    image: candy-cloud-saas-e2e-cloud-web:local
 EOF
 
 # Compose Bake may compile every Rust service concurrently and exhaust a
 # developer workstation. Build explicitly in dependency order, then start the
 # exact same images without allowing Compose to trigger a parallel rebuild.
-for service in cloud-web migrate cloud-api cloud-identity cloud-auth; do
-  compose build "$service"
-done
+if test "${CANDY_CLOUD_E2E_SKIP_BUILD:-0}" != 1; then
+  for service in cloud-web migrate cloud-api cloud-identity cloud-auth; do
+    compose build "$service"
+  done
+fi
 compose up -d --no-build reverse-proxy
 
 base="https://localhost:$https_port"
