@@ -13,6 +13,34 @@ export type Session = {
   claims: SessionClaims;
 };
 
+export type IdentityUser = {
+  id: string;
+  email: string;
+  display_name: string;
+  email_verified: boolean;
+};
+
+export type IdentityMembership = {
+  organization_id: string;
+  organization_name: string;
+  tenant_id: string;
+  tenant_name: string;
+  role: string;
+};
+
+export type IdentitySessionResponse = {
+  access_token: string;
+  refresh_token: string;
+  token_type: 'Bearer';
+  expires_in: number;
+  user: IdentityUser;
+  membership: IdentityMembership;
+};
+
+export type IdentityRegistrationResponse = {
+  message: 'verification_required';
+};
+
 export type HealthState = {
   live: EndpointHealth;
   ready: EndpointHealth;

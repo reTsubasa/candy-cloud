@@ -11,11 +11,19 @@
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains"
     X-Content-Type-Options "nosniff"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    X-Frame-Options "DENY"
+    Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+    Content-Security-Policy "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
     -Server
   }
 
   handle_path /api/* {
     reverse_proxy cloud-api:8080
+  }
+
+  handle_path /identity/* {
+    reverse_proxy cloud-identity:8082
   }
 
   handle_path /auth/* {

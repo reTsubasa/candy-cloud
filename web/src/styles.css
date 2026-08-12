@@ -47,6 +47,7 @@ button, input, textarea { font: inherit; }
 .session-heading { padding: 26px 0 12px; }
 .session-heading h4 { margin-top: 14px; }
 .session-form { margin-top: 18px; }
+.session-switch { align-self: flex-start; padding: 0; }
 .session-footnote { margin-top: 22px; }
 .secure-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #00b42a; box-shadow: 0 0 0 3px rgba(0, 180, 42, .1); }
 .session-context { min-height: 100vh; display: flex; flex-direction: column; justify-content: flex-end; padding: 64px; color: #fff; background: #101828; }

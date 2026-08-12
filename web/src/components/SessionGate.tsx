@@ -1,25 +1,70 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Button, Form, Input, Space, Tag, Typography } from '@arco-design/web-react';
 import { IconBranch, IconCloud, IconLock, IconRight, IconSafe, IconThunderbolt } from '@arco-design/web-react/icon';
-import { createSession, isSessionExpired } from '../session';
+import { loginAccount, registerAccount, verifyAccountEmail } from '../api';
+import { isSessionExpired, saveIdentitySession } from '../session';
 import type { Session } from '../types';
 
 type Props = {
   onConnect: (session: Session) => void;
+  loading?: boolean;
 };
 
-export function SessionGate({ onConnect }: Props) {
-  const [token, setToken] = useState('');
+export function SessionGate({ onConnect, loading = false }: Props) {
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [organizationName, setOrganizationName] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const connect = () => {
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get('verify_email');
+    if (!token) return;
+    let cancelled = false;
+    setSubmitting(true);
+    void verifyAccountEmail(token)
+      .then((issued) => {
+        if (cancelled) return;
+        const session = saveIdentitySession(issued);
+        window.history.replaceState({}, document.title, window.location.pathname);
+        onConnect(session);
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : '邮箱验证失败，请重新发送验证邮件');
+      })
+      .finally(() => { if (!cancelled) setSubmitting(false); });
+    return () => { cancelled = true; };
+  }, [onConnect]);
+
+  const connect = async () => {
+    if (loading) return;
     try {
-      const session = createSession(token);
+      setSubmitting(true);
+      if (mode === 'register') {
+        await registerAccount({
+          email,
+          password,
+          display_name: displayName,
+          organization_name: organizationName,
+        });
+        setMode('login');
+        setPassword('');
+        setNotice('验证邮件已发送。完成邮箱验证后即可登录。');
+        setError(null);
+        return;
+      }
+      const issued = await loginAccount(email, password);
+      const session = saveIdentitySession(issued);
       if (isSessionExpired(session)) throw new Error('JWT 已过期，请获取新的管理会话');
       setError(null);
       onConnect(session);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '无法建立管理会话');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -34,29 +79,36 @@ export function SessionGate({ onConnect }: Props) {
           </div>
         </div>
         <div className="session-heading">
-          <Tag color="arcoblue" icon={<IconLock />}>管理会话</Tag>
-          <Typography.Title heading={4}>连接控制面</Typography.Title>
+          <Tag color="arcoblue" icon={<IconLock />}>{mode === 'login' ? '安全登录' : '创建组织'}</Tag>
+          <Typography.Title heading={4}>{mode === 'login' ? '登录控制面' : '开始管理你的网络'}</Typography.Title>
           <Typography.Paragraph type="secondary">
-            使用由身份系统签发的管理 JWT。会话只保存在当前浏览器标签页中。
+            {mode === 'login' ? '使用 Candy Cloud 账户安全登录。' : '创建管理员账户和首个网络组织。'} 会话仅保留在当前浏览器标签页中。
           </Typography.Paragraph>
         </div>
         {error && <Alert type="error" content={error} showIcon />}
+        {notice && <Alert type="success" content={notice} showIcon />}
         <Form layout="vertical" className="session-form">
-          <Form.Item label="管理 JWT" required>
-            <Input.TextArea
-              value={token}
-              onChange={setToken}
-              autoSize={{ minRows: 5, maxRows: 9 }}
-              placeholder="eyJ..."
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') connect();
-              }}
-            />
+          {mode === 'register' && <>
+            <Form.Item label="姓名" required>
+              <Input value={displayName} onChange={setDisplayName} placeholder="你的姓名" autoComplete="name" />
+            </Form.Item>
+            <Form.Item label="组织名称" required>
+              <Input value={organizationName} onChange={setOrganizationName} placeholder="例如：Acme Network" autoComplete="organization" />
+            </Form.Item>
+          </>}
+          <Form.Item label="邮箱" required>
+            <Input value={email} onChange={setEmail} placeholder="name@example.com" autoComplete="email" />
           </Form.Item>
-          <Button type="primary" long size="large" icon={<IconRight />} onClick={connect} disabled={!token.trim()}>
-            建立会话
+          <Form.Item label="密码" required>
+            <Input.Password value={password} onChange={setPassword} placeholder="至少 12 位" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} onPressEnter={() => void connect()} />
+          </Form.Item>
+          <Button type="primary" long size="large" icon={<IconRight />} loading={submitting || loading} onClick={() => void connect()} disabled={loading || !email.trim() || !password || (mode === 'register' && (!displayName.trim() || !organizationName.trim()))}>
+            {mode === 'login' ? '登录' : '创建账户'}
           </Button>
         </Form>
+        <Button type="text" className="session-switch" disabled={loading} onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(null); setNotice(null); }}>
+          {mode === 'login' ? '还没有账户？创建组织' : '已有账户？登录'}
+        </Button>
         <Space className="session-footnote" size={6}>
           <span className="secure-dot" />
           <Typography.Text type="secondary">凭据仅保留在 sessionStorage</Typography.Text>

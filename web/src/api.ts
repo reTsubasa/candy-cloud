@@ -1,3 +1,4 @@
+import { clearSession, loadRefreshToken, saveIdentitySession } from './session';
 import type {
   ApiErrorBody,
   ControlResource,
@@ -5,6 +6,8 @@ import type {
   MutationResponse,
   ResourceListResponse,
   ResourceSpec,
+  IdentitySessionResponse,
+  IdentityRegistrationResponse,
 } from './types';
 
 export class CloudApiError extends Error {
@@ -15,6 +18,44 @@ export class CloudApiError extends Error {
   ) {
     super(message);
   }
+}
+
+async function identityRequest<T>(path: string, init: RequestInit): Promise<T> {
+  const response = await fetch(`/identity${path}`, {
+    ...init,
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...init.headers },
+  });
+  if (!response.ok) throw await responseError(response);
+  return response.json() as Promise<T>;
+}
+
+export function registerAccount(input: {
+  email: string;
+  password: string;
+  display_name: string;
+  organization_name: string;
+}): Promise<IdentityRegistrationResponse> {
+  return identityRequest('/v1/auth/register', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function loginAccount(email: string, password: string): Promise<IdentitySessionResponse> {
+  return identityRequest('/v1/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+}
+
+export function verifyAccountEmail(token: string): Promise<IdentitySessionResponse> {
+  return identityRequest('/v1/auth/verify-email', { method: 'POST', body: JSON.stringify({ token }) });
+}
+
+export function refreshAccountSession(refresh_token: string): Promise<IdentitySessionResponse> {
+  return identityRequest('/v1/auth/refresh', { method: 'POST', body: JSON.stringify({ refresh_token }) });
+}
+
+export function logoutAccount(accessToken: string): Promise<void> {
+  return identityRequest<unknown>('/v1/auth/logout', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  }).then(() => undefined);
 }
 
 async function responseError(response: Response): Promise<CloudApiError> {
@@ -28,17 +69,39 @@ async function responseError(response: Response): Promise<CloudApiError> {
 }
 
 async function requestJson<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api${path}`, {
+  const perform = (accessToken: string) => fetch(`/api${path}`, {
     ...init,
     credentials: 'same-origin',
     headers: {
       Accept: 'application/json',
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${accessToken}`,
       ...init.headers,
     },
   });
+  let response = await perform(token);
+  if (response.status === 401) {
+    const refreshed = await refreshStoredSession();
+    if (refreshed) response = await perform(refreshed);
+  }
   if (!response.ok) throw await responseError(response);
   return response.json() as Promise<T>;
+}
+
+let refreshInFlight: Promise<string | null> | null = null;
+
+export function refreshStoredSession(): Promise<string | null> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    const refresh = loadRefreshToken();
+    if (!refresh) return null;
+    try {
+      return saveIdentitySession(await refreshAccountSession(refresh)).token;
+    } catch {
+      clearSession();
+      return null;
+    }
+  })().finally(() => { refreshInFlight = null; });
+  return refreshInFlight;
 }
 
 export async function fetchHealth(endpoint: 'live' | 'ready' | 'degraded'): Promise<EndpointHealth> {

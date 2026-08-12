@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createResource, fetchHealth, listResources, replaceResource } from './api';
+import { createResource, fetchHealth, listResources, replaceResource, verifyAccountEmail } from './api';
+import { saveIdentitySession } from './session';
 
 describe('same-origin Cloud API client', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); sessionStorage.clear(); });
 
   it('uses the /api management path with bearer and pagination headers', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ schema_version: 1, items: [], next_cursor: null }), { status: 200, headers: { 'content-type': 'application/json' } }));
@@ -27,5 +28,29 @@ describe('same-origin Cloud API client', () => {
     const state = await fetchHealth('ready');
     expect(state.status).toBe(503);
     expect(state.text).toBe('database schema unavailable');
+  });
+
+  it('consumes email verification through the same-origin identity path', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await verifyAccountEmail('one-time-token');
+    expect(fetchMock).toHaveBeenCalledWith('/identity/v1/auth/verify-email', expect.objectContaining({ method: 'POST', body: JSON.stringify({ token: 'one-time-token' }) }));
+  });
+
+  it('rotates a stored session once then retries a rejected management request', async () => {
+    const encode = (value: unknown) => btoa(JSON.stringify(value)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+    const token = (claims: Record<string, unknown>) => `${encode({ alg: 'EdDSA' })}.${encode(claims)}.signature`;
+    saveIdentitySession({
+      access_token: token({ tenant_id: 'tenant', exp: Math.floor(Date.now() / 1000) + 60 }), refresh_token: 'old-refresh-token', token_type: 'Bearer', expires_in: 60,
+      user: { id: 'user', email: 'user@example.test', display_name: 'User', email_verified: true },
+      membership: { organization_id: 'org', organization_name: 'Org', tenant_id: 'tenant', tenant_name: 'Tenant', role: 'TENANT_ADMIN' },
+    });
+    const fresh = token({ tenant_id: 'tenant', exp: Math.floor(Date.now() / 1000) + 900 });
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'unauthenticated' }), { status: 401, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: fresh, refresh_token: 'new-refresh-token', token_type: 'Bearer', expires_in: 900, user: { id: 'user', email: 'user@example.test', display_name: 'User', email_verified: true }, membership: { organization_id: 'org', organization_name: 'Org', tenant_id: 'tenant', tenant_name: 'Tenant', role: 'TENANT_ADMIN' } }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ schema_version: 1, items: [], next_cursor: null }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await listResources('expired-access-token', 'tenant', 'sites');
+    expect(fetchMock.mock.calls).toHaveLength(3);
+    expect(fetchMock.mock.calls[2][1]).toEqual(expect.objectContaining({ headers: expect.objectContaining({ Authorization: `Bearer ${fresh}` }) }));
   });
 });

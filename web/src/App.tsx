@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Avatar, Button, Dropdown, Layout, Menu, Space, Tag, Tooltip, Typography } from '@arco-design/web-react';
 import {
   IconApps,
@@ -17,7 +17,8 @@ import {
   IconUser,
   IconWifi,
 } from '@arco-design/web-react/icon';
-import { clearSession, loadSession, saveSession } from './session';
+import { logoutAccount, refreshStoredSession } from './api';
+import { clearSession, isSessionExpiringSoon, loadRefreshToken, loadSession } from './session';
 import type { ResourceDefinition, Session } from './types';
 import { resourceDefinitions, pathDefinition } from './resource-definitions';
 import { SessionGate } from './components/SessionGate';
@@ -47,17 +48,49 @@ function pageDefinition(key: string): ResourceDefinition | undefined {
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(() => loadSession());
+  const [restoring, setRestoring] = useState(true);
   const [selected, setSelected] = useState('overview');
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
 
   const selectedDefinition = useMemo(() => pageDefinition(selected), [selected]);
 
-  if (!session) {
-    return <SessionGate onConnect={(next) => { saveSession(next); setSession(next); }} />;
+  useEffect(() => {
+    let cancelled = false;
+    const restore = async () => {
+      const current = loadSession();
+      const refresh = loadRefreshToken();
+      if (current && !isSessionExpiringSoon(current)) {
+        if (!cancelled) setSession(current);
+        if (!cancelled) setRestoring(false);
+        return;
+      }
+      if (!refresh) {
+        if (!cancelled) setRestoring(false);
+        return;
+      }
+      try {
+        const token = await refreshStoredSession();
+        const next = loadSession();
+        if (!token || !next) throw new Error('session refresh failed');
+        if (!cancelled) setSession(next);
+      } catch {
+        clearSession();
+        if (!cancelled) setSession(null);
+      } finally {
+        if (!cancelled) setRestoring(false);
+      }
+    };
+    void restore();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (restoring || !session) {
+    return <SessionGate loading={restoring} onConnect={(next) => { setSession(next); }} />;
   }
 
   const disconnect = () => {
+    void logoutAccount(session.token).catch(() => undefined);
     clearSession();
     setSession(null);
     setSelected('overview');

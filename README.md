@@ -24,12 +24,26 @@ docker compose config
 
 ## Management console
 
-The Arco Design React console is served by the reverse proxy at `/`. It uses
-same-origin `/api` requests and accepts an externally issued EdDSA management
-JWT; the token is held only in `sessionStorage`. The complete V1 management,
-enrollment, Grant, and Runtime synchronization contract is available in
-[`docs/openapi-v1.yaml`](docs/openapi-v1.yaml) and
+The Arco Design React console is served by the reverse proxy at `/`. It has a
+first-party Candy Cloud account flow: registration creates an organization and
+its first tenant, then Identity issues short-lived EdDSA management access
+tokens and rotating opaque refresh credentials. Human account identity and
+device mTLS identity are separate trust planes. Browser credentials are held
+only in `sessionStorage`, never in `localStorage`.
+
+Set `CLOUD_IDENTITY_SIGNING_KEY_FILE` to a deployment-private Ed25519 PEM and
+`CLOUD_IDENTITY_VERIFICATION_KEY_FILE` to its public PEM. The public PEM must
+be the exact same key configured as `CLOUD_API_AUTH_PUBLIC_KEY_FILE`; use a
+different keypair from the Cloud Grant-signing key. The complete V1 management,
+identity, enrollment, Grant, and Runtime synchronization contract is available
+in [`docs/openapi-v1.yaml`](docs/openapi-v1.yaml) and
 [`docs/api-contract.md`](docs/api-contract.md).
+
+Production also requires `CLOUD_IDENTITY_EMAIL_WEBHOOK_URL`: an HTTPS
+transactional-mail adapter that receives the one-time verification or reset
+token and constructs the customer-facing link. Verification links must target
+`https://<cloud-host>/?verify_email=<token>`. The service will not start in
+production without it, so account recovery cannot silently degrade.
 
 For local UI development:
 

@@ -7,6 +7,7 @@ services:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
       MYSQL_MIGRATOR_PASSWORD: ${MYSQL_MIGRATOR_PASSWORD:?set MYSQL_MIGRATOR_PASSWORD}
       MYSQL_API_PASSWORD: ${MYSQL_API_PASSWORD:?set MYSQL_API_PASSWORD}
+      MYSQL_IDENTITY_PASSWORD: ${MYSQL_IDENTITY_PASSWORD:?set MYSQL_IDENTITY_PASSWORD}
       MYSQL_AUTH_PASSWORD: ${MYSQL_AUTH_PASSWORD:?set MYSQL_AUTH_PASSWORD}
       MYSQL_WORKER_PASSWORD: ${MYSQL_WORKER_PASSWORD:?set MYSQL_WORKER_PASSWORD}
     volumes:
@@ -52,6 +53,45 @@ services:
     networks: [candy-cloud-internal]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  cloud-identity:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: docker/rust-service.Dockerfile
+      target: runtime
+      args: { PACKAGE: cloud-identity, BINARY: cloud-identity }
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql://cloud_identity:${MYSQL_IDENTITY_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      CLOUD_IDENTITY_BIND: 0.0.0.0:8082
+      CLOUD_IDENTITY_SIGNING_KEY_FILE: /run/secrets/cloud_identity_signing_key
+      CLOUD_IDENTITY_VERIFICATION_KEY_FILE: /run/secrets/cloud_identity_verification_key
+      CLOUD_IDENTITY_SIGNING_KEY_ID: ${CLOUD_IDENTITY_SIGNING_KEY_ID:-management-1}
+      CLOUD_IDENTITY_ISSUER: ${CLOUD_API_AUTH_ISSUER:?set CLOUD_API_AUTH_ISSUER}
+      CLOUD_IDENTITY_AUDIENCE: ${CLOUD_API_AUTH_AUDIENCE:?set CLOUD_API_AUTH_AUDIENCE}
+      CLOUD_IDENTITY_ACCESS_TTL_SECONDS: ${CLOUD_IDENTITY_ACCESS_TTL_SECONDS:-900}
+      CLOUD_IDENTITY_REFRESH_TTL_SECONDS: ${CLOUD_IDENTITY_REFRESH_TTL_SECONDS:-2592000}
+      CLOUD_IDENTITY_VERIFICATION_TTL_SECONDS: ${CLOUD_IDENTITY_VERIFICATION_TTL_SECONDS:-86400}
+      CLOUD_IDENTITY_RESET_TTL_SECONDS: ${CLOUD_IDENTITY_RESET_TTL_SECONDS:-900}
+      CLOUD_IDENTITY_EMAIL_WEBHOOK_URL: ${CLOUD_IDENTITY_EMAIL_WEBHOOK_URL:?set CLOUD_IDENTITY_EMAIL_WEBHOOK_URL}
+      CLOUD_IDENTITY_EMAIL_WEBHOOK_AUTHORIZATION: ${CLOUD_IDENTITY_EMAIL_WEBHOOK_AUTHORIZATION:-}
+      CLOUD_IDENTITY_ENVIRONMENT: ${CLOUD_ENVIRONMENT:-production}
+    secrets:
+      - source: cloud_identity_signing_key
+        target: cloud_identity_signing_key
+        mode: 0400
+      - source: cloud_identity_verification_key
+        target: cloud_identity_verification_key
+        mode: 0400
+    depends_on:
+      mysql: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    networks: [candy-cloud-internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8082/health/ready"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -146,6 +186,7 @@ services:
       - candy-cloud-web-assets:/srv/web:ro
     depends_on:
       cloud-api: { condition: service_healthy }
+      cloud-identity: { condition: service_healthy }
       cloud-auth: { condition: service_healthy }
       cloud-web: { condition: service_healthy }
     secrets:
@@ -177,6 +218,10 @@ secrets:
     file: ${CLOUD_DEVICE_CA_KEY_FILE:-./secrets/device-ca.key}
   cloud_api_auth_public_key:
     file: ${CLOUD_API_AUTH_PUBLIC_KEY_FILE:?set CLOUD_API_AUTH_PUBLIC_KEY_FILE}
+  cloud_identity_signing_key:
+    file: ${CLOUD_IDENTITY_SIGNING_KEY_FILE:?set CLOUD_IDENTITY_SIGNING_KEY_FILE}
+  cloud_identity_verification_key:
+    file: ${CLOUD_IDENTITY_VERIFICATION_KEY_FILE:?set CLOUD_IDENTITY_VERIFICATION_KEY_FILE}
   cloud_tls_certificate:
     file: ${CLOUD_TLS_CERTIFICATE_FILE:?set CLOUD_TLS_CERTIFICATE_FILE}
   cloud_tls_key:
