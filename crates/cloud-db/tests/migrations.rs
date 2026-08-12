@@ -41,6 +41,11 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "management_idempotency_records",
         "segment_generation_heads",
         "segment_generation_jobs",
+        "human_users",
+        "organization_memberships",
+        "human_sessions",
+        "human_refresh_tokens",
+        "human_action_tokens",
     ];
     for table in required {
         let count: i64 = sqlx::query_scalar(
@@ -52,6 +57,26 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+}
+
+#[test]
+fn human_identity_migration_stores_only_token_hashes_and_models_roles() {
+    let migration = include_str!("../migrations/0010_human_identity.sql");
+    for table in [
+        "human_users",
+        "organization_memberships",
+        "human_sessions",
+        "human_refresh_tokens",
+        "human_action_tokens",
+    ] {
+        assert!(migration.contains(&format!("CREATE TABLE {table}")));
+    }
+    assert!(migration.contains("password_hash VARCHAR(255)"));
+    assert!(migration.contains("token_hash BINARY(32)"));
+    assert!(migration.contains("ORGANIZATION_OWNER"));
+    assert!(migration.contains("BILLING_VIEWER"));
+    assert!(!migration.contains("refresh_token VARCHAR"));
+    assert!(!migration.contains("action_token VARCHAR"));
 }
 
 #[test]
