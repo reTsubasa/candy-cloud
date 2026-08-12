@@ -40,6 +40,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: candy-cloud -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: candy-cloud/web/pnpm-lock.yaml
+      - run: corepack enable
+        working-directory: candy-cloud/web
+      - run: pnpm install --frozen-lockfile
+        working-directory: candy-cloud/web
+      - run: pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build
+        working-directory: candy-cloud/web
       - run: cargo run -p cloud-db --bin cloud-db-migrate
       - run: python3 tests/api_contract.py
       - run: cargo test --workspace

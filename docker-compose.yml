@@ -124,13 +124,31 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+  cloud-web:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    restart: unless-stopped
+    volumes:
+      - candy-cloud-web-assets:/srv
+    networks: [candy-cloud-internal]
+    healthcheck:
+      test: ["CMD", "test", "-f", "/srv/index.html"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
   reverse-proxy:
     image: caddy:2.9-alpine
     restart: unless-stopped
     ports: ["443:443"]
     volumes:
       - ./docker/reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
-    depends_on: { cloud-api: { condition: service_healthy }, cloud-auth: { condition: service_healthy } }
+      - candy-cloud-web-assets:/srv/web:ro
+    depends_on:
+      cloud-api: { condition: service_healthy }
+      cloud-auth: { condition: service_healthy }
+      cloud-web: { condition: service_healthy }
     secrets:
       - source: cloud_tls_certificate
         target: cloud_tls_certificate
@@ -145,6 +163,7 @@ services:
 
 volumes:
   candy-cloud-mysql-data:
+  candy-cloud-web-assets:
 
 networks:
   candy-cloud-internal:

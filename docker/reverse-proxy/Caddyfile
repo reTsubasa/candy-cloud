@@ -25,5 +25,13 @@
     }
   }
 
-  respond 404
+  handle {
+    root * /srv/web
+    @immutable path /assets/*
+    header @immutable Cache-Control "public, max-age=31536000, immutable"
+    @index path / /index.html
+    header @index Cache-Control "no-cache"
+    try_files {path} /index.html
+    file_server
+  }
 }
