@@ -404,6 +404,30 @@ async fn register(
         .map_err(ApiError::Repository)?
         .ok_or(ApiError::Unavailable)?;
     let response = issue_session(&state, user, membership, None).await?;
+    let token = random_token();
+    state
+        .repository
+        .create_action_token(
+            Uuid::now_v7(),
+            user_id,
+            ActionTokenPurpose::VerifyEmail,
+            &hash_token(&token),
+            Utc::now() + chrono_duration(state.verification_ttl),
+        )
+        .await
+        .map_err(ApiError::Repository)?;
+    state
+        .delivery
+        .send(EmailMessage {
+            purpose: ActionTokenPurpose::VerifyEmail,
+            recipient: email,
+            token,
+        })
+        .await
+        .map_err(|error| {
+            tracing::error!(event = "identity_email_delivery_failed", error = %error);
+            ApiError::Unavailable
+        })?;
     Ok((StatusCode::CREATED, response))
 }
 
