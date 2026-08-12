@@ -70,8 +70,12 @@ impl IdentityConfig {
             issuer: required("CLOUD_IDENTITY_ISSUER")?,
             audience: required("CLOUD_IDENTITY_AUDIENCE")?,
             bind: std::env::var("CLOUD_IDENTITY_BIND").unwrap_or_else(|_| "0.0.0.0:8082".into()),
-            access_ttl: seconds("CLOUD_IDENTITY_ACCESS_TTL_SECONDS", 900, 3600)?,
-            refresh_ttl: seconds("CLOUD_IDENTITY_REFRESH_TTL_SECONDS", 2_592_000, 31_536_000)?,
+            access_ttl: seconds("CLOUD_IDENTITY_ACCESS_TOKEN_TTL_SECONDS", 900, 3600)?,
+            refresh_ttl: seconds(
+                "CLOUD_IDENTITY_REFRESH_TOKEN_TTL_SECONDS",
+                2_592_000,
+                31_536_000,
+            )?,
             verification_ttl: seconds("CLOUD_IDENTITY_VERIFICATION_TTL_SECONDS", 86_400, 604_800)?,
             reset_ttl: seconds("CLOUD_IDENTITY_RESET_TTL_SECONDS", 900, 3600)?,
         })
