@@ -155,6 +155,9 @@ services:
       SSL_CERT_FILE: /run/test-secrets/identity-ca-bundle.pem
     volumes:
       - $work:/run/test-secrets:ro
+  reverse-proxy:
+    ports:
+      - "$https_port:443"
 EOF
 
 # Compose Bake may compile every Rust service concurrently and exhaust a
