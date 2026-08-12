@@ -112,7 +112,11 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/ActionTokenRequest" }
       responses:
-        "200": { description: Email address verified. }
+        "200":
+          description: Email address verified and the first authenticated session issued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IdentitySessionResponse" }
         "400": { $ref: "#/components/responses/IdentityBadRequest" }
         "503": { $ref: "#/components/responses/IdentityUnavailable" }
   /v1/auth/request-email-verification:

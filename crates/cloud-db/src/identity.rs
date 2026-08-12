@@ -303,6 +303,21 @@ impl IdentityRepository {
         Ok(())
     }
 
+    pub async fn email_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Option<String>, IdentityRepositoryError> {
+        if user_id.is_nil() {
+            return Err(IdentityRepositoryError::InvalidInput);
+        }
+        Ok(
+            sqlx::query_scalar("SELECT email_normalized FROM human_users WHERE id = ?")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
+    }
+
     /// Removes a registration that could not dispatch its verification email. No session can
     /// exist at this point; the operation is tenant-scoped and runs in reverse FK order.
     pub async fn rollback_pending_registration(

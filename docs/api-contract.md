@@ -51,9 +51,9 @@ for enrollment, Grant, and Runtime delivery.
   organization name, and returns `202 verification_required`. A verification
   email is dispatched in the same request; delivery failure removes the
   pending account/workspace and returns `503`, so no unusable registration is
-  retained. `POST /verify-email` consumes that one-time credential, after
-  which login returns a short-lived access token plus a rotating opaque refresh
-  credential. The `/request-email-verification`,
+  retained. `POST /verify-email` consumes that one-time credential and returns
+  the first short-lived access token plus a rotating opaque refresh credential;
+  subsequent sessions use login. The `/request-email-verification`,
   `/request-password-reset`, and `/reset-password` endpoints provide the
   recovery path; reset revokes every session. `POST /logout`, `GET /sessions`,
   and `DELETE /sessions/{id}` require a bearer token and perform immediate
@@ -62,7 +62,9 @@ for enrollment, Grant, and Runtime delivery.
   optional authorization header is supplied by
   `CLOUD_IDENTITY_EMAIL_WEBHOOK_AUTHORIZATION`. The webhook payload contains
   only `purpose`, `recipient`, and an opaque single-use token; neither the
-  service nor its logs store that token. In a non-production environment,
+  service nor its logs store that token. The verification link returns to the
+  Web root with `?verify_email=<token>`; Web consumes it through the same-origin
+  Identity API and removes it from browser history. In a non-production environment,
   delivery remains deliberately unavailable unless an explicit delivery
   implementation is injected for tests.
 - Enrollment is intentionally public. The 32-byte activation credential owns

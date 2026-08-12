@@ -492,7 +492,7 @@ async fn refresh(
 async fn verify_email(
     State(state): State<Arc<IdentityState>>,
     Json(req): Json<ActionTokenRequest>,
-) -> Result<Json<MessageResponse>, ApiError> {
+) -> Result<Json<AuthResponse>, ApiError> {
     let user_id = state
         .repository
         .consume_action_token(
@@ -503,14 +503,31 @@ async fn verify_email(
         .await
         .map_err(ApiError::Repository)?
         .ok_or(ApiError::InvalidToken)?;
+    let email = state
+        .repository
+        .email_for_user(user_id)
+        .await
+        .map_err(ApiError::Repository)?
+        .ok_or(ApiError::InvalidToken)?;
     state
         .repository
         .mark_email_verified(user_id, Utc::now())
         .await
         .map_err(ApiError::Repository)?;
-    Ok(Json(MessageResponse {
-        message: "email_verified",
-    }))
+    let membership = state
+        .repository
+        .primary_membership(user_id)
+        .await
+        .map_err(ApiError::Repository)?
+        .ok_or(ApiError::Unavailable)?;
+    let user = state
+        .repository
+        .find_user_by_email(&email)
+        .await
+        .map_err(ApiError::Repository)?
+        .ok_or(ApiError::Unavailable)?;
+    let session = issue_session(&state, user, membership, None).await?;
+    Ok(session)
 }
 
 async fn request_email_verification(
