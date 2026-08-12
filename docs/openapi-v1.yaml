@@ -1,0 +1,941 @@
+openapi: 3.1.0
+info:
+  title: Candy Cloud API
+  version: 1.0.0
+  summary: Versioned management, enrollment, Grant, and Runtime synchronization API
+  description: |-
+    Candy Cloud V1 has two identity planes. Management resources use an EdDSA
+    bearer token scoped to one organization and tenant. Device enrollment is a
+    public, activation-credential-bound exchange. Grant issuance and Runtime
+    synchronization require a device certificate authenticated by the trusted
+    reverse proxy. Candy data-plane traffic never traverses this API.
+
+    Operations carrying the Candy Runtime synchronization extension are synchronized with the
+    candy-runtime implementation in this delivery branch. Other operations are
+    already mounted by the current Cloud binaries.
+    The OpenAPI contract describes the complete Candy Core site-projection
+    envelope delivered to Runtime. It does not define a separate Cloud-only
+    Core product, release, or protocol line.
+servers:
+  - url: https://cloud.example.com/api
+    description: Management API through the reference reverse proxy
+  - url: https://cloud.example.com/auth
+    description: Enrollment, Grant, and Runtime synchronization API
+tags:
+  - name: Health
+  - name: Management
+  - name: Enrollment
+  - name: Grants
+  - name: Runtime synchronization
+security: []
+paths:
+  /health/live:
+    get:
+      tags: [Health]
+      operationId: getLiveness
+      summary: Report that the process event loop is alive
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            text/plain:
+              schema: { type: string, const: ok }
+              example: ok
+  /health/ready:
+    get:
+      tags: [Health]
+      operationId: getReadiness
+      summary: Report whether required dependencies are ready
+      responses:
+        "200":
+          description: Service can serve its complete API.
+          content:
+            text/plain:
+              schema: { type: string }
+              example: ready
+        "503":
+          description: A required dependency is unavailable.
+          content:
+            text/plain:
+              schema: { type: string }
+              example: dependency unavailable
+  /health/degraded:
+    get:
+      tags: [Health]
+      operationId: getDegradedState
+      summary: Report the management API degraded state
+      description: This route is mounted by cloud-api, not cloud-auth.
+      responses:
+        "503":
+          description: The current implementation always reports degraded.
+          content:
+            text/plain:
+              schema: { type: string, const: degraded }
+              example: degraded
+  /v1/tenants/{tenant_id}/{collection}:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+      - $ref: "#/components/parameters/Collection"
+    get:
+      tags: [Management]
+      operationId: listControlResources
+      summary: List one tenant-scoped control resource collection
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageAfter"
+      responses:
+        "200":
+          description: One bounded page ordered by resource identifier.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResourceListResponse" }
+              example:
+                schema_version: 1
+                items:
+                  - metadata:
+                      schema_version: 1
+                      id: 018f624d-a61c-7abc-8d0f-4fc178812001
+                      tenant_id: 018f624d-a61c-7abc-8d0f-4fc178810001
+                      revision: 3
+                      state: ACTIVE
+                    resource:
+                      kind: SITE
+                      spec: { name: Shanghai office, kind: EDGE }
+                next_cursor: null
+        "400": { $ref: "#/components/responses/ManagementBadRequest" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "404": { $ref: "#/components/responses/UnknownCollection" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+    post:
+      tags: [Management]
+      operationId: createControlResource
+      summary: Create a tenant-scoped control resource
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResourceRequest" }
+            example:
+              resource:
+                kind: SITE
+                spec: { name: Shanghai office, kind: EDGE }
+      responses:
+        "201": { $ref: "#/components/responses/MutationApplied" }
+        "200": { $ref: "#/components/responses/MutationReplayed" }
+        "400": { $ref: "#/components/responses/ManagementBadRequest" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "404": { $ref: "#/components/responses/UnknownCollection" }
+        "409": { $ref: "#/components/responses/ManagementConflict" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/tenants/{tenant_id}/{collection}/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+      - $ref: "#/components/parameters/Collection"
+      - $ref: "#/components/parameters/ResourceId"
+    get:
+      tags: [Management]
+      operationId: getControlResource
+      summary: Read one tenant-scoped control resource
+      security: [{ managementBearer: [] }]
+      responses:
+        "200":
+          description: Current resource document.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ControlResource" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "404": { $ref: "#/components/responses/ManagementNotFound" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+    put:
+      tags: [Management]
+      operationId: replaceControlResource
+      summary: Replace one resource using optimistic concurrency
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResourceRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/MutationApplied" }
+        "400": { $ref: "#/components/responses/ManagementBadRequest" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "404": { $ref: "#/components/responses/ManagementNotFound" }
+        "409": { $ref: "#/components/responses/ManagementConflict" }
+        "412": { $ref: "#/components/responses/RevisionConflict" }
+        "428": { $ref: "#/components/responses/IfMatchRequired" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+    delete:
+      tags: [Management]
+      operationId: deleteControlResource
+      summary: Soft-delete one resource using optimistic concurrency
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200": { $ref: "#/components/responses/MutationApplied" }
+        "400": { $ref: "#/components/responses/ManagementBadRequest" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "404": { $ref: "#/components/responses/ManagementNotFound" }
+        "409": { $ref: "#/components/responses/ManagementConflict" }
+        "412": { $ref: "#/components/responses/RevisionConflict" }
+        "428": { $ref: "#/components/responses/IfMatchRequired" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/enrollment/challenges:
+    post:
+      tags: [Enrollment]
+      operationId: createEnrollmentChallenge
+      summary: Reserve an activation credential and create an enrollment challenge
+      description: |-
+        Public bootstrap endpoint. Tenant and organization scope are derived from
+        the single-use activation credential and MUST NOT be accepted from the body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnrollmentChallengeRequest" }
+            example:
+              activation_credential: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+              request_id: enroll-018f624d
+              enrollment_instance_id: openwrt-install-7c19
+              display_name: Shanghai gateway
+              root_public_key: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE
+              operational_public_key: AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI
+              metadata_hash: AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM
+              attestation_hash: BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ
+      responses:
+        "201":
+          description: New challenge created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrollmentChallengeResponse" }
+        "200":
+          description: Exact idempotent replay of an existing challenge.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrollmentChallengeResponse" }
+        "400": { $ref: "#/components/responses/DeviceBadRequest" }
+        "401": { $ref: "#/components/responses/EnrollmentDenied" }
+        "409": { $ref: "#/components/responses/DeviceConflict" }
+        "422": { $ref: "#/components/responses/UnprocessableJson" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
+  /v1/enrollment/complete:
+    post:
+      tags: [Enrollment]
+      operationId: completeEnrollment
+      summary: Prove the operational key and issue a device certificate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnrollmentCompleteRequest" }
+            example:
+              challenge_id: 018f624d-a61c-7abc-8d0f-4fc178812100
+              request_id: complete-018f624d
+              operational_proof: CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ
+      responses:
+        "200":
+          description: Certificate issued or exact completion replayed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrollmentCompleteResponse" }
+        "400": { $ref: "#/components/responses/DeviceBadRequest" }
+        "401": { $ref: "#/components/responses/EnrollmentDenied" }
+        "409": { $ref: "#/components/responses/DeviceConflict" }
+        "422": { $ref: "#/components/responses/UnprocessableJson" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
+  /v1/access-grants:
+    post:
+      tags: [Grants]
+      operationId: issueAccessGrant
+      summary: Issue an opaque Core-signed access Grant
+      security: [{ deviceMtls: [] }]
+      description: |-
+        Device, device-key, tenant, and organization scope come exclusively from
+        the verified client certificate. Supplying those fields in JSON is rejected.
+        The current issuer supports `service_class: private` with
+        `private.connect` or `private.tun.connect`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GrantRequest" }
+            example:
+              request_id: grant-refresh-20260812T042000Z
+              node_pool_id: 018f624d-a61c-7abc-8d0f-4fc178812200
+              service_class: private
+              service_permission: private.tun.connect
+      responses:
+        "200":
+          description: Grant issued or an exact idempotent issue replayed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GrantResponse" }
+        "400": { $ref: "#/components/responses/DeviceBadRequest" }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "403": { $ref: "#/components/responses/DeviceDenied" }
+        "409": { $ref: "#/components/responses/DeviceConflict" }
+        "422": { $ref: "#/components/responses/UnprocessableJson" }
+        "500": { $ref: "#/components/responses/DeviceInternal" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
+  /v1/runtime/capabilities:
+    get:
+      tags: [Runtime synchronization]
+      operationId: getRuntimeCapabilities
+      summary: Discover the Runtime synchronization contract and polling bounds
+      x-candy-status: runtime-sync
+      security: [{ deviceMtls: [] }]
+      responses:
+        "200":
+          description: Runtime synchronization capabilities for this Cloud deployment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeCapabilities" }
+              example:
+                api_version: v1
+                wire_protocol: "0.3"
+                configuration_object: site_projection_v1
+                configuration_media_type: application/vnd.candy.site-projection-envelope.v1+octet-stream
+                conditional_requests: [etag, if-none-match]
+                status_values: [active, rejected]
+                refresh:
+                  minimum_seconds: 15
+                  recommended_seconds: 30
+                  maximum_seconds: 300
+                  jitter_percent: 20
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
+  /v1/runtime/configuration:
+    get:
+      tags: [Runtime synchronization]
+      operationId: getRuntimeConfiguration
+      summary: Fetch the current signed projection for the authenticated Runtime
+      x-candy-status: runtime-sync
+      security: [{ deviceMtls: [] }]
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: Strong ETag from the last verified candidate.
+          schema: { type: string, pattern: '^"sha256-[0-9a-f]{64}"$' }
+      responses:
+        "200":
+          description: |-
+            Current opaque Core-signed Runtime projection. Runtime MUST verify and
+            compile the complete envelope before atomically replacing last-known-good state.
+          headers:
+            ETag: { $ref: "#/components/headers/ConfigurationETag" }
+            X-Candy-Projection-Publication-Id:
+              schema: { $ref: "#/components/schemas/Uuid" }
+            X-Candy-Projection-Id:
+              schema: { $ref: "#/components/schemas/Uuid" }
+            X-Candy-Segment-Id:
+              schema: { $ref: "#/components/schemas/Uuid" }
+            X-Candy-Attachment-Id:
+              schema: { $ref: "#/components/schemas/Uuid" }
+            X-Candy-Segment-Generation:
+              schema: { $ref: "#/components/schemas/PositiveInteger" }
+            X-Candy-Projection-Generation:
+              schema: { $ref: "#/components/schemas/PositiveInteger" }
+            X-Candy-Projection-Content-Hash:
+              schema: { $ref: "#/components/schemas/Sha256Hex" }
+            X-Candy-Refresh-After:
+              schema: { type: integer, const: 30 }
+          content:
+            application/vnd.candy.site-projection-envelope.v1+octet-stream:
+              schema:
+                type: string
+                contentEncoding: base64
+                contentMediaType: application/octet-stream
+        "304":
+          description: The current projection exactly matches `If-None-Match`; no body is returned.
+          headers:
+            ETag: { $ref: "#/components/headers/ConfigurationETag" }
+        "400": { $ref: "#/components/responses/DeviceBadRequest" }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "204":
+          description: The authenticated device is active but has no SD-WAN attachment.
+          headers:
+            Retry-After:
+              schema: { type: integer, const: 30 }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
+  /v1/runtime/configuration/status:
+    put:
+      tags: [Runtime synchronization]
+      operationId: reportRuntimeConfigurationStatus
+      summary: Report the local application state for one exact projection
+      x-candy-status: runtime-sync
+      security: [{ deviceMtls: [] }]
+      parameters:
+        - $ref: "#/components/parameters/RuntimeIfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RuntimeConfigurationStatus" }
+            examples:
+              applied:
+                value:
+                  projection_publication_id: 018f624d-a61c-7abc-8d0f-4fc178812300
+                  projection_content_hash: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+                  state: active
+              rejected:
+                value:
+                  projection_publication_id: 018f624d-a61c-7abc-8d0f-4fc178812300
+                  projection_content_hash: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+                  state: rejected
+                  error_code: runtime_validation_failed
+      responses:
+        "204":
+          description: Status stored for the exact configuration named by `If-Match`.
+        "400": { $ref: "#/components/responses/DeviceBadRequest" }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "409":
+          description: Status does not match the current exact projection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceProblem" }
+              example: { code: configuration_changed }
+        "422": { $ref: "#/components/responses/UnprocessableJson" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
+components:
+  securitySchemes:
+    managementBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: EdDSA JWT
+      description: |-
+        JWT must contain bounded `sub`, `organization_id`, `tenant_id`, `role`,
+        `iss`, `aud`, `exp`, `nbf`, `iat`, and `jti` claims. Tenant scope must
+        match the path.
+    deviceMtls:
+      type: mutualTLS
+      description: |-
+        The trusted reverse proxy verifies the Candy Device CA and forwards the
+        verified DER certificate through a private hop. Direct client-supplied
+        identity headers are stripped and are never an identity source.
+  parameters:
+    TenantId:
+      name: tenant_id
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/Uuid" }
+    Collection:
+      name: collection
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [nodes, sites, segments, attachments, prefixes, peers, relays, path-candidates, egresses, service-policies, dns-intents]
+    ResourceId:
+      name: id
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/Uuid" }
+    PageSize:
+      name: X-Page-Size
+      in: header
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    PageAfter:
+      name: X-Page-After
+      in: header
+      required: false
+      description: Non-zero UUID cursor returned as `next_cursor` by the previous page.
+      schema: { $ref: "#/components/schemas/Uuid" }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Exact replays are accepted for 24 hours; divergent reuse is rejected.
+      schema: { type: string, minLength: 1, maxLength: 160 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Strong numeric revision. Weak values are rejected.
+      schema: { type: string, pattern: '^("[1-9][0-9]*"|[1-9][0-9]*)$' }
+      example: '"7"'
+    RuntimeIfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Strong SHA-256 ETag returned by Runtime configuration GET.
+      schema: { type: string, pattern: '^"sha256-[0-9a-f]{64}"$' }
+  headers:
+    RevisionETag:
+      description: Strong numeric revision used by `If-Match`.
+      schema: { type: string, pattern: '^"[1-9][0-9]*"$' }
+      example: '"7"'
+    ConfigurationETag:
+      description: Strong SHA-256 ETag of the exact signed envelope bytes.
+      schema: { type: string, pattern: '^"sha256-[0-9a-f]{64}"$' }
+      example: '"sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"'
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    PositiveInteger: { type: integer, minimum: 1 }
+    Sha256Hex: { type: string, pattern: '^[0-9a-f]{64}$' }
+    Base64Url32: { type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$' }
+    Base64Url64: { type: string, minLength: 86, maxLength: 86, pattern: '^[A-Za-z0-9_-]{86}$' }
+    ResourceState: { type: string, enum: [ACTIVE, DISABLED, DELETED] }
+    ResourceMetadata:
+      type: object
+      additionalProperties: false
+      required: [schema_version, id, tenant_id, revision, state]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        id: { $ref: "#/components/schemas/Uuid" }
+        tenant_id: { $ref: "#/components/schemas/Uuid" }
+        revision: { $ref: "#/components/schemas/PositiveInteger" }
+        state: { $ref: "#/components/schemas/ResourceState" }
+    Ipv4Prefix:
+      type: object
+      additionalProperties: false
+      required: [network, prefix_len]
+      properties:
+        network: { type: string, format: ipv4 }
+        prefix_len: { type: integer, minimum: 1, maximum: 32 }
+    NodeSpec:
+      type: object
+      additionalProperties: false
+      required: [device_id, device_key_id, site_id, display_name, platform, architecture]
+      properties:
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        device_key_id: { $ref: "#/components/schemas/Uuid" }
+        site_id: { $ref: "#/components/schemas/Uuid" }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        platform: { type: string, enum: [OPEN_WRT, LINUX] }
+        architecture: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }
+    SiteSpec:
+      type: object
+      additionalProperties: false
+      required: [name, kind]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        kind: { type: string, enum: [EDGE, PRIVATE_CLOUD] }
+    SegmentSpec:
+      type: object
+      additionalProperties: false
+      required: [name, overlay_prefix]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        overlay_prefix: { $ref: "#/components/schemas/Ipv4Prefix" }
+    AttachmentSpec:
+      type: object
+      additionalProperties: false
+      required: [segment_id, site_id, node_id, overlay_router_ipv4, epoch_floor]
+      properties:
+        segment_id: { $ref: "#/components/schemas/Uuid" }
+        site_id: { $ref: "#/components/schemas/Uuid" }
+        node_id: { $ref: "#/components/schemas/Uuid" }
+        overlay_router_ipv4: { type: string, format: ipv4 }
+        epoch_floor: { $ref: "#/components/schemas/PositiveInteger" }
+    PrefixSpec:
+      type: object
+      additionalProperties: false
+      required: [site_id, segment_id, prefix, source]
+      properties:
+        site_id: { $ref: "#/components/schemas/Uuid" }
+        segment_id: { $ref: "#/components/schemas/Uuid" }
+        prefix: { $ref: "#/components/schemas/Ipv4Prefix" }
+        source: { type: string, enum: [CONNECTED, CONFIGURED, APPROVED_LEARNED] }
+    PeerSpec:
+      type: object
+      additionalProperties: false
+      required: [segment_id, site_a_id, site_b_id, path_policy]
+      properties:
+        segment_id: { $ref: "#/components/schemas/Uuid" }
+        site_a_id: { $ref: "#/components/schemas/Uuid" }
+        site_b_id: { $ref: "#/components/schemas/Uuid" }
+        path_policy: { type: string, enum: [DIRECT_ONLY, DIRECT_PREFERRED, RELAY_REQUIRED] }
+    RelaySpec:
+      type: object
+      additionalProperties: false
+      required: [service_node_id, name, region, max_sessions, max_bits_per_second]
+      properties:
+        service_node_id: { $ref: "#/components/schemas/Uuid" }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        region: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }
+        max_sessions: { type: integer, minimum: 1 }
+        max_bits_per_second: { $ref: "#/components/schemas/PositiveInteger" }
+    PathCandidateSpec:
+      type: object
+      additionalProperties: false
+      required: [segment_id, peer_id, source_attachment_id, destination_attachment_id, kind, relay_id, endpoint, priority]
+      properties:
+        segment_id: { $ref: "#/components/schemas/Uuid" }
+        peer_id: { $ref: "#/components/schemas/Uuid" }
+        source_attachment_id: { $ref: "#/components/schemas/Uuid" }
+        destination_attachment_id: { $ref: "#/components/schemas/Uuid" }
+        kind: { type: string, enum: [DIRECT, RELAY] }
+        relay_id:
+          oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }]
+        endpoint: { type: string, minLength: 3, maxLength: 255 }
+        priority: { type: integer, minimum: 1, maximum: 65535 }
+    EgressSpec:
+      type: object
+      additionalProperties: false
+      required: [name, site_id, attachment_id, max_sessions, max_bits_per_second]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        site_id: { $ref: "#/components/schemas/Uuid" }
+        attachment_id: { $ref: "#/components/schemas/Uuid" }
+        max_sessions: { type: integer, minimum: 1 }
+        max_bits_per_second: { $ref: "#/components/schemas/PositiveInteger" }
+    PolicyAction:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type]
+          properties: { type: { type: string, const: LOCAL_EGRESS } }
+        - type: object
+          additionalProperties: false
+          required: [type, egress_id]
+          properties:
+            type: { type: string, const: REMOTE_EGRESS }
+            egress_id: { $ref: "#/components/schemas/Uuid" }
+    ServicePolicyRule:
+      type: object
+      additionalProperties: false
+      required: [id, priority, source_site_ids, destination_prefixes, domains, traffic_classes, action]
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        priority: { type: integer, minimum: 0 }
+        source_site_ids: { type: array, maxItems: 256, items: { $ref: "#/components/schemas/Uuid" } }
+        destination_prefixes: { type: array, maxItems: 256, items: { $ref: "#/components/schemas/Ipv4Prefix" } }
+        domains: { type: array, maxItems: 256, items: { type: string, maxLength: 253 } }
+        traffic_classes: { type: array, maxItems: 32, items: { type: string, minLength: 1, maxLength: 40 } }
+        action: { $ref: "#/components/schemas/PolicyAction" }
+    ServicePolicySpec:
+      type: object
+      additionalProperties: false
+      required: [segment_id, generation, rules]
+      properties:
+        segment_id: { $ref: "#/components/schemas/Uuid" }
+        generation: { $ref: "#/components/schemas/PositiveInteger" }
+        rules: { type: array, maxItems: 512, items: { $ref: "#/components/schemas/ServicePolicyRule" } }
+    DnsRecordData:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, value]
+          properties: { type: { type: string, const: A }, value: { type: string, format: ipv4 } }
+        - type: object
+          additionalProperties: false
+          required: [type, value]
+          properties: { type: { type: string, const: AAAA }, value: { type: string, format: ipv6 } }
+        - type: object
+          additionalProperties: false
+          required: [type, value]
+          properties: { type: { type: string, const: CNAME }, value: { type: string, maxLength: 253 } }
+    DnsRecord:
+      type: object
+      additionalProperties: false
+      required: [name, ttl_seconds, data, required_prefix_id]
+      properties:
+        name: { type: string, maxLength: 253 }
+        ttl_seconds: { type: integer, minimum: 5, maximum: 86400 }
+        data: { $ref: "#/components/schemas/DnsRecordData" }
+        required_prefix_id:
+          oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }]
+    DnsIntentSpec:
+      type: object
+      additionalProperties: false
+      required: [segment_id, site_id, zone, records]
+      properties:
+        segment_id: { $ref: "#/components/schemas/Uuid" }
+        site_id: { $ref: "#/components/schemas/Uuid" }
+        zone: { type: string, maxLength: 253 }
+        records: { type: array, maxItems: 4096, items: { $ref: "#/components/schemas/DnsRecord" } }
+    ResourceSpec:
+      oneOf:
+        - $ref: "#/components/schemas/NodeResourceSpec"
+        - $ref: "#/components/schemas/SiteResourceSpec"
+        - $ref: "#/components/schemas/SegmentResourceSpec"
+        - $ref: "#/components/schemas/AttachmentResourceSpec"
+        - $ref: "#/components/schemas/PrefixResourceSpec"
+        - $ref: "#/components/schemas/PeerResourceSpec"
+        - $ref: "#/components/schemas/RelayResourceSpec"
+        - $ref: "#/components/schemas/PathCandidateResourceSpec"
+        - $ref: "#/components/schemas/EgressResourceSpec"
+        - $ref: "#/components/schemas/ServicePolicyResourceSpec"
+        - $ref: "#/components/schemas/DnsIntentResourceSpec"
+      discriminator:
+        propertyName: kind
+    NodeResourceSpec: { $ref: "#/components/schemas/NodeResourceShape" }
+    NodeResourceShape:
+      type: object
+      additionalProperties: false
+      required: [kind, spec]
+      properties: { kind: { type: string, const: NODE }, spec: { $ref: "#/components/schemas/NodeSpec" } }
+    SiteResourceSpec:
+      type: object
+      additionalProperties: false
+      required: [kind, spec]
+      properties: { kind: { type: string, const: SITE }, spec: { $ref: "#/components/schemas/SiteSpec" } }
+    SegmentResourceSpec:
+      type: object
+      additionalProperties: false
+      required: [kind, spec]
+      properties: { kind: { type: string, const: SEGMENT }, spec: { $ref: "#/components/schemas/SegmentSpec" } }
+    AttachmentResourceSpec:
+      type: object
+      additionalProperties: false
+      required: [kind, spec]
+      properties: { kind: { type: string, const: ATTACHMENT }, spec: { $ref: "#/components/schemas/AttachmentSpec" } }
+    PrefixResourceSpec:
+      type: object
+      additionalProperties: false
+      required: [kind, spec]
+      properties: { kind: { type: string, const: PREFIX }, spec: { $ref: "#/components/schemas/PrefixSpec" } }
+    PeerResourceSpec:
+      type: object
+      additionalProperties: false
+      required: [kind, spec]
+      properties: { kind: { type: string, const: PEER }, spec: { $ref: "#/components/schemas/PeerSpec" } }
+    RelayResourceSpec:
+      type: object
+      additionalProperties: false
+      required: [kind, spec]
+      properties: { kind: { type: string, const: RELAY }, spec: { $ref: "#/components/schemas/RelaySpec" } }
+    PathCandidateResourceSpec:
+      type: object
+      additionalProperties: false
+      required: [kind, spec]
+      properties: { kind: { type: string, const: PATH_CANDIDATE }, spec: { $ref: "#/components/schemas/PathCandidateSpec" } }
+    EgressResourceSpec:
+      type: object
+      additionalProperties: false
+      required: [kind, spec]
+      properties: { kind: { type: string, const: EGRESS }, spec: { $ref: "#/components/schemas/EgressSpec" } }
+    ServicePolicyResourceSpec:
+      type: object
+      additionalProperties: false
+      required: [kind, spec]
+      properties: { kind: { type: string, const: SERVICE_POLICY }, spec: { $ref: "#/components/schemas/ServicePolicySpec" } }
+    DnsIntentResourceSpec:
+      type: object
+      additionalProperties: false
+      required: [kind, spec]
+      properties: { kind: { type: string, const: DNS_INTENT }, spec: { $ref: "#/components/schemas/DnsIntentSpec" } }
+    ControlResource:
+      type: object
+      additionalProperties: false
+      required: [metadata, resource]
+      properties:
+        metadata: { $ref: "#/components/schemas/ResourceMetadata" }
+        resource: { $ref: "#/components/schemas/ResourceSpec" }
+    ResourceRequest:
+      type: object
+      additionalProperties: false
+      required: [resource]
+      properties: { resource: { $ref: "#/components/schemas/ResourceSpec" } }
+    ResourceListResponse:
+      type: object
+      additionalProperties: false
+      required: [schema_version, items, next_cursor]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        items: { type: array, maxItems: 200, items: { $ref: "#/components/schemas/ControlResource" } }
+        next_cursor:
+          oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }]
+    MutationResponse:
+      type: object
+      additionalProperties: false
+      required: [schema_version, replayed, resource]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        replayed: { type: boolean }
+        resource: { $ref: "#/components/schemas/ControlResource" }
+    ManagementProblem:
+      type: object
+      additionalProperties: false
+      required: [schema_version, code, message]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        code: { type: string }
+        message: { type: string }
+    EnrollmentChallengeRequest:
+      type: object
+      additionalProperties: false
+      required: [activation_credential, request_id, enrollment_instance_id, display_name, root_public_key, operational_public_key, metadata_hash, attestation_hash]
+      properties:
+        activation_credential: { $ref: "#/components/schemas/Base64Url32" }
+        request_id: { type: string, minLength: 1, maxLength: 120 }
+        enrollment_instance_id: { type: string, minLength: 1, maxLength: 120 }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        root_public_key: { $ref: "#/components/schemas/Base64Url32" }
+        operational_public_key: { $ref: "#/components/schemas/Base64Url32" }
+        metadata_hash: { $ref: "#/components/schemas/Base64Url32" }
+        attestation_hash: { $ref: "#/components/schemas/Base64Url32" }
+    EnrollmentChallengeResponse:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, organization_id, server_nonce, expires_at, replayed]
+      properties:
+        challenge_id: { $ref: "#/components/schemas/Uuid" }
+        organization_id: { $ref: "#/components/schemas/Uuid" }
+        server_nonce: { $ref: "#/components/schemas/Base64Url32" }
+        expires_at: { type: string, format: date-time }
+        replayed: { type: boolean }
+    EnrollmentCompleteRequest:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, request_id, operational_proof]
+      properties:
+        challenge_id: { $ref: "#/components/schemas/Uuid" }
+        request_id: { type: string, minLength: 1, maxLength: 120 }
+        operational_proof: { $ref: "#/components/schemas/Base64Url64" }
+    EnrollmentCompleteResponse:
+      type: object
+      additionalProperties: false
+      required: [device_id, device_key_id, certificate_der, certificate_chain_pem, not_after, replayed]
+      properties:
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        device_key_id: { $ref: "#/components/schemas/Uuid" }
+        certificate_der: { type: string, contentEncoding: base64 }
+        certificate_chain_pem: { type: string }
+        not_after: { type: string, format: date-time }
+        replayed: { type: boolean }
+    GrantRequest:
+      type: object
+      additionalProperties: false
+      required: [request_id, node_pool_id, service_class, service_permission]
+      properties:
+        request_id: { type: string, minLength: 1, maxLength: 120 }
+        node_pool_id: { $ref: "#/components/schemas/Uuid" }
+        service_class:
+          type: string
+          enum: [private, candy_shared, candy_dedicated, partner]
+          description: Only `private` is currently accepted by the issuer.
+        service_permission: { type: string, enum: [private.connect, private.tun.connect] }
+    GrantResponse:
+      type: object
+      additionalProperties: false
+      required: [grant_id, expires_at_unix, replayed, access_grant]
+      properties:
+        grant_id: { $ref: "#/components/schemas/Uuid" }
+        expires_at_unix: { type: integer, format: int64 }
+        replayed: { type: boolean }
+        access_grant: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]+$' }
+    RuntimeCapabilities:
+      type: object
+      additionalProperties: false
+      required: [api_version, wire_protocol, configuration_object, configuration_media_type, conditional_requests, status_values, refresh]
+      properties:
+        api_version: { type: string, const: v1 }
+        wire_protocol: { type: string, const: "0.3" }
+        configuration_object: { type: string, const: site_projection_v1 }
+        configuration_media_type: { type: string, const: application/vnd.candy.site-projection-envelope.v1+octet-stream }
+        conditional_requests:
+          type: array
+          prefixItems: [{ const: etag }, { const: if-none-match }]
+          minItems: 2
+          maxItems: 2
+        status_values:
+          type: array
+          prefixItems: [{ const: active }, { const: rejected }]
+          minItems: 2
+          maxItems: 2
+        refresh:
+          type: object
+          additionalProperties: false
+          required: [minimum_seconds, recommended_seconds, maximum_seconds, jitter_percent]
+          properties:
+            minimum_seconds: { type: integer, const: 15 }
+            recommended_seconds: { type: integer, const: 30 }
+            maximum_seconds: { type: integer, const: 300 }
+            jitter_percent: { type: integer, const: 20 }
+    RuntimeConfigurationStatus:
+      type: object
+      additionalProperties: false
+      required: [projection_publication_id, projection_content_hash, state]
+      properties:
+        projection_publication_id: { $ref: "#/components/schemas/Uuid" }
+        projection_content_hash: { $ref: "#/components/schemas/Sha256Hex" }
+        state: { type: string, enum: [active, rejected] }
+        error_code: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }
+    DeviceProblem:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code: { type: string }
+  responses:
+    MutationApplied:
+      description: Mutation applied.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/MutationResponse" }
+    MutationReplayed:
+      description: Exact idempotent replay; the original resource is returned.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/MutationResponse" }
+    ManagementBadRequest:
+      description: Malformed request.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    ManagementUnauthorized:
+      description: Missing or invalid management bearer token.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    ManagementForbidden:
+      description: Role or tenant scope does not permit this operation.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    UnknownCollection:
+      description: Collection is not supported.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    ManagementNotFound:
+      description: Resource was not found.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    ManagementConflict:
+      description: Referential, idempotency, or state conflict.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    RevisionConflict:
+      description: Current revision does not match `If-Match`.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    IfMatchRequired:
+      description: A replacing mutation omitted `If-Match`.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    ManagementUnavailable:
+      description: Management storage or schema is unavailable.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    DeviceBadRequest:
+      description: Invalid domain input or base64url encoding.
+      content: { application/json: { schema: { $ref: "#/components/schemas/DeviceProblem" } } }
+    DeviceUnauthorized:
+      description: Missing, invalid, expired, revoked, or wrong-environment device certificate.
+      content: { application/json: { schema: { $ref: "#/components/schemas/DeviceProblem" } } }
+    EnrollmentDenied:
+      description: Activation credential, challenge, or key proof was rejected.
+      content: { application/json: { schema: { $ref: "#/components/schemas/DeviceProblem" } } }
+    DeviceDenied:
+      description: Authorization snapshot denied the request.
+      content: { application/json: { schema: { $ref: "#/components/schemas/DeviceProblem" } } }
+    DeviceConflict:
+      description: Idempotency or state conflict.
+      content: { application/json: { schema: { $ref: "#/components/schemas/DeviceProblem" } } }
+    DeviceUnavailable:
+      description: A required dependency is unavailable; operation fails closed.
+      content: { application/json: { schema: { $ref: "#/components/schemas/DeviceProblem" } } }
+    DeviceInternal:
+      description: Grant assembly failed after validation.
+      content: { application/json: { schema: { $ref: "#/components/schemas/DeviceProblem" } } }
+    UnprocessableJson:
+      description: JSON contains missing, unknown, or incorrectly typed fields.
+      content: { text/plain: { schema: { type: string } } }

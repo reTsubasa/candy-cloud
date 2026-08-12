@@ -41,6 +41,7 @@ jobs:
         with:
           workspaces: candy-cloud -> target
       - run: cargo run -p cloud-db --bin cloud-db-migrate
+      - run: python3 tests/api_contract.py
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Reject private Core source dependencies
