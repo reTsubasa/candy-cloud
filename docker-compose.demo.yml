@@ -1,0 +1,7 @@
+services:
+  cloud-identity:
+    environment:
+      CLOUD_IDENTITY_ENVIRONMENT: development
+      CLOUD_DEV_DEMO_ENABLED: "1"
+      CLOUD_DEV_DEMO_EMAIL: demo-owner@candy.local
+      CLOUD_DEV_DEMO_PASSWORD: Candy-Demo-2026!

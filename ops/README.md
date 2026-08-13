@@ -47,6 +47,11 @@ only when `CLOUD_ENVIRONMENT=development`, requires an injected
 `CLOUD_DEV_DEMO_PASSWORD`, and intentionally refuses to start in every other
 environment. No fixed demo password is present in the image or repository.
 
+`docker-compose.demo.yml` is a local product-demo overlay and intentionally
+contains the documented fixed credential `demo-owner@candy.local` /
+`Candy-Demo-2026!`. Never include this overlay in staging or production. The
+Identity environment gate rejects it there even if it is added accidentally.
+
 ## Failure behavior
 
 When MySQL is unavailable, new writes and Grant issuance fail closed. Existing unexpired Grants remain locally verifiable by Candy Cloud Server and the customer data plane does not depend on this Compose stack.

@@ -70,6 +70,25 @@ old sessions on restart. The email defaults to `demo-owner@candy.local`; the
 password has no default and is never written to the image or logs. Enabling the
 bootstrap in production, staging, or E2E makes `cloud-identity` refuse to start.
 
+The repository also includes an explicit Demo Compose overlay with a built-in
+workspace and login:
+
+```text
+Organization: Candy Demo
+Email:        demo-owner@candy.local
+Password:     Candy-Demo-2026!
+```
+
+Start it by adding `-f docker-compose.demo.yml` to the normal Compose command:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d
+```
+
+The fixed credential exists only in that Demo overlay. The production Compose
+file has no default Demo password, and Identity refuses the overlay unless its
+environment is exactly `development`.
+
 For local UI development:
 
 ```bash
