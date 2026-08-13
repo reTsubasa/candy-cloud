@@ -50,6 +50,7 @@ revision=${release_tag#cloud-arm64-}
 archive="candy-cloud-arm64-$revision.tar.gz"
 checksum="$archive.sha256"
 manifest="candy-cloud-arm64-$revision.json"
+release_override=compose.arm64.release.yml
 base_url="https://github.com/$repository/releases/download/$release_tag"
 
 umask 077
@@ -77,6 +78,23 @@ for image in migrate cloud-api cloud-identity cloud-auth cloud-worker cloud-web;
 		fail "$ref is not an ARM64 image"
 done
 
+cat >"$release_override" <<EOF
+services:
+  migrate:
+    image: candy-cloud-migrate:arm64-$revision
+  cloud-api:
+    image: candy-cloud-cloud-api:arm64-$revision
+  cloud-identity:
+    image: candy-cloud-cloud-identity:arm64-$revision
+  cloud-auth:
+    image: candy-cloud-cloud-auth:arm64-$revision
+  cloud-worker:
+    image: candy-cloud-cloud-worker:arm64-$revision
+  cloud-web:
+    image: candy-cloud-cloud-web:arm64-$revision
+EOF
+chmod 0644 "$release_override"
+
 # Services run as uid 65532. Keep private material readable only by that uid;
 # public certificates remain readable by the reverse proxy and API services.
 chmod 0755 secrets
@@ -91,11 +109,14 @@ for file in cloud-api-auth-public.pem device-ca.pem; do
 	chmod 0444 "secrets/$file"
 done
 
-docker compose --env-file deploy.env -f compose.arm64.yml run --rm migrate
-docker compose --env-file deploy.env -f compose.arm64.yml up -d
+compose() {
+	docker compose --env-file deploy.env -f compose.arm64.yml -f "$release_override" "$@"
+}
+compose run --rm migrate
+compose up -d
 
 for service in cloud-api cloud-identity cloud-auth cloud-worker cloud-web; do
-	container=$(docker compose --env-file deploy.env -f compose.arm64.yml ps -q "$service")
+	container=$(compose ps -q "$service")
 	[ -n "$container" ] || fail "$service container was not created"
 	for attempt in $(seq 1 36); do
 		health=$(docker inspect "$container" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}')
