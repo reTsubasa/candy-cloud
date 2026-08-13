@@ -21,13 +21,20 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
     env:
       CORE_MODULE_VERSION: 0.3.10
       CORE_MODULE_TARGET: aarch64-unknown-linux-gnu
       CORE_MODULE_INPUT_TAG: cloud-core-input-v0.3.10-arm64
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
       - name: Install verification tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends usign
       - name: Download and verify signed ARM64 Core module input
@@ -63,17 +70,13 @@ jobs:
             migrate:cloud-db:cloud-db-migrate:runtime \
             cloud-api:cloud-api:cloud-api:runtime \
             cloud-identity:cloud-identity:cloud-identity:runtime; do
-            IFS=: read -r image package binary target <<EOF
-$spec
-EOF
+            IFS=: read -r image package binary target <<< "$spec"
             docker build --platform linux/arm64 --target "$target" \
               --build-arg PACKAGE="$package" --build-arg BINARY="$binary" \
               -t "candy-cloud-$image:arm64-$revision" -f docker/rust-service.Dockerfile .
           done
           for spec in cloud-auth:cloud-auth:cloud-auth cloud-worker:cloud-worker:cloud-worker; do
-            IFS=: read -r image package binary <<EOF
-$spec
-EOF
+            IFS=: read -r image package binary <<< "$spec"
             docker build --platform linux/arm64 --target runtime-core \
               --build-arg PACKAGE="$package" --build-arg BINARY="$binary" \
               --build-arg CORE_MODULE_VERSION="$CORE_MODULE_VERSION" \
