@@ -67,5 +67,6 @@ jobs:
           fi
       - run: docker/install-core-cloud-module-test.sh
       - run: tests/deploy_arm64_release.sh
+      - run: tests/web_cross_platform_build.sh
       - run: tests/compose_smoke.sh
       - run: docker compose --env-file .env.example config >/dev/null
