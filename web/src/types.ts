@@ -139,3 +139,9 @@ export type ResourceDefinition = {
   description: string;
   emptyTitle: string;
 };
+
+export type ResourceOption = {
+  value: string;
+  label: string;
+  description?: string;
+};

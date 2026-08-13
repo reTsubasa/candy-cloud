@@ -28,6 +28,24 @@ function text(value: unknown): string {
   return String(value);
 }
 
+const valueLabels: Record<string, string> = {
+  EDGE: '边缘站点', PRIVATE_CLOUD: '私有云', OPEN_WRT: 'OpenWrt', LINUX: 'Linux',
+  DIRECT_ONLY: '仅直连', DIRECT_PREFERRED: '直连优先', RELAY_REQUIRED: '必须中继',
+  DIRECT: '直接连接', RELAY: '中继路径', CONFIGURED: '手动配置', CONNECTED: '直连网络',
+  APPROVED_LEARNED: '已批准学习', ACTIVE: '活跃', DISABLED: '已停用', DELETED: '已删除',
+};
+
+function label(value: unknown): string {
+  const raw = text(value);
+  return valueLabels[raw] ?? raw;
+}
+
+function capacity(bits: unknown): string {
+  const value = Number(bits);
+  if (!Number.isFinite(value) || value <= 0) return '—';
+  return value >= 1_000_000_000 ? `${value / 1_000_000_000} Gbps` : `${value / 1_000_000} Mbps`;
+}
+
 function resourceName(resource: ControlResource): string {
   const spec = resource.resource.spec;
   return text(spec.display_name ?? spec.name ?? spec.zone ?? spec.endpoint ?? resource.metadata.id);
@@ -39,7 +57,10 @@ function resourceScope(resource: ControlResource): string {
   const overlay = spec.overlay_prefix as Record<string, unknown> | undefined;
   if (prefix) return `${text(prefix.network)}/${text(prefix.prefix_len)}`;
   if (overlay) return `${text(overlay.network)}/${text(overlay.prefix_len)}`;
-  return text(spec.region ?? spec.platform ?? spec.path_policy ?? spec.kind ?? spec.segment_id);
+  if (Array.isArray(spec.rules)) return `${spec.rules.length} 条流量规则`;
+  if (Array.isArray(spec.records)) return `${spec.records.length} 条 DNS 记录`;
+  if (spec.max_bits_per_second) return `${capacity(spec.max_bits_per_second)} · ${text(spec.max_sessions)} 会话`;
+  return label(spec.region ?? spec.platform ?? spec.path_policy ?? spec.kind ?? spec.segment_id);
 }
 
 function stateColor(state: string): string {
@@ -109,8 +130,8 @@ export function ResourcePage({ definition, session }: Props) {
       ),
     },
     { title: '范围 / 类型', render: (_: unknown, record: ControlResource) => <Typography.Text>{resourceScope(record)}</Typography.Text> },
-    { title: '状态', width: 104, render: (_: unknown, record: ControlResource) => <Tag color={stateColor(record.metadata.state)}>{record.metadata.state}</Tag> },
-    { title: 'Revision', width: 96, render: (_: unknown, record: ControlResource) => <span className="mono">{record.metadata.revision}</span> },
+    { title: '状态', width: 104, render: (_: unknown, record: ControlResource) => <Tag color={stateColor(record.metadata.state)}>{label(record.metadata.state)}</Tag> },
+    { title: '修订', width: 78, render: (_: unknown, record: ControlResource) => <span className="revision-value">{record.metadata.revision}</span> },
     {
       title: '',
       width: 92,

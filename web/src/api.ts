@@ -34,6 +34,9 @@ async function identityRequest<T>(path: string, init: RequestInit): Promise<T> {
   });
   if (!response.ok) throw await responseError(response);
   if (response.status === 204) return undefined as T;
+  if (!(response.headers.get('content-type') ?? '').includes('application/json')) {
+    throw new CloudApiError('服务返回格式异常，请稍后重试并查看系统状态', response.status, 'INVALID_RESPONSE_FORMAT');
+  }
   return response.json() as Promise<T>;
 }
 
@@ -188,6 +191,9 @@ async function requestJson<T>(path: string, token: string, init: RequestInit = {
   }
   if (!response.ok) throw await responseError(response);
   if (response.status === 204) return undefined as T;
+  if (!(response.headers.get('content-type') ?? '').includes('application/json')) {
+    throw new CloudApiError('服务返回格式异常，请稍后重试并查看系统状态', response.status, 'INVALID_RESPONSE_FORMAT');
+  }
   return response.json() as Promise<T>;
 }
 

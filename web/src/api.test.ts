@@ -40,6 +40,14 @@ describe('same-origin Cloud API client', () => {
     expect(state.text).toBe('database schema unavailable');
   });
 
+  it('turns a non-JSON management response into a user-facing service error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } }));
+    await expect(listResources('token', 'tenant', 'sites')).rejects.toMatchObject({
+      message: '服务返回格式异常，请稍后重试并查看系统状态',
+      code: 'INVALID_RESPONSE_FORMAT',
+    });
+  });
+
   it('consumes email verification through the same-origin identity path', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } }));
     await verifyAccountEmail('one-time-token');
