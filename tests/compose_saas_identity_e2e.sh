@@ -238,8 +238,8 @@ jq -e '.message == "verification_required"' "$body" >/dev/null
 
 login=$(jq -nc --arg email "$email" --arg password "$password" \
   '{email:$email,password:$password,device_label:"before-verification"}')
-expect_status "$(request POST /identity/v1/auth/login "$login")" 403
-jq -e '.code == "email_not_verified"' "$body" >/dev/null
+expect_status "$(request POST /identity/v1/auth/login "$login")" 401
+jq -e '.code == "invalid_credentials"' "$body" >/dev/null
 
 for _ in $(seq 1 30); do
   messages=$(curl --silent --fail --cacert "$work/webhook-ca.pem" \
@@ -303,6 +303,23 @@ expect_status "$(request GET "/api/v1/tenants/$tenant/sites" '' \
   -H "Authorization: Bearer $login_access")" 401
 logout_refresh=$(jq -nc --arg token "$login_refresh" '{refresh_token:$token}')
 expect_status "$(request POST /identity/v1/auth/refresh "$logout_refresh")" 401
+
+unknown_email="unknown-$$@example.test"
+unknown_login=$(jq -nc --arg email "$unknown_email" --arg password "$password" \
+  '{email:$email,password:$password,device_label:"enumeration-check"}')
+for _ in $(seq 1 5); do
+  expect_status "$(request POST /identity/v1/auth/login "$unknown_login")" 401
+  jq -e '.code == "invalid_credentials"' "$body" >/dev/null
+done
+expect_status "$(request POST /identity/v1/auth/login "$unknown_login")" 429
+jq -e '.code == "rate_limited"' "$body" >/dev/null
+retry_after=$(awk 'tolower($1) == "retry-after:" { gsub("\r", "", $2); print $2 }' "$headers")
+test -n "$retry_after" && test "$retry_after" -ge 1 && test "$retry_after" -le 900
+
+audit_count=$(compose exec -T mysql mysql -N -B \
+  -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" \
+  -e "SELECT COUNT(*) FROM audit_events WHERE action = 'IDENTITY_LOGIN_REJECTED'")
+test "$audit_count" -ge 5
 
 web_headers=$(curl --silent --show-error --cacert "$secrets/cloud-tls.pem" -D - -o /dev/null "$base/")
 printf '%s' "$web_headers" | grep -i '^strict-transport-security: max-age=31536000; includeSubDomains' >/dev/null

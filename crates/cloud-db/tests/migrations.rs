@@ -48,6 +48,7 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "human_action_tokens",
         "organization_invitations",
         "development_demo_accounts",
+        "identity_abuse_buckets",
     ];
     for table in required {
         let count: i64 = sqlx::query_scalar(
@@ -59,6 +60,17 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+}
+
+#[test]
+fn identity_abuse_buckets_are_digest_only_and_expiring() {
+    let migration = include_str!("../migrations/0013_identity_public_security.sql");
+    assert!(migration.contains("subject_hash BINARY(32)"));
+    assert!(migration.contains("expires_at TIMESTAMP(6)"));
+    assert!(migration.contains("idx_identity_abuse_buckets_expiry"));
+    assert!(!migration.contains("email"));
+    assert!(!migration.contains("ip_address"));
+    assert!(!migration.contains("token VARCHAR"));
 }
 
 #[test]

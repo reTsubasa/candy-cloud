@@ -7,6 +7,7 @@ use crate::DbPool;
 const MAX_EMAIL_LEN: usize = 254;
 const MAX_NAME_LEN: usize = 200;
 const MAX_DEVICE_LABEL_LEN: usize = 200;
+const MAX_ABUSE_SCOPE_LEN: usize = 48;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IdentityRepositoryError {
@@ -136,6 +137,22 @@ pub struct SessionRecord {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdentityRateLimitDecision {
+    pub allowed: bool,
+    pub retry_after_seconds: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct IdentitySecurityAudit<'a> {
+    pub organization_id: Option<Uuid>,
+    pub tenant_id: Option<Uuid>,
+    pub actor_hash: &'a [u8],
+    pub action: &'a str,
+    pub result: &'a str,
+    pub object_id: Option<Uuid>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RefreshTokenRecord {
     pub id: Uuid,
@@ -175,6 +192,86 @@ impl IdentityRepository {
         sqlx::query("SELECT id FROM human_users LIMIT 0")
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    pub async fn consume_rate_limit(
+        &self,
+        scope: &str,
+        subject_hash: &[u8],
+        limit: u32,
+        window_seconds: u64,
+        now: DateTime<Utc>,
+    ) -> Result<IdentityRateLimitDecision, IdentityRepositoryError> {
+        if !bounded(scope, MAX_ABUSE_SCOPE_LEN)
+            || subject_hash.len() != 32
+            || limit == 0
+            || window_seconds == 0
+            || window_seconds > 86_400
+        {
+            return Err(IdentityRepositoryError::InvalidInput);
+        }
+        let window = chrono::Duration::seconds(window_seconds as i64);
+        let expires_at = now + window;
+        let attempt_cap = limit.saturating_add(1);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM identity_abuse_buckets WHERE expires_at <= ? ORDER BY expires_at LIMIT 64",
+        )
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO identity_abuse_buckets (scope, subject_hash, attempts, window_started_at, expires_at) VALUES (?, ?, 1, ?, ?) ON DUPLICATE KEY UPDATE attempts = IF(expires_at <= VALUES(window_started_at), 1, LEAST(attempts + 1, ?)), window_started_at = IF(expires_at <= VALUES(window_started_at), VALUES(window_started_at), window_started_at), expires_at = IF(expires_at <= VALUES(window_started_at), VALUES(expires_at), expires_at)",
+        )
+        .bind(scope)
+        .bind(subject_hash)
+        .bind(now)
+        .bind(expires_at)
+        .bind(attempt_cap)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query(
+            "SELECT attempts, expires_at FROM identity_abuse_buckets WHERE scope = ? AND subject_hash = ?",
+        )
+        .bind(scope)
+        .bind(subject_hash)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let attempts: u32 = row.try_get("attempts")?;
+        let expires_at: DateTime<Utc> = row.try_get("expires_at")?;
+        let retry_after_seconds = (expires_at - now).num_seconds().max(1) as u64;
+        Ok(IdentityRateLimitDecision {
+            allowed: attempts <= limit,
+            retry_after_seconds,
+        })
+    }
+
+    pub async fn append_security_audit(
+        &self,
+        audit: IdentitySecurityAudit<'_>,
+    ) -> Result<(), IdentityRepositoryError> {
+        if audit.actor_hash.len() != 32
+            || !bounded(audit.action, 120)
+            || !bounded(audit.result, 40)
+            || audit.organization_id.is_some_and(|id| id.is_nil())
+            || audit.tenant_id.is_some_and(|id| id.is_nil())
+        {
+            return Err(IdentityRepositoryError::InvalidInput);
+        }
+        sqlx::query(
+            "INSERT INTO audit_events (id, organization_id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, ?, 'IDENTITY', HEX(?), ?, 'HUMAN_ACCOUNT', ?, JSON_OBJECT('result', ?))",
+        )
+        .bind(Uuid::now_v7())
+        .bind(audit.organization_id)
+        .bind(audit.tenant_id)
+        .bind(audit.actor_hash)
+        .bind(audit.action)
+        .bind(audit.object_id.map(|id| id.to_string()))
+        .bind(audit.result)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

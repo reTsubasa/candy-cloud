@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, sync::LazyLock, time::Duration};
 
 use anyhow::{Context, Result};
 use argon2::{
@@ -7,7 +7,7 @@ use argon2::{
 };
 use axum::{
     extract::{FromRequestParts, State},
-    http::{request::Parts, StatusCode},
+    http::{header, request::Parts, HeaderMap, HeaderValue, StatusCode},
     middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -23,13 +23,57 @@ use uuid::Uuid;
 
 pub use cloud_db::identity::{
     ActionTokenPurpose, ContextSessionReplacement, DemoAccountBootstrap, IdentityRepository,
-    IdentityRepositoryError, InvitedRegistrationWrite, MembershipRole, OrganizationInvitation,
-    RegistrationWrite, SessionRecord,
+    IdentityRepositoryError, IdentitySecurityAudit, InvitedRegistrationWrite, MembershipRole,
+    OrganizationInvitation, RegistrationWrite, SessionRecord,
 };
 
 const MIN_PASSWORD_LEN: usize = 12;
 const MAX_PASSWORD_LEN: usize = 1024;
 const DEFAULT_DEMO_EMAIL: &str = "demo-owner@candy.local";
+const CLIENT_IP_HEADER: &str = "x-candy-client-ip";
+static DUMMY_PASSWORD_HASH: LazyLock<String> = LazyLock::new(|| {
+    hash_password("candy-identity-dummy-password-only")
+        .expect("static dummy password satisfies identity policy")
+});
+
+#[derive(Debug, Clone, Copy)]
+enum PublicOperation {
+    Register,
+    Login,
+    VerificationResend,
+    PasswordReset,
+    Refresh,
+    VerifyToken,
+    ResetToken,
+}
+
+impl PublicOperation {
+    const fn limits(self) -> (&'static str, u32, u64, &'static str, u32, u64) {
+        match self {
+            Self::Register => ("register_ip", 5, 3600, "register_account", 2, 3600),
+            Self::Login => ("login_ip", 10, 900, "login_account", 5, 900),
+            Self::VerificationResend => (
+                "verify_resend_ip",
+                20,
+                3600,
+                "verify_resend_account",
+                3,
+                3600,
+            ),
+            Self::PasswordReset => (
+                "password_reset_ip",
+                20,
+                3600,
+                "password_reset_account",
+                3,
+                3600,
+            ),
+            Self::Refresh => ("refresh_ip", 60, 900, "refresh_token", 12, 900),
+            Self::VerifyToken => ("verify_token_ip", 30, 900, "verify_token", 6, 900),
+            Self::ResetToken => ("reset_token_ip", 30, 900, "reset_token", 6, 900),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DevelopmentDemoConfig {
@@ -592,9 +636,17 @@ where
 
 async fn register(
     State(state): State<Arc<IdentityState>>,
+    headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<MessageResponse>), ApiError> {
     let email = canonical_email(&req.email)?;
+    enforce_public_limit(
+        &state,
+        &headers,
+        PublicOperation::Register,
+        email.as_bytes(),
+    )
+    .await?;
     validate_password(&req.password)?;
     if req.organization_name.trim().is_empty()
         || req.organization_name.len() > 200
@@ -607,7 +659,7 @@ async fn register(
     let org_id = Uuid::now_v7();
     let tenant_id = Uuid::now_v7();
     let hash = hash_password(&req.password)?;
-    state
+    let registration = state
         .repository
         .register_user_and_workspace(&RegistrationWrite {
             user_id,
@@ -618,8 +670,21 @@ async fn register(
             organization_name: req.organization_name.trim().into(),
             tenant_id,
         })
-        .await
-        .map_err(ApiError::Repository)?;
+        .await;
+    if matches!(registration, Err(IdentityRepositoryError::Conflict)) {
+        audit_security(
+            &state,
+            None,
+            None,
+            &email,
+            "IDENTITY_REGISTRATION_REQUESTED",
+            "ACCEPTED_EXISTING",
+            None,
+        )
+        .await;
+        return Ok(registration_accepted());
+    }
+    registration.map_err(ApiError::Repository)?;
     let token = random_token();
     // Delivery happens before session issuance so a failed provider cannot leave a
     // browser authenticated to an account whose verification flow cannot begin.
@@ -638,7 +703,7 @@ async fn register(
         .delivery
         .send(EmailMessage {
             purpose: EmailPurpose::VerifyEmail,
-            recipient: email,
+            recipient: email.clone(),
             token,
         })
         .await
@@ -654,12 +719,17 @@ async fn register(
             .map_err(ApiError::Repository)?;
         return Err(error);
     }
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(MessageResponse {
-            message: "verification_required",
-        }),
-    ))
+    audit_security(
+        &state,
+        Some(org_id),
+        Some(tenant_id),
+        &email,
+        "IDENTITY_REGISTRATION_REQUESTED",
+        "VERIFICATION_SENT",
+        Some(user_id),
+    )
+    .await;
+    Ok(registration_accepted())
 }
 
 async fn ready(State(state): State<Arc<IdentityState>>) -> Result<&'static str, ApiError> {
@@ -673,21 +743,28 @@ async fn ready(State(state): State<Arc<IdentityState>>) -> Result<&'static str, 
 
 async fn login(
     State(state): State<Arc<IdentityState>>,
+    headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<AuthResponse>, ApiError> {
     let email = canonical_email(&req.email)?;
+    enforce_public_limit(&state, &headers, PublicOperation::Login, email.as_bytes()).await?;
     validate_password(&req.password)?;
     let user = state
         .repository
         .find_user_by_email(&email)
         .await
-        .map_err(ApiError::Repository)?
-        .ok_or(ApiError::InvalidCredentials)?;
-    if !verify_password(&user.password_hash, &req.password) {
+        .map_err(ApiError::Repository)?;
+    let password_valid = user.as_ref().map_or_else(
+        || verify_dummy_password(&req.password),
+        |user| verify_password(&user.password_hash, &req.password),
+    );
+    let Some(user) = user else {
+        audit_login_rejected(&state, &email, "INVALID_CREDENTIALS").await;
         return Err(ApiError::InvalidCredentials);
-    }
-    if !user.verified || !user.active {
-        return Err(ApiError::EmailNotVerified);
+    };
+    if !password_valid || !user.verified || !user.active {
+        audit_login_rejected(&state, &email, "INVALID_CREDENTIALS").await;
+        return Err(ApiError::InvalidCredentials);
     }
     let membership = state
         .repository
@@ -695,16 +772,34 @@ async fn login(
         .await
         .map_err(ApiError::Repository)?
         .ok_or(ApiError::Unavailable)?;
+    audit_security(
+        &state,
+        Some(membership.organization_id),
+        Some(membership.tenant_id),
+        &email,
+        "IDENTITY_LOGIN_SUCCEEDED",
+        "SUCCESS",
+        Some(user.id),
+    )
+    .await;
     issue_session(&state, user, membership, req.device_label.as_deref()).await
 }
 
 async fn refresh(
     State(state): State<Arc<IdentityState>>,
+    headers: HeaderMap,
     Json(req): Json<TokenRequest>,
 ) -> Result<Json<AuthResponse>, ApiError> {
     if req.refresh_token.len() < 32 || req.refresh_token.len() > 256 {
         return Err(ApiError::InvalidCredentials);
     }
+    enforce_public_limit(
+        &state,
+        &headers,
+        PublicOperation::Refresh,
+        req.refresh_token.as_bytes(),
+    )
+    .await?;
     let replacement = random_token();
     let now = Utc::now();
     let session = state
@@ -717,15 +812,45 @@ async fn refresh(
             now,
         )
         .await
-        .map_err(ApiError::Repository)?
-        .ok_or(ApiError::InvalidCredentials)?;
+        .map_err(ApiError::Repository)?;
+    let Some(session) = session else {
+        audit_security(
+            &state,
+            None,
+            None,
+            &req.refresh_token,
+            "IDENTITY_REFRESH_REJECTED",
+            "INVALID_OR_REUSED",
+            None,
+        )
+        .await;
+        return Err(ApiError::InvalidCredentials);
+    };
+    audit_security(
+        &state,
+        Some(session.organization_id),
+        Some(session.tenant_id),
+        &req.refresh_token,
+        "IDENTITY_REFRESH_SUCCEEDED",
+        "SUCCESS",
+        Some(session.user_id),
+    )
+    .await;
     issue_rotated_session(&state, session, replacement).await
 }
 
 async fn verify_email(
     State(state): State<Arc<IdentityState>>,
+    headers: HeaderMap,
     Json(req): Json<ActionTokenRequest>,
 ) -> Result<Json<AuthResponse>, ApiError> {
+    enforce_public_limit(
+        &state,
+        &headers,
+        PublicOperation::VerifyToken,
+        req.token.as_bytes(),
+    )
+    .await?;
     let user_id = state
         .repository
         .consume_action_token(
@@ -759,39 +884,97 @@ async fn verify_email(
         .await
         .map_err(ApiError::Repository)?
         .ok_or(ApiError::Unavailable)?;
+    audit_security(
+        &state,
+        Some(membership.organization_id),
+        Some(membership.tenant_id),
+        &email,
+        "IDENTITY_EMAIL_VERIFIED",
+        "SUCCESS",
+        Some(user_id),
+    )
+    .await;
     let session = issue_session(&state, user, membership, None).await?;
     Ok(session)
 }
 
 async fn request_email_verification(
     State(state): State<Arc<IdentityState>>,
+    headers: HeaderMap,
     Json(req): Json<CredentialRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
     let email = canonical_email(&req.email)?;
+    enforce_public_limit(
+        &state,
+        &headers,
+        PublicOperation::VerificationResend,
+        email.as_bytes(),
+    )
+    .await?;
     validate_password(&req.password)?;
     let user = state
         .repository
         .find_user_by_email(&email)
         .await
         .map_err(ApiError::Repository)?;
+    let password_valid = user.as_ref().map_or_else(
+        || verify_dummy_password(&req.password),
+        |user| verify_password(&user.password_hash, &req.password),
+    );
     let Some(user) = user else {
+        audit_security(
+            &state,
+            None,
+            None,
+            &email,
+            "IDENTITY_VERIFICATION_RESEND_REQUESTED",
+            "ACCEPTED_UNKNOWN",
+            None,
+        )
+        .await;
         return Ok(Json(MessageResponse {
             message: "if_account_exists_email_sent",
         }));
     };
-    if !verify_password(&user.password_hash, &req.password) || user.verified {
+    if !password_valid || user.verified {
+        audit_security(
+            &state,
+            None,
+            None,
+            &email,
+            "IDENTITY_VERIFICATION_RESEND_REQUESTED",
+            "ACCEPTED_NO_ACTION",
+            Some(user.id),
+        )
+        .await;
         return Ok(Json(MessageResponse {
             message: "if_account_exists_email_sent",
         }));
     }
-    send_action_token(
+    let user_id = user.id;
+    let delivered = send_action_token(
         &state,
-        user.id,
+        user_id,
         ActionTokenPurpose::VerifyEmail,
-        email,
+        email.clone(),
         state.verification_ttl,
     )
-    .await?;
+    .await
+    .is_ok();
+    audit_security(
+        &state,
+        None,
+        None,
+        &email,
+        "IDENTITY_VERIFICATION_RESEND_REQUESTED",
+        if delivered {
+            "ACCEPTED"
+        } else {
+            "DELIVERY_FAILED"
+        },
+        Some(user_id),
+    )
+    .await;
     Ok(Json(MessageResponse {
         message: "if_account_exists_email_sent",
     }))
@@ -799,23 +982,58 @@ async fn request_email_verification(
 
 async fn request_password_reset(
     State(state): State<Arc<IdentityState>>,
+    headers: HeaderMap,
     Json(req): Json<PasswordResetRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
     let email = canonical_email(&req.email)?;
+    enforce_public_limit(
+        &state,
+        &headers,
+        PublicOperation::PasswordReset,
+        email.as_bytes(),
+    )
+    .await?;
     if let Some(user) = state
         .repository
         .find_user_by_email(&email)
         .await
         .map_err(ApiError::Repository)?
     {
-        send_action_token(
+        let user_id = user.id;
+        let delivered = send_action_token(
             &state,
-            user.id,
+            user_id,
             ActionTokenPurpose::ResetPassword,
-            email,
+            email.clone(),
             state.reset_ttl,
         )
-        .await?;
+        .await
+        .is_ok();
+        audit_security(
+            &state,
+            None,
+            None,
+            &email,
+            "IDENTITY_PASSWORD_RESET_REQUESTED",
+            if delivered {
+                "ACCEPTED"
+            } else {
+                "DELIVERY_FAILED"
+            },
+            Some(user_id),
+        )
+        .await;
+    } else {
+        audit_security(
+            &state,
+            None,
+            None,
+            &email,
+            "IDENTITY_PASSWORD_RESET_REQUESTED",
+            "ACCEPTED_UNKNOWN",
+            None,
+        )
+        .await;
     }
     Ok(Json(MessageResponse {
         message: "if_account_exists_email_sent",
@@ -824,8 +1042,16 @@ async fn request_password_reset(
 
 async fn reset_password(
     State(state): State<Arc<IdentityState>>,
+    headers: HeaderMap,
     Json(req): Json<ResetPasswordRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
+    enforce_public_limit(
+        &state,
+        &headers,
+        PublicOperation::ResetToken,
+        req.token.as_bytes(),
+    )
+    .await?;
     validate_password(&req.password)?;
     let user_id = state
         .repository
@@ -842,6 +1068,16 @@ async fn reset_password(
         .update_password_and_revoke_sessions(user_id, &hash_password(&req.password)?, Utc::now())
         .await
         .map_err(ApiError::Repository)?;
+    audit_security(
+        &state,
+        None,
+        None,
+        &req.token,
+        "IDENTITY_PASSWORD_RESET_COMPLETED",
+        "SUCCESS",
+        Some(user_id),
+    )
+    .await;
     Ok(Json(MessageResponse {
         message: "password_updated",
     }))
@@ -1063,13 +1299,28 @@ async fn transfer_ownership(
 
 async fn logout(
     State(state): State<Arc<IdentityState>>,
-    AccessContext { session_id, .. }: AccessContext,
+    AccessContext {
+        user_id,
+        session_id,
+        organization_id,
+        ..
+    }: AccessContext,
 ) -> Result<Json<MessageResponse>, ApiError> {
     state
         .repository
         .revoke_current_session(session_id, Utc::now())
         .await
         .map_err(ApiError::Repository)?;
+    audit_security(
+        &state,
+        Some(organization_id),
+        None,
+        &user_id.to_string(),
+        "IDENTITY_SESSION_LOGGED_OUT",
+        "SUCCESS",
+        Some(session_id),
+    )
+    .await;
     Ok(Json(MessageResponse {
         message: "signed_out",
     }))
@@ -1425,6 +1676,9 @@ fn verify_password(hash: &str, password: &str) -> bool {
             .is_ok()
     })
 }
+fn verify_dummy_password(password: &str) -> bool {
+    verify_password(&DUMMY_PASSWORD_HASH, password)
+}
 fn random_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
@@ -1435,6 +1689,118 @@ fn hash_token(token: &str) -> [u8; 32] {
 }
 fn chrono_duration(value: Duration) -> ChronoDuration {
     ChronoDuration::from_std(value).expect("bounded identity duration")
+}
+
+fn registration_accepted() -> (StatusCode, Json<MessageResponse>) {
+    (
+        StatusCode::ACCEPTED,
+        Json(MessageResponse {
+            message: "verification_required",
+        }),
+    )
+}
+
+async fn enforce_public_limit(
+    state: &IdentityState,
+    headers: &HeaderMap,
+    operation: PublicOperation,
+    subject: &[u8],
+) -> Result<(), ApiError> {
+    let (ip_scope, ip_limit, ip_window, subject_scope, subject_limit, subject_window) =
+        operation.limits();
+    let client_ip = headers
+        .get(CLIENT_IP_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<std::net::IpAddr>().ok())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unattributed".into());
+    let now = Utc::now();
+    let ip = state
+        .repository
+        .consume_rate_limit(
+            ip_scope,
+            &hash_limit_subject(ip_scope, client_ip.as_bytes()),
+            ip_limit,
+            ip_window,
+            now,
+        )
+        .await
+        .map_err(ApiError::Repository)?;
+    if !ip.allowed {
+        tracing::warn!(
+            event = "identity_rate_limited",
+            scope = ip_scope,
+            retry_after_seconds = ip.retry_after_seconds
+        );
+        return Err(ApiError::RateLimited(ip.retry_after_seconds));
+    }
+    let account = state
+        .repository
+        .consume_rate_limit(
+            subject_scope,
+            &hash_limit_subject(subject_scope, subject),
+            subject_limit,
+            subject_window,
+            now,
+        )
+        .await
+        .map_err(ApiError::Repository)?;
+    if !account.allowed {
+        tracing::warn!(
+            event = "identity_rate_limited",
+            scope = subject_scope,
+            retry_after_seconds = account.retry_after_seconds
+        );
+        return Err(ApiError::RateLimited(account.retry_after_seconds));
+    }
+    Ok(())
+}
+
+fn hash_limit_subject(scope: &str, subject: &[u8]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(scope.as_bytes());
+    digest.update([0]);
+    digest.update(subject);
+    digest.finalize().into()
+}
+
+async fn audit_login_rejected(state: &IdentityState, email: &str, result: &'static str) {
+    audit_security(
+        state,
+        None,
+        None,
+        email,
+        "IDENTITY_LOGIN_REJECTED",
+        result,
+        None,
+    )
+    .await;
+}
+
+async fn audit_security(
+    state: &IdentityState,
+    organization_id: Option<Uuid>,
+    tenant_id: Option<Uuid>,
+    actor_subject: &str,
+    action: &'static str,
+    result: &'static str,
+    object_id: Option<Uuid>,
+) {
+    let actor_hash = hash_limit_subject("security_audit_actor", actor_subject.as_bytes());
+    if let Err(error) = state
+        .repository
+        .append_security_audit(IdentitySecurityAudit {
+            organization_id,
+            tenant_id,
+            actor_hash: &actor_hash,
+            action,
+            result,
+            object_id,
+        })
+        .await
+    {
+        tracing::error!(event = "identity_security_audit_failed", %action, %error);
+    }
 }
 
 async fn send_action_token(
@@ -1486,11 +1852,25 @@ pub enum ApiError {
     InvalidRequest,
     NotFound,
     Forbidden,
+    RateLimited(u64),
     Unavailable,
     Repository(IdentityRepositoryError),
 }
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        if let Self::RateLimited(retry_after_seconds) = self {
+            let mut response = (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(Problem {
+                    code: "rate_limited",
+                }),
+            )
+                .into_response();
+            if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+            return response;
+        }
         let (status, code) = match self {
             Self::Unauthenticated => (StatusCode::UNAUTHORIZED, "unauthenticated"),
             Self::InvalidCredentials => (StatusCode::UNAUTHORIZED, "invalid_credentials"),
@@ -1499,6 +1879,7 @@ impl IntoResponse for ApiError {
             Self::InvalidRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            Self::RateLimited(_) => unreachable!("rate limit handled above"),
             Self::Unavailable | Self::Repository(IdentityRepositoryError::Database(_)) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
             }
@@ -1536,6 +1917,34 @@ mod tests {
     fn opaque_token_is_never_stored_as_digest() {
         let token = random_token();
         assert_ne!(token.as_bytes(), hash_token(&token));
+    }
+    #[test]
+    fn public_identity_limits_are_explicit_and_subject_hashes_are_scoped() {
+        assert_eq!(
+            PublicOperation::Login.limits(),
+            ("login_ip", 10, 900, "login_account", 5, 900)
+        );
+        assert_eq!(
+            PublicOperation::PasswordReset.limits(),
+            (
+                "password_reset_ip",
+                20,
+                3600,
+                "password_reset_account",
+                3,
+                3600
+            )
+        );
+        assert_ne!(
+            hash_limit_subject("login_account", b"user@example.test"),
+            hash_limit_subject("password_reset_account", b"user@example.test")
+        );
+    }
+    #[test]
+    fn rate_limit_response_has_standard_retry_after_header() {
+        let response = ApiError::RateLimited(37).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "37");
     }
     #[test]
     fn organization_rbac_defaults_to_denied() {
