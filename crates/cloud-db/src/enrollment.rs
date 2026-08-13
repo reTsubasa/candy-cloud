@@ -373,13 +373,11 @@ impl EnrollmentRepository {
             ));
         }
 
-        if activation_status != "ACTIVE"
-            || activation_expires_at <= now
-            || write.expires_at > activation_expires_at
-        {
+        if activation_status != "ACTIVE" || activation_expires_at <= now {
             transaction.rollback().await?;
             return Ok(ChallengeCreationOutcome::ActivationUnavailable);
         }
+        let challenge_expires_at = write.expires_at.min(activation_expires_at);
 
         let inserted = sqlx::query(
             "INSERT INTO enrollment_challenges (id, activation_code_id, organization_id, tenant_id, request_id, request_fingerprint, enrollment_instance_id, display_name, root_public_key, operational_public_key, metadata_hash, attestation_hash, server_nonce, assurance_level, status, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CHALLENGED', ?)",
@@ -398,7 +396,7 @@ impl EnrollmentRepository {
         .bind(write.attestation_hash.as_slice())
         .bind(write.server_nonce.as_slice())
         .bind(write.assurance_level)
-        .bind(write.expires_at)
+        .bind(challenge_expires_at)
         .execute(&mut *transaction)
         .await;
         if let Err(sqlx::Error::Database(error)) = &inserted {
@@ -462,7 +460,7 @@ impl EnrollmentRepository {
                 operational_public_key: write.operational_public_key,
                 server_nonce: write.server_nonce,
                 status: EnrollmentChallengeStatus::Challenged,
-                expires_at: write.expires_at,
+                expires_at: challenge_expires_at,
             },
         ))
     }

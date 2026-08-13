@@ -223,8 +223,8 @@ async fn expired_activation_code_fails_closed() {
 }
 
 #[tokio::test]
-async fn challenge_cannot_outlive_its_activation_authorization() {
-    let Some((_pool, repository, organization_id, tenant_id)) = test_repository().await else {
+async fn challenge_expiry_is_clamped_to_its_activation_authorization() {
+    let Some((pool, repository, organization_id, tenant_id)) = test_repository().await else {
         return;
     };
     let code_hash = unique_code_hash(organization_id, tenant_id);
@@ -242,7 +242,17 @@ async fn challenge_cannot_outlive_its_activation_authorization() {
         .await
         .unwrap();
 
-    assert_eq!(outcome, ChallengeCreationOutcome::ActivationUnavailable);
+    let ChallengeCreationOutcome::Created(record) = outcome else {
+        panic!("short-lived activation did not create a bounded challenge");
+    };
+    let stored_expiry: chrono::DateTime<Utc> =
+        sqlx::query_scalar("SELECT expires_at FROM enrollment_challenges WHERE id = ?")
+            .bind(write.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(record.expires_at, short_lived.expires_at);
+    assert_eq!(stored_expiry, short_lived.expires_at);
 }
 
 #[tokio::test]
