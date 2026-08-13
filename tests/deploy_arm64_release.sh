@@ -16,8 +16,11 @@ for required in \
 	'chown 65532:65532' \
 	'chmod 0400' \
 	'compose run --rm migrate' \
+	'web_source_container=$(docker create "$web_image")' \
+	'docker cp "$web_source_container:/srv/." "$web_stage/"' \
 	'--volumes-from "$web_container"' \
-	'cp -R "$stage/assets/." /srv/assets/' \
+	'-v "$web_stage:/image-web:ro" busybox:1.37.0-musl' \
+	'cp -R /image-web/assets/. /srv/assets/' \
 	'mv /srv/.index.html.new /srv/index.html' \
 	'did not become healthy'; do
 	grep -F -- "$required" "$script" >/dev/null || {

@@ -117,28 +117,43 @@ compose up -d
 
 # The reverse proxy serves a Compose-managed named volume. Docker initializes
 # that volume only once, so container recreation alone cannot activate a new
-# web image. Copy hashed assets first and replace index.html last, preserving
-# old assets for browsers that still have the previous document open.
+# web image. Extract the image payload before mounting the target volume;
+# mounting it at /srv would otherwise hide the image's own files. Copy hashed
+# assets first and replace index.html last, preserving old assets for browsers
+# that still have the previous document open.
 web_container=$(compose ps -q cloud-web)
 [ -n "$web_container" ] || fail "cloud-web container was not created"
+web_image="candy-cloud-cloud-web:arm64-$revision"
+web_source_container=$(docker create "$web_image")
+web_stage=$(mktemp -d /tmp/candy-web.XXXXXX)
+cleanup_web_stage() {
+	docker rm -f "$web_source_container" >/dev/null 2>&1 || true
+	rm -rf "$web_stage"
+}
+trap cleanup_web_stage EXIT INT TERM
+docker cp "$web_source_container:/srv/." "$web_stage/"
+docker rm "$web_source_container" >/dev/null
+web_source_container=
+test -s "$web_stage/index.html" || fail "cloud-web image is missing index.html"
+test -d "$web_stage/assets" || fail "cloud-web image is missing assets"
+
 docker run --rm --volumes-from "$web_container" \
-	"candy-cloud-cloud-web:arm64-$revision" sh -eu -c '
-		stage=$(mktemp -d /tmp/candy-web.XXXXXX)
-		trap '\''rm -rf "$stage"'\'' EXIT INT TERM
-		cp -R /srv/. "$stage/"
-		test -s "$stage/index.html"
-		test -d "$stage/assets"
+	-v "$web_stage:/image-web:ro" busybox:1.37.0-musl sh -eu -c '
+		test -s /image-web/index.html
+		test -d /image-web/assets
 		mkdir -p /srv/assets
-		cp -R "$stage/assets/." /srv/assets/
-		for file in "$stage"/*; do
+		cp -R /image-web/assets/. /srv/assets/
+		for file in /image-web/*; do
 			name=${file##*/}
 			[ "$name" = index.html ] && continue
 			[ "$name" = assets ] && continue
 			cp -R "$file" /srv/
 		done
-		cp "$stage/index.html" /srv/.index.html.new
+		cp /image-web/index.html /srv/.index.html.new
 		mv /srv/.index.html.new /srv/index.html
 	'
+cleanup_web_stage
+trap - EXIT INT TERM
 
 for service in cloud-api cloud-identity cloud-auth cloud-worker cloud-web; do
 	container=$(compose ps -q "$service")
