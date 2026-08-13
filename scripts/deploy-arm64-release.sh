@@ -115,6 +115,31 @@ compose() {
 compose run --rm migrate
 compose up -d
 
+# The reverse proxy serves a Compose-managed named volume. Docker initializes
+# that volume only once, so container recreation alone cannot activate a new
+# web image. Copy hashed assets first and replace index.html last, preserving
+# old assets for browsers that still have the previous document open.
+web_container=$(compose ps -q cloud-web)
+[ -n "$web_container" ] || fail "cloud-web container was not created"
+docker run --rm --volumes-from "$web_container" \
+	"candy-cloud-cloud-web:arm64-$revision" sh -eu -c '
+		stage=$(mktemp -d /tmp/candy-web.XXXXXX)
+		trap '\''rm -rf "$stage"'\'' EXIT INT TERM
+		cp -R /srv/. "$stage/"
+		test -s "$stage/index.html"
+		test -d "$stage/assets"
+		mkdir -p /srv/assets
+		cp -R "$stage/assets/." /srv/assets/
+		for file in "$stage"/*; do
+			name=${file##*/}
+			[ "$name" = index.html ] && continue
+			[ "$name" = assets ] && continue
+			cp -R "$file" /srv/
+		done
+		cp "$stage/index.html" /srv/.index.html.new
+		mv /srv/.index.html.new /srv/index.html
+	'
+
 for service in cloud-api cloud-identity cloud-auth cloud-worker cloud-web; do
 	container=$(compose ps -q "$service")
 	[ -n "$container" ] || fail "$service container was not created"
