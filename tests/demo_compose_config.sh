@@ -32,7 +32,6 @@ CLOUD_ISSUER_ID=00000000-0000-0000-0000-000000000001 \
 CLOUD_ENVIRONMENT_ID=00000000-0000-0000-0000-000000000002 \
 CLOUD_API_AUTH_ISSUER=https://demo.candy.local \
 CLOUD_API_AUTH_AUDIENCE=candy-cloud-management \
-CLOUD_IDENTITY_EMAIL_WEBHOOK_URL=https://mail.candy.local \
 CLOUD_SIGNING_KEY_FILE="$work/cloud-signing.key" \
 CLOUD_DEVICE_CA_CERT_FILE="$work/device-ca.pem" \
 CLOUD_DEVICE_CA_KEY_FILE="$work/device-ca.key" \
@@ -47,5 +46,7 @@ grep -F 'CLOUD_IDENTITY_ENVIRONMENT: development' "$work/rendered.yml" >/dev/nul
 grep -F 'CLOUD_DEV_DEMO_ENABLED: "1"' "$work/rendered.yml" >/dev/null
 grep -F 'CLOUD_DEV_DEMO_EMAIL: demo-owner@candy.local' "$work/rendered.yml" >/dev/null
 grep -F 'CLOUD_DEV_DEMO_PASSWORD: Candy-Demo-2026!' "$work/rendered.yml" >/dev/null
+grep -F 'CLOUD_IDENTITY_EMAIL_WEBHOOK_URL: ""' "$work/rendered.yml" >/dev/null
+grep -F 'published: "8088"' "$work/rendered.yml" >/dev/null
 
 echo 'demo_compose_config: ok'

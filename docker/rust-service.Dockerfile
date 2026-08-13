@@ -1,10 +1,11 @@
 FROM rust:1.88-bookworm AS build
-ARG PACKAGE
-ARG BINARY
 WORKDIR /workspace
 COPY . ./candy-cloud/
 WORKDIR /workspace/candy-cloud
-RUN cargo build --release -p ${PACKAGE} --bin ${BINARY}
+# Keep every Rust service on one immutable build layer. The selected binary is
+# copied into each small runtime image below, so Compose does not rebuild the
+# dependency graph once per service.
+RUN cargo build --release --workspace --bins
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget && rm -rf /var/lib/apt/lists/*

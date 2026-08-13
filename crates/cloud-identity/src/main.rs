@@ -15,15 +15,18 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!(event = "development_demo_account_ready", %email, outcome = ?result, "development-only demo account is enabled");
     }
     let delivery: Arc<dyn cloud_identity::EmailDelivery> =
-        match std::env::var("CLOUD_IDENTITY_EMAIL_WEBHOOK_URL") {
-            Ok(url) => Arc::new(cloud_identity::WebhookEmailDelivery::new(
+        match std::env::var("CLOUD_IDENTITY_EMAIL_WEBHOOK_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty())
+        {
+            Some(url) => Arc::new(cloud_identity::WebhookEmailDelivery::new(
                 url,
                 std::env::var("CLOUD_IDENTITY_EMAIL_WEBHOOK_AUTHORIZATION").ok(),
             )?),
-            Err(_) if config.environment != "production" => {
+            None if config.environment != "production" => {
                 Arc::new(cloud_identity::UnconfiguredEmailDelivery)
             }
-            Err(_) => anyhow::bail!("CLOUD_IDENTITY_EMAIL_WEBHOOK_URL is required in production"),
+            None => anyhow::bail!("CLOUD_IDENTITY_EMAIL_WEBHOOK_URL is required in production"),
         };
     let state = cloud_identity::IdentityState::new(repository, &config, delivery)?;
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;

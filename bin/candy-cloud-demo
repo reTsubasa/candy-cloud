@@ -1,0 +1,150 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+state=${CANDY_CLOUD_DEMO_STATE_DIR:-$root/.candy-cloud-demo.local}
+secrets="$state/secrets"
+env_file="$state/demo.env"
+project=${CANDY_CLOUD_DEMO_PROJECT:-candy-cloud-demo}
+port=${CLOUD_DEMO_PORT:-8088}
+
+for command in curl docker openssl; do
+  command -v "$command" >/dev/null 2>&1 || {
+    echo "candy-cloud-demo: missing required command: $command" >&2
+    exit 1
+  }
+done
+docker info >/dev/null 2>&1 || {
+  echo "candy-cloud-demo: Docker is not running" >&2
+  exit 1
+}
+
+compose() {
+  docker compose --project-name "$project" --env-file "$env_file" \
+    -f "$root/docker-compose.yml" -f "$root/docker-compose.demo.yml" "$@"
+}
+
+initialize() {
+  test ! -f "$env_file" || return 0
+  umask 077
+  mkdir -p "$secrets"
+
+  openssl genpkey -algorithm ED25519 -out "$secrets/cloud-api-auth-private.pem" >/dev/null 2>&1
+  openssl pkey -in "$secrets/cloud-api-auth-private.pem" -pubout \
+    -out "$secrets/cloud-api-auth-public.pem" >/dev/null 2>&1
+  openssl rand 32 > "$secrets/cloud-signing.key"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -subj '/CN=Candy Demo Device CA' \
+    -keyout "$secrets/device-ca.key" -out "$secrets/device-ca.pem" >/dev/null 2>&1
+  # The Demo proxy is HTTP-only, but base Compose validates all secret paths.
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -subj '/CN=localhost' \
+    -keyout "$secrets/cloud-tls.key" -out "$secrets/cloud-tls.pem" >/dev/null 2>&1
+
+  mysql_root=$(openssl rand -hex 24)
+  mysql_migrator=$(openssl rand -hex 24)
+  mysql_api=$(openssl rand -hex 24)
+  mysql_identity=$(openssl rand -hex 24)
+  mysql_auth=$(openssl rand -hex 24)
+  mysql_worker=$(openssl rand -hex 24)
+  route_key=$(openssl rand -hex 32)
+
+  {
+    echo 'MYSQL_DATABASE=candy_cloud_demo'
+    echo "MYSQL_ROOT_PASSWORD=$mysql_root"
+    echo "MYSQL_MIGRATOR_PASSWORD=$mysql_migrator"
+    echo "MYSQL_API_PASSWORD=$mysql_api"
+    echo "MYSQL_IDENTITY_PASSWORD=$mysql_identity"
+    echo "MYSQL_AUTH_PASSWORD=$mysql_auth"
+    echo "MYSQL_WORKER_PASSWORD=$mysql_worker"
+    echo 'CANDY_ROUTE_SIGNING_KEY_ID=demo-route'
+    echo "CANDY_ROUTE_SIGNING_KEY_HEX=$route_key"
+    echo 'CORE_MODULE_VERSION=0.3.10'
+    echo 'CORE_MODULE_BUNDLE_SHA256=b41806ff17359a9ec8151deb61b206403ec01b14aaffd8f7d456111ab0cc042d'
+    echo 'CORE_MODULE_SHA256=54c1e6a1f61ef0b28208d5dec13ce7b1351922478987b5eac3ac9a06f183c478'
+    echo "CLOUD_SIGNING_KEY_FILE=$secrets/cloud-signing.key"
+    echo 'CLOUD_SIGNING_KEY_ID=demo-grant'
+    echo 'CLOUD_ISSUER_ID=00000000-0000-0000-0000-000000000001'
+    echo 'CLOUD_ENVIRONMENT_ID=00000000-0000-0000-0000-000000000002'
+    echo "CLOUD_DEVICE_CA_CERT_FILE=$secrets/device-ca.pem"
+    echo "CLOUD_DEVICE_CA_KEY_FILE=$secrets/device-ca.key"
+    echo 'CLOUD_DEVICE_CA_KEY_ID=demo-device-ca'
+    echo 'CLOUD_ENVIRONMENT=development'
+    echo "CLOUD_API_AUTH_PUBLIC_KEY_FILE=$secrets/cloud-api-auth-public.pem"
+    echo "CLOUD_IDENTITY_SIGNING_KEY_FILE=$secrets/cloud-api-auth-private.pem"
+    echo "CLOUD_IDENTITY_VERIFICATION_KEY_FILE=$secrets/cloud-api-auth-public.pem"
+    echo 'CLOUD_IDENTITY_SIGNING_KEY_ID=demo-management'
+    echo "CLOUD_API_AUTH_ISSUER=http://localhost:$port/identity"
+    echo 'CLOUD_API_AUTH_AUDIENCE=candy-cloud-management'
+    echo "CLOUD_TLS_CERTIFICATE_FILE=$secrets/cloud-tls.pem"
+    echo "CLOUD_TLS_KEY_FILE=$secrets/cloud-tls.key"
+    echo "CLOUD_DEMO_PORT=$port"
+  } > "$env_file"
+  chmod 0600 "$env_file"
+}
+
+case "${1:-up}" in
+  up)
+    initialize
+    if test "${CANDY_CLOUD_DEMO_SKIP_BUILD:-0}" != 1; then
+      for service in cloud-web migrate cloud-api cloud-identity cloud-auth cloud-worker; do
+        compose build "$service"
+      done
+    fi
+    compose up -d --no-build reverse-proxy cloud-worker
+    for _ in $(seq 1 120); do
+      if curl --silent --fail "http://localhost:$port/identity/health/ready" >/dev/null &&
+        curl --silent --fail "http://localhost:$port/api/health/ready" >/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    curl --silent --fail "http://localhost:$port/identity/health/ready" >/dev/null || {
+      compose ps -a >&2 || :
+      compose logs --no-color reverse-proxy cloud-api cloud-identity migrate mysql >&2 || :
+      echo 'candy-cloud-demo: Identity did not become ready' >&2
+      exit 1
+    }
+    curl --silent --fail "http://localhost:$port/api/health/ready" >/dev/null || {
+      compose ps -a >&2 || :
+      compose logs --no-color reverse-proxy cloud-api migrate mysql >&2 || :
+      echo 'candy-cloud-demo: Cloud API did not become ready' >&2
+      exit 1
+    }
+    echo "Candy Cloud Demo: http://localhost:$port"
+    echo 'Email: demo-owner@candy.local'
+    echo 'Password: Candy-Demo-2026!'
+    ;;
+  down)
+    test -f "$env_file" || exit 0
+    compose down --remove-orphans
+    ;;
+  reset)
+    test -f "$env_file" || exit 0
+    compose down --volumes --remove-orphans
+    echo "Demo containers and database volume were removed; local keys remain in $state"
+    ;;
+  status)
+    test -f "$env_file" || {
+      echo 'Candy Cloud Demo has not been initialized'
+      exit 0
+    }
+    compose ps -a
+    ;;
+  logs)
+    test -f "$env_file" || {
+      echo 'Candy Cloud Demo has not been initialized' >&2
+      exit 1
+    }
+    shift
+    if test "$#" -gt 0; then
+      compose logs --no-color "$@"
+    else
+      compose logs --no-color
+    fi
+    ;;
+  *)
+    echo 'usage: bin/candy-cloud-demo [up|down|reset|status|logs [service...]]' >&2
+    exit 2
+    ;;
+esac

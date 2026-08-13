@@ -79,15 +79,20 @@ Email:        demo-owner@candy.local
 Password:     Candy-Demo-2026!
 ```
 
-Start it by adding `-f docker-compose.demo.yml` to the normal Compose command:
+Start the complete isolated Demo stack with one command:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d
+bin/candy-cloud-demo up
 ```
 
 The fixed credential exists only in that Demo overlay. The production Compose
 file has no default Demo password, and Identity refuses the overlay unless its
-environment is exactly `development`.
+environment is exactly `development`. The command creates deployment-local
+keys and random database passwords under the ignored
+`.candy-cloud-demo.local/` directory, uses the dedicated `candy-cloud-demo`
+Compose project, and serves the console at `http://localhost:8088`. Use
+`bin/candy-cloud-demo status`, `logs`, or `down` to inspect or stop it. `reset`
+also removes the Demo database volume.
 
 For local UI development:
 

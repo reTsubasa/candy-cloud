@@ -1,7 +1,25 @@
 services:
+  migrate:
+    image: candy-cloud-demo-migrate:local
+  cloud-api:
+    image: candy-cloud-demo-cloud-api:local
   cloud-identity:
+    image: candy-cloud-demo-cloud-identity:local
     environment:
       CLOUD_IDENTITY_ENVIRONMENT: development
       CLOUD_DEV_DEMO_ENABLED: "1"
       CLOUD_DEV_DEMO_EMAIL: demo-owner@candy.local
       CLOUD_DEV_DEMO_PASSWORD: Candy-Demo-2026!
+      CLOUD_IDENTITY_EMAIL_WEBHOOK_URL: ""
+  cloud-auth:
+    image: candy-cloud-demo-cloud-auth:local
+  cloud-worker:
+    image: candy-cloud-demo-cloud-worker:local
+  cloud-web:
+    image: candy-cloud-demo-cloud-web:local
+  reverse-proxy:
+    ports: !override
+      - "${CLOUD_DEMO_PORT:-8088}:80/tcp"
+    volumes: !override
+      - ./docker/reverse-proxy/Caddyfile.demo:/etc/caddy/Caddyfile:ro
+      - candy-cloud-web-assets:/srv/web:ro
