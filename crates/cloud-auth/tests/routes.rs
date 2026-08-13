@@ -137,7 +137,7 @@ impl EnrollmentHttpService for RecordingEnrollmentService {
             Ok(EnrollmentCompleteReceipt {
                 device_id: Uuid::from_bytes([4; 16]),
                 device_key_id: Uuid::from_bytes([5; 16]),
-                certificate_der: vec![1, 2, 3],
+                certificate_der: vec![251, 255],
                 certificate_chain_pem: "test-chain".into(),
                 not_after: chrono::DateTime::from_timestamp(1_800_604_800, 0).unwrap(),
                 replayed: false,
@@ -216,8 +216,8 @@ async fn public_enrollment_complete_decodes_proof_and_encodes_certificate() {
     assert_eq!(command.operational_proof, [9; 64]);
     let response_body = response.into_body().collect().await.unwrap().to_bytes();
     assert!(response_body
-        .windows(b"AQID".len())
-        .any(|item| item == b"AQID"));
+        .windows(b"+/8=".len())
+        .any(|item| item == b"+/8="));
 }
 
 #[tokio::test]

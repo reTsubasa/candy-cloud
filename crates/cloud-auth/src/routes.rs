@@ -427,7 +427,7 @@ where
     Ok(Json(EnrollmentCompleteHttpResponse {
         device_id: receipt.device_id,
         device_key_id: receipt.device_key_id,
-        certificate_der: encode_base64(receipt.certificate_der),
+        certificate_der: encode_standard_base64(receipt.certificate_der),
         certificate_chain_pem: receipt.certificate_chain_pem,
         not_after: receipt.not_after,
         replayed: receipt.replayed,
@@ -859,4 +859,8 @@ fn decode_fixed<const N: usize>(value: &str) -> Result<[u8; N], ApiError> {
 
 fn encode_base64(value: impl AsRef<[u8]>) -> String {
     base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, value)
+}
+
+fn encode_standard_base64(value: impl AsRef<[u8]>) -> String {
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, value)
 }
