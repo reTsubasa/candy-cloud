@@ -317,7 +317,7 @@ retry_after=$(awk 'tolower($1) == "retry-after:" { gsub("\r", "", $2); print $2 
 test -n "$retry_after" && test "$retry_after" -ge 1 && test "$retry_after" -le 900
 
 audit_count=$(compose exec -T mysql mysql -N -B \
-  -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" \
+  -uroot -pe2e-root-password candy_cloud_e2e \
   -e "SELECT COUNT(*) FROM audit_events WHERE action = 'IDENTITY_LOGIN_REJECTED'")
 test "$audit_count" -ge 5
 
