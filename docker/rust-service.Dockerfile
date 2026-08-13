@@ -1,20 +1,37 @@
-FROM rust:1.88-bookworm AS build
+# syntax=docker/dockerfile:1.7
+
+# Build Rust on the native CI CPU and cross-compile the small ARM64 runtime
+# binaries. Running Cargo under QEMU turns every release into an hour-long job.
+FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS build
+ARG TARGETARCH
+ARG RUST_TARGET=aarch64-unknown-linux-gnu
+ARG BINARY
+RUN case "${TARGETARCH}:${RUST_TARGET}" in \
+      amd64:x86_64-unknown-linux-gnu) ;; \
+      arm64:aarch64-unknown-linux-gnu) \
+        apt-get update && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+          && rm -rf /var/lib/apt/lists/* ;; \
+      *) echo "RUST_TARGET does not match target architecture" >&2; exit 1 ;; \
+    esac \
+    && rustup target add "${RUST_TARGET}"
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 WORKDIR /workspace
 COPY . ./candy-cloud/
 WORKDIR /workspace/candy-cloud
 # Keep every Rust service on one immutable build layer. The selected binary is
 # copied into each small runtime image below, so Compose does not rebuild the
 # dependency graph once per service.
-RUN cargo build --release --workspace --bins
+RUN cargo build --release --target "${RUST_TARGET}" --workspace --bins
 
-FROM debian:bookworm-slim AS runtime
+FROM --platform=$TARGETPLATFORM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget && rm -rf /var/lib/apt/lists/*
+ARG RUST_TARGET=aarch64-unknown-linux-gnu
 ARG BINARY
-COPY --from=build /workspace/candy-cloud/target/release/${BINARY} /usr/local/bin/service
+COPY --from=build /workspace/candy-cloud/target/${RUST_TARGET}/release/${BINARY} /usr/local/bin/service
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/service"]
 
-FROM debian:bookworm-slim AS core-module-installer
+FROM --platform=$TARGETPLATFORM debian:bookworm-slim AS core-module-installer
 ARG TARGETARCH
 ARG CORE_MODULE_BUNDLE_SHA256
 ARG CORE_MODULE_VERSION

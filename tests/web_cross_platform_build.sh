@@ -4,6 +4,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 dockerfile="$root/docker/web.Dockerfile"
 workflow="$root/.github/workflows/release-arm64-images.yml"
+rust_dockerfile="$root/docker/rust-service.Dockerfile"
 
 for invariant in \
 	'FROM --platform=$BUILDPLATFORM node:22.18-alpine AS build' \
@@ -18,5 +19,17 @@ grep -F 'docker build --platform linux/arm64' "$workflow" >/dev/null || {
 	echo "web_cross_platform_build: ARM64 output platform is not enforced" >&2
 	exit 1
 }
+
+for invariant in \
+	'FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS build' \
+	'cargo build --release --target "${RUST_TARGET}" --workspace --bins' \
+	'FROM --platform=$TARGETPLATFORM debian:bookworm-slim AS runtime' \
+	'--build-arg RUST_TARGET=aarch64-unknown-linux-gnu'; do
+	if grep -F -- "$invariant" "$rust_dockerfile" "$workflow" >/dev/null; then
+		continue
+	fi
+	echo "web_cross_platform_build: missing Rust cross-build invariant: $invariant" >&2
+	exit 1
+done
 
 echo "web_cross_platform_build: ok"

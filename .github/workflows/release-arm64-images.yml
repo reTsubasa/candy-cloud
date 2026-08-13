@@ -85,12 +85,14 @@ jobs:
             IFS=: read -r image package binary target <<< "$spec"
             docker build --platform linux/arm64 --target "$target" \
               --build-arg PACKAGE="$package" --build-arg BINARY="$binary" \
+              --build-arg RUST_TARGET=aarch64-unknown-linux-gnu \
               -t "candy-cloud-$image:arm64-$revision" -f docker/rust-service.Dockerfile .
           done
           for spec in cloud-auth:cloud-auth:cloud-auth cloud-worker:cloud-worker:cloud-worker; do
             IFS=: read -r image package binary <<< "$spec"
             docker build --platform linux/arm64 --target runtime-core \
               --build-arg PACKAGE="$package" --build-arg BINARY="$binary" \
+              --build-arg RUST_TARGET=aarch64-unknown-linux-gnu \
               --build-arg CORE_MODULE_VERSION="$CORE_MODULE_VERSION" \
               --build-arg CORE_MODULE_TARGET="$CORE_MODULE_TARGET" \
               --build-arg CORE_MODULE_URL="$CORE_MODULE_URL" \

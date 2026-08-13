@@ -25,7 +25,7 @@ services:
       context: .
       dockerfile: docker/rust-service.Dockerfile
       target: runtime
-      args: { PACKAGE: cloud-db, BINARY: cloud-db-migrate }
+      args: { PACKAGE: cloud-db, BINARY: cloud-db-migrate, RUST_TARGET: x86_64-unknown-linux-gnu }
     environment:
       DATABASE_URL: mysql://cloud_migrator:${MYSQL_MIGRATOR_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
     depends_on:
@@ -37,7 +37,7 @@ services:
       context: .
       dockerfile: docker/rust-service.Dockerfile
       target: runtime
-      args: { PACKAGE: cloud-api, BINARY: cloud-api }
+      args: { PACKAGE: cloud-api, BINARY: cloud-api, RUST_TARGET: x86_64-unknown-linux-gnu }
     restart: unless-stopped
     environment:
       DATABASE_URL: mysql://cloud_api:${MYSQL_API_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
@@ -62,7 +62,7 @@ services:
       context: .
       dockerfile: docker/rust-service.Dockerfile
       target: runtime
-      args: { PACKAGE: cloud-identity, BINARY: cloud-identity }
+      args: { PACKAGE: cloud-identity, BINARY: cloud-identity, RUST_TARGET: x86_64-unknown-linux-gnu }
     restart: unless-stopped
     environment:
       DATABASE_URL: mysql://cloud_identity:${MYSQL_IDENTITY_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
@@ -109,6 +109,7 @@ services:
       args:
         PACKAGE: cloud-auth
         BINARY: cloud-auth
+        RUST_TARGET: x86_64-unknown-linux-gnu
         CORE_MODULE_BUNDLE_SHA256: ${CORE_MODULE_BUNDLE_SHA256:?set CORE_MODULE_BUNDLE_SHA256}
         CORE_MODULE_VERSION: ${CORE_MODULE_VERSION:?set CORE_MODULE_VERSION}
         CORE_MODULE_SHA256: ${CORE_MODULE_SHA256:?set CORE_MODULE_SHA256}
@@ -152,6 +153,7 @@ services:
       args:
         PACKAGE: cloud-worker
         BINARY: cloud-worker
+        RUST_TARGET: x86_64-unknown-linux-gnu
         CORE_MODULE_BUNDLE_SHA256: ${CORE_MODULE_BUNDLE_SHA256:?set CORE_MODULE_BUNDLE_SHA256}
         CORE_MODULE_VERSION: ${CORE_MODULE_VERSION:?set CORE_MODULE_VERSION}
         CORE_MODULE_SHA256: ${CORE_MODULE_SHA256:?set CORE_MODULE_SHA256}
