@@ -1,0 +1,111 @@
+#!/bin/sh
+set -eu
+
+repository=${CANDY_CLOUD_REPOSITORY:-reTsubasa/candy-cloud}
+release_tag=
+deployment_dir=
+
+usage() {
+	cat <<'EOF'
+usage: deploy-arm64-release.sh --tag TAG --deployment-dir DIR
+
+Downloads one immutable Candy Cloud ARM64 Release, verifies and loads all six
+images, applies least-privilege secret ownership, then starts and verifies the
+existing compose.arm64.yml deployment.
+
+Environment:
+  CANDY_CLOUD_REPOSITORY  GitHub owner/repository (default reTsubasa/candy-cloud)
+EOF
+}
+
+fail() { printf '%s\n' "deploy-arm64-release: $*" >&2; exit 1; }
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--tag) shift; [ "$#" -gt 0 ] || fail "--tag requires a value"; release_tag=$1 ;;
+		--deployment-dir) shift; [ "$#" -gt 0 ] || fail "--deployment-dir requires a value"; deployment_dir=$1 ;;
+		-h|--help) usage; exit 0 ;;
+		*) fail "unknown option: $1" ;;
+	esac
+	shift
+done
+
+case "$release_tag" in cloud-arm64-[0-9a-f][0-9a-f]*) ;; *) fail "--tag must be a cloud-arm64-<revision> Release" ;; esac
+[ -n "$deployment_dir" ] || fail "--deployment-dir is required"
+[ "$(uname -s)" = Linux ] || fail "target must run Linux"
+[ "$(uname -m)" = aarch64 ] || fail "target must be native ARM64"
+for command in curl docker jq sha256sum; do
+	command -v "$command" >/dev/null 2>&1 || fail "$command is required"
+done
+docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required"
+[ "$(id -u)" -eq 0 ] || fail "run this deployment script as root"
+
+deployment_dir=$(CDPATH= cd -- "$deployment_dir" && pwd)
+cd "$deployment_dir"
+[ -f compose.arm64.yml ] || fail "compose.arm64.yml is missing"
+[ -f deploy.env ] || fail "deploy.env is missing"
+[ -d secrets ] || fail "secrets directory is missing"
+
+revision=${release_tag#cloud-arm64-}
+archive="candy-cloud-arm64-$revision.tar.gz"
+checksum="$archive.sha256"
+manifest="candy-cloud-arm64-$revision.json"
+base_url="https://github.com/$repository/releases/download/$release_tag"
+
+umask 077
+curl --fail --location --proto '=https' --tlsv1.2 --retry 5 --retry-all-errors \
+	--connect-timeout 15 --max-time 900 --output "$archive.part" "$base_url/$archive"
+mv "$archive.part" "$archive"
+curl --fail --location --proto '=https' --tlsv1.2 --retry 5 --retry-all-errors \
+	--connect-timeout 15 --max-time 120 --output "$checksum" "$base_url/$checksum"
+curl --fail --location --proto '=https' --tlsv1.2 --retry 5 --retry-all-errors \
+	--connect-timeout 15 --max-time 120 --output "$manifest" "$base_url/$manifest"
+
+sha256sum -c "$checksum"
+jq -e --arg revision "$revision" --arg repository "$repository" '
+	.schema_version == 1 and
+	.architecture == "arm64" and
+	.source.repository == $repository and
+	(.source.commit | startswith($revision)) and
+	.images == ["migrate", "cloud-api", "cloud-identity", "cloud-auth", "cloud-worker", "cloud-web"]
+' "$manifest" >/dev/null || fail "Release manifest is invalid"
+
+docker load -i "$archive"
+for image in migrate cloud-api cloud-identity cloud-auth cloud-worker cloud-web; do
+	ref="candy-cloud-$image:arm64-$revision"
+	[ "$(docker image inspect "$ref" --format '{{.Architecture}}')" = arm64 ] ||
+		fail "$ref is not an ARM64 image"
+done
+
+# Services run as uid 65532. Keep private material readable only by that uid;
+# public certificates remain readable by the reverse proxy and API services.
+chmod 0755 secrets
+for file in cloud-api-auth-private.pem cloud-signing.key device-ca.key; do
+	[ -f "secrets/$file" ] || fail "secrets/$file is missing"
+	chown 65532:65532 "secrets/$file"
+	chmod 0400 "secrets/$file"
+done
+for file in cloud-api-auth-public.pem device-ca.pem; do
+	[ -f "secrets/$file" ] || fail "secrets/$file is missing"
+	chown root:root "secrets/$file"
+	chmod 0444 "secrets/$file"
+done
+
+docker compose --env-file deploy.env -f compose.arm64.yml run --rm migrate
+docker compose --env-file deploy.env -f compose.arm64.yml up -d
+
+for service in cloud-api cloud-identity cloud-auth cloud-worker cloud-web; do
+	container=$(docker compose --env-file deploy.env -f compose.arm64.yml ps -q "$service")
+	[ -n "$container" ] || fail "$service container was not created"
+	for attempt in $(seq 1 36); do
+		health=$(docker inspect "$container" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}')
+		[ "$health" = healthy ] && break
+		if [ "$health" = exited ] || [ "$health" = dead ]; then
+			fail "$service stopped during startup"
+		fi
+		[ "$attempt" -lt 36 ] || fail "$service did not become healthy"
+		sleep 5
+	done
+done
+
+printf '%s\n' "Candy Cloud $release_tag is running on native ARM64."

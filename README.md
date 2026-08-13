@@ -127,8 +127,22 @@ The project is pinned to the signed Candy Core Cloud ABI profile `0.3.10` from C
 revision `a2ace9cb524dc5fcc2e01481ba9d515588a61936` and wire line `0.3`. Cloud
 never checks out or compiles the private Core repository. The
 service images load the signed, versioned `libcandy_core_cloud.so` module from
-the formal `core-v<version>` release. The Cloud deployment target is Linux
-x86-64 with glibc; it does not publish an ARM control-plane artifact. The
+the formal `core-v<version>` release. The primary Cloud deployment target is
+Linux x86-64 with glibc. Native ARM64 service images are also published as
+immutable prerelease assets named `cloud-arm64-<source-revision>`; production
+ARM64 hosts load these images directly and never run amd64 images through
+QEMU. Given a prepared directory containing `compose.arm64.yml`, `deploy.env`,
+and `secrets/`, install one release with:
+
+```bash
+sudo scripts/deploy-arm64-release.sh \
+  --tag cloud-arm64-<source-revision> \
+  --deployment-dir /opt/candy-cloud
+```
+
+The script verifies the checksum and manifest, checks all six images are
+ARM64, applies least-privilege secret ownership for the container UID, runs
+migrations, starts Compose, and waits for every application health check. The
 installer can read the immutable legacy `0.3.10` manifest only for an explicit
 compatibility installation, but normal image builds never use that retired
 release path. Cloud ABI profiles do not form a separate Core product line. IPv6 remains outside this delivery;

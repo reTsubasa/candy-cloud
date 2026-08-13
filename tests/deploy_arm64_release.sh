@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+script="$root/scripts/deploy-arm64-release.sh"
+
+test -x "$script"
+sh -n "$script"
+
+for required in \
+	'$(uname -m)" = aarch64' \
+	'sha256sum -c "$checksum"' \
+	'.architecture == "arm64"' \
+	'docker image inspect "$ref"' \
+	'chown 65532:65532' \
+	'chmod 0400' \
+	'docker compose --env-file deploy.env -f compose.arm64.yml run --rm migrate' \
+	'did not become healthy'; do
+	grep -F "$required" "$script" >/dev/null || {
+		echo "deploy_arm64_release: missing invariant: $required" >&2
+		exit 1
+	}
+done
+
+echo "deploy_arm64_release: ok"
