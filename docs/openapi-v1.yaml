@@ -412,7 +412,7 @@ paths:
     get:
       tags: [Management]
       operationId: listEnrollmentActivations
-      summary: List device activation credential status without revealing credentials
+      summary: List node join code status without revealing join codes
       security: [{ managementBearer: [] }]
       responses:
         "200":
@@ -426,7 +426,7 @@ paths:
     post:
       tags: [Management]
       operationId: createEnrollmentActivation
-      summary: Create a one-time device activation credential
+      summary: Create a single-use node join code
       security: [{ managementBearer: [] }]
       requestBody:
         required: false
@@ -435,7 +435,7 @@ paths:
             schema: { $ref: "#/components/schemas/ActivationCreateRequest" }
       responses:
         "201":
-          description: The credential is returned exactly once and is never persisted in plaintext.
+          description: The node join code is returned exactly once, expires after 10 minutes by default, and is never persisted in plaintext.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ActivationCreateResponse" }
@@ -453,7 +453,7 @@ paths:
     delete:
       tags: [Management]
       operationId: revokeEnrollmentActivation
-      summary: Revoke an unused or reserved activation credential
+      summary: Revoke an unused or reserved node join code
       security: [{ managementBearer: [] }]
       responses:
         "204": { description: Activation revoked. }
@@ -526,10 +526,10 @@ paths:
     post:
       tags: [Enrollment]
       operationId: createEnrollmentChallenge
-      summary: Reserve an activation credential and create an enrollment challenge
+      summary: Reserve a node join code and create an enrollment challenge
       description: |-
         Public bootstrap endpoint. Tenant and organization scope are derived from
-        the single-use activation credential and MUST NOT be accepted from the body.
+        the single-use node join code and MUST NOT be accepted from the body.
       requestBody:
         required: true
         content:
@@ -842,7 +842,7 @@ components:
       type: object
       additionalProperties: false
       properties:
-        expires_in_seconds: { type: integer, minimum: 300, maximum: 2592000, default: 86400 }
+        expires_in_seconds: { type: integer, minimum: 300, maximum: 3600, default: 600 }
     ActivationCreateResponse:
       type: object
       additionalProperties: false

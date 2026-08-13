@@ -53,7 +53,7 @@ egress.
   network equivalent to Candy not running.
 - No automatic congestion-controller fallback from Candy BBR to CUBIC is
   permitted.
-- Private keys, activation credentials, Grants, and complete traffic payloads
+- Private keys, node join codes, Grants, and complete traffic payloads
   must never appear in logs or Cloud telemetry.
 
 ## 3. Product topology
@@ -99,7 +99,7 @@ The same service chain is valid from Site B through Site A.
 ### G1. Unified node lifecycle
 
 - [ ] An OpenWrt or Linux node can be created in Cloud and joined with a
-  single-use activation credential.
+  single-use node join code.
 - [ ] Enrollment creates a device identity and operational key locally.
 - [ ] Device certificates support renewal, rotation, revocation, and expiry.
 - [ ] Replaying an activation or enrollment request is idempotent or rejected.
@@ -547,7 +547,7 @@ following are true:
 
 - [ ] An administrator can deploy Candy Cloud using the documented production
   procedure and pass backup/restore verification.
-- [ ] The administrator can create a Segment, Sites, activation credentials,
+- [ ] The administrator can create a Segment, Sites, node join codes,
   internal DNS, routes, and optional egress policy from the Cloud console.
 - [ ] At least two OpenWrt or Linux nodes can enroll without manual database or
   configuration editing.

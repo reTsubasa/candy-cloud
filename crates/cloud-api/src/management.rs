@@ -226,12 +226,12 @@ pub async fn create_activation(
 ) -> Result<(StatusCode, Json<ActivationCreateResponse>), ApiError> {
     let principal = principal.ok_or(ApiError::unauthorized())?.0;
     authorize_tenant(&principal, tenant_id, Action::ManageDevices)?;
-    let seconds = body.expires_in_seconds.unwrap_or(86_400);
-    if !(300..=2_592_000).contains(&seconds) {
+    let seconds = body.expires_in_seconds.unwrap_or(600);
+    if !(300..=3_600).contains(&seconds) {
         return Err(ApiError {
             status: StatusCode::BAD_REQUEST,
             code: "INVALID_EXPIRATION",
-            message: "expires_in_seconds must be between 300 and 2592000",
+            message: "expires_in_seconds must be between 300 and 3600",
         });
     }
     let repository = state.enrollment.as_ref().ok_or(ApiError {
@@ -273,7 +273,7 @@ pub async fn create_activation(
         return Err(ApiError {
             status: StatusCode::CONFLICT,
             code: "ACTIVATION_CONFLICT",
-            message: "activation credential could not be created; retry the request",
+            message: "node join code could not be created; retry the request",
         });
     }
     Ok((
@@ -315,7 +315,7 @@ pub async fn revoke_activation(
         Err(ApiError {
             status: StatusCode::NOT_FOUND,
             code: "ACTIVATION_NOT_FOUND",
-            message: "activation credential was not found or is already finalized",
+            message: "node join code was not found or is already finalized",
         })
     }
 }

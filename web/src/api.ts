@@ -304,14 +304,14 @@ export function deleteResource(
   });
 }
 
-export function listEnrollmentActivations(token: string, tenantId: string): Promise<EnrollmentActivation[]> {
+export function listNodeJoinCodes(token: string, tenantId: string): Promise<EnrollmentActivation[]> {
   return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/enrollment/activations`, token);
 }
 
-export function createEnrollmentActivation(
+export function createNodeJoinCode(
   token: string,
   tenantId: string,
-  expiresInSeconds = 86_400,
+  expiresInSeconds = 600,
 ): Promise<EnrollmentActivationSecret> {
   return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/enrollment/activations`, token, {
     method: 'POST',
@@ -320,7 +320,7 @@ export function createEnrollmentActivation(
   });
 }
 
-export function revokeEnrollmentActivation(token: string, tenantId: string, activationId: string): Promise<void> {
+export function revokeNodeJoinCode(token: string, tenantId: string, activationId: string): Promise<void> {
   return requestJson<unknown>(
     `/v1/tenants/${encodeURIComponent(tenantId)}/enrollment/activations/${encodeURIComponent(activationId)}`,
     token,

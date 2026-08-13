@@ -17,7 +17,7 @@ forwarding:
 | --- | --- | --- |
 | `/api/v1/tenants/...` | `cloud-api:8080/v1/tenants/...` | EdDSA management bearer JWT |
 | `/identity/v1/auth/...` | `cloud-identity:8082/v1/auth/...` | Candy Cloud human account identity |
-| `/auth/v1/enrollment/...` | `cloud-auth:8081/v1/enrollment/...` | activation credential, then key proof |
+| `/auth/v1/enrollment/...` | `cloud-auth:8081/v1/enrollment/...` | single-use node join code, then key proof |
 | `/auth/v1/access-grants` | `cloud-auth:8081/v1/access-grants` | Candy Device CA mTLS |
 | `/auth/v1/runtime/...` | `cloud-auth:8081/v1/runtime/...` | Candy Device CA mTLS |
 
@@ -75,7 +75,7 @@ for enrollment, Grant, and Runtime delivery.
   Identity API and removes it from browser history. In a non-production environment,
   delivery remains deliberately unavailable unless an explicit delivery
   implementation is injected for tests.
-- Enrollment is intentionally public. The 32-byte activation credential owns
+- Enrollment is intentionally public. The 32-byte node join code owns
   organization and tenant scope. Body-supplied scope is rejected by strict JSON
   decoding.
 - Signing private keys, complete Grant envelopes, certificate proofs, Runtime
@@ -115,9 +115,10 @@ X-Page-After: non-zero UUID returned in next_cursor
 
 ## Device enrollment
 
-Management operators create credentials through
+Management operators create a single-use node join code through
 `POST /api/v1/tenants/{tenant_id}/enrollment/activations`. The response contains
-the 32-byte URL-safe credential exactly once; Cloud stores only its scoped hash.
+the 32-byte URL-safe join code exactly once; Cloud stores only its scoped hash.
+The default lifetime is 10 minutes.
 `GET` returns status, expiry, reservation, and consumption timestamps without
 the secret. `DELETE` revokes an `ACTIVE` or `RESERVED` credential. The Web
 console exposes this as **节点加入** and does not claim a node is online until
@@ -125,9 +126,9 @@ the device completes the public enrollment exchange below.
 
 Runtime creates a root key and operational key locally, then performs:
 
-1. `POST /auth/v1/enrollment/challenges` with activation credential, stable
+1. `POST /auth/v1/enrollment/challenges` with the node join code, stable
    request id, installation instance id, device name, public keys, and hashes.
-2. Cloud reserves the activation credential and returns a challenge id, server
+2. Cloud reserves the node join code and returns a challenge id, server
    nonce, organization id, expiry, and replay flag.
 3. Runtime signs the exact enrollment transcript with its operational key.
 4. `POST /auth/v1/enrollment/complete` with challenge id, stable completion

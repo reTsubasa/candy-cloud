@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createResource, fetchHealth, listAccountSessions, listResources, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
+import { createNodeJoinCode, createResource, fetchHealth, listAccountSessions, listResources, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
 import { saveIdentitySession } from './session';
 
 describe('same-origin Cloud API client', () => {
@@ -21,6 +21,16 @@ describe('same-origin Cloud API client', () => {
     await replaceResource('token', 'tenant', 'sites', 'site-id', 7, { kind: 'SITE', spec: { name: 'B', kind: 'EDGE' } });
     expect(fetchMock.mock.calls[0][1]).toEqual(expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ 'Idempotency-Key': '00000000-0000-4000-8000-000000000001' }) }));
     expect(fetchMock.mock.calls[1][1]).toEqual(expect.objectContaining({ method: 'PUT', headers: expect.objectContaining({ 'If-Match': '7' }) }));
+  });
+
+  it('creates a single-use node join code with a ten-minute lifetime', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'join-code-id', credential: 'A'.repeat(43), expires_at: new Date().toISOString(),
+    }), { status: 201, headers: { 'content-type': 'application/json' } }));
+    await createNodeJoinCode('token', 'tenant');
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/tenants/tenant/enrollment/activations', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ expires_in_seconds: 600 }),
+    }));
   });
 
   it('reports real health response status and body', async () => {
