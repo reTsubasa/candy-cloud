@@ -28,7 +28,10 @@ test "${#CORE_MODULE_VERSION}" -le 64 || fail "module version is too long"
 jq -en --arg version "$CORE_MODULE_VERSION" \
   '$version | test("^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$")' >/dev/null ||
   fail "module version must be a semantic version"
-test "$target" = x86_64-unknown-linux-gnu || fail "unsupported module target: $target"
+case "$target" in
+  x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;;
+  *) fail "unsupported module target: $target" ;;
+esac
 case "$install_root" in
   /*) ;;
   *) fail "module install root must be absolute" ;;

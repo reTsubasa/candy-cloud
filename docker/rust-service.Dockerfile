@@ -15,10 +15,12 @@ USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/service"]
 
 FROM debian:bookworm-slim AS core-module-installer
+ARG TARGETARCH
 ARG CORE_MODULE_BUNDLE_SHA256
 ARG CORE_MODULE_VERSION
 ARG CORE_MODULE_SHA256
-ARG CORE_MODULE_TARGET=x86_64-unknown-linux-gnu
+ARG CORE_MODULE_TARGET
+ARG CORE_MODULE_URL
 ARG USIGN_COMMIT=c4c72b1b07945ee192361dc751291a7c98d6adcd
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential ca-certificates cmake curl git jq \
@@ -35,10 +37,13 @@ COPY keys/core-release.pub /usr/share/candy/keys/core-release.pub
 RUN case "${CORE_MODULE_VERSION}" in \
       ''|*[!0-9A-Za-z._-]*) echo 'invalid Core module version' >&2; exit 1 ;; \
     esac \
-    && test "${CORE_MODULE_TARGET}" = x86_64-unknown-linux-gnu \
+    && case "${TARGETARCH}:${CORE_MODULE_TARGET}" in \
+      amd64:x86_64-unknown-linux-gnu|arm64:aarch64-unknown-linux-gnu) ;; \
+      *) echo 'Core module target does not match image architecture' >&2; exit 1 ;; \
+    esac \
     && core_release_tag="core-v${CORE_MODULE_VERSION}" \
     && core_module_asset="candy-core-${CORE_MODULE_VERSION}-cloud-abi-${CORE_MODULE_TARGET}.tar.gz" \
-    && core_module_url="https://github.com/reTsubasa/candy-release/releases/download/${core_release_tag}/${core_module_asset}" \
+    && core_module_url="${CORE_MODULE_URL:-https://github.com/reTsubasa/candy-release/releases/download/${core_release_tag}/${core_module_asset}}" \
     && curl --fail --location --proto '=https' --tlsv1.2 \
       --retry 5 --retry-all-errors --connect-timeout 15 --max-time 300 \
       --output /tmp/core-module.tar.gz "${core_module_url}" \

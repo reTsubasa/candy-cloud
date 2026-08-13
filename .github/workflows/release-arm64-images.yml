@@ -1,0 +1,114 @@
+name: release-arm64-images
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, feat/cloud-saas-identity]
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - crates/**
+      - web/**
+      - docker/**
+      - .github/workflows/release-arm64-images.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cloud-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    env:
+      CORE_MODULE_VERSION: 0.3.10
+      CORE_MODULE_TARGET: aarch64-unknown-linux-gnu
+      CORE_MODULE_INPUT_TAG: cloud-core-input-v0.3.10-arm64
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Install verification tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends usign
+      - name: Download and verify signed ARM64 Core module input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -m 0700 core-input
+          gh release download "$CORE_MODULE_INPUT_TAG" --dir core-input
+          base="candy-core-$CORE_MODULE_VERSION-cloud-abi-$CORE_MODULE_TARGET"
+          bundle="core-input/$base.tar.gz"
+          manifest="core-input/$base.manifest.json"
+          checksum="core-input/$base.tar.gz.sha256"
+          test "$(find core-input -maxdepth 1 -type f | wc -l | tr -d ' ')" = 3
+          (cd core-input && sha256sum -c "$(basename "$checksum")")
+          work=$(mktemp -d)
+          tar -xzf "$bundle" -C "$work"
+          test "$(tar -tzf "$bundle" | sort)" = "$(printf '%s\n' libcandy_core_cloud.so manifest.json manifest.sig | sort)"
+          test "$(usign -F -p keys/core-release.pub)" = d78de22abfca5b57
+          usign -V -q -p keys/core-release.pub -m "$work/manifest.json" -x "$work/manifest.sig"
+          cmp "$manifest" "$work/manifest.json"
+          jq -e --arg target "$CORE_MODULE_TARGET" --arg version "$CORE_MODULE_VERSION" \
+            '.schema_version == 1 and .release_kind == "candy-core" and .module.version == $version and .artifact.target == $target and .artifact.target_arch == "aarch64" and .artifact.libc == "glibc"' \
+            "$manifest" >/dev/null
+          echo "CORE_MODULE_BUNDLE_SHA256=$(sha256sum "$bundle" | awk '{print $1}')" >> "$GITHUB_ENV"
+          echo "CORE_MODULE_SHA256=$(jq -r .artifact.sha256 "$manifest")" >> "$GITHUB_ENV"
+          echo "CORE_MODULE_URL=https://github.com/$GITHUB_REPOSITORY/releases/download/$CORE_MODULE_INPUT_TAG/$base.tar.gz" >> "$GITHUB_ENV"
+      - name: Build native ARM64 service images
+        run: |
+          set -eu
+          revision=${GITHUB_SHA::12}
+          for spec in \
+            migrate:cloud-db:cloud-db-migrate:runtime \
+            cloud-api:cloud-api:cloud-api:runtime \
+            cloud-identity:cloud-identity:cloud-identity:runtime; do
+            IFS=: read -r image package binary target <<EOF
+$spec
+EOF
+            docker build --platform linux/arm64 --target "$target" \
+              --build-arg PACKAGE="$package" --build-arg BINARY="$binary" \
+              -t "candy-cloud-$image:arm64-$revision" -f docker/rust-service.Dockerfile .
+          done
+          for spec in cloud-auth:cloud-auth:cloud-auth cloud-worker:cloud-worker:cloud-worker; do
+            IFS=: read -r image package binary <<EOF
+$spec
+EOF
+            docker build --platform linux/arm64 --target runtime-core \
+              --build-arg PACKAGE="$package" --build-arg BINARY="$binary" \
+              --build-arg CORE_MODULE_VERSION="$CORE_MODULE_VERSION" \
+              --build-arg CORE_MODULE_TARGET="$CORE_MODULE_TARGET" \
+              --build-arg CORE_MODULE_URL="$CORE_MODULE_URL" \
+              --build-arg CORE_MODULE_BUNDLE_SHA256="$CORE_MODULE_BUNDLE_SHA256" \
+              --build-arg CORE_MODULE_SHA256="$CORE_MODULE_SHA256" \
+              -t "candy-cloud-$image:arm64-$revision" -f docker/rust-service.Dockerfile .
+          done
+          docker build --platform linux/arm64 -t "candy-cloud-cloud-web:arm64-$revision" \
+            -f docker/web.Dockerfile .
+      - name: Verify and package images
+        run: |
+          set -eu
+          revision=${GITHUB_SHA::12}
+          images='migrate cloud-api cloud-identity cloud-auth cloud-worker cloud-web'
+          for image in $images; do
+            test "$(docker image inspect "candy-cloud-$image:arm64-$revision" --format '{{.Architecture}}')" = arm64
+          done
+          docker run --rm "candy-cloud-cloud-api:arm64-$revision" --help >/dev/null 2>&1 || test $? -ne 139
+          archive="candy-cloud-arm64-$revision.tar.gz"
+          docker save $(for image in $images; do printf 'candy-cloud-%s:arm64-%s ' "$image" "$revision"; done) | gzip -1 > "$archive"
+          sha256sum "$archive" > "$archive.sha256"
+          jq -n --arg commit "$GITHUB_SHA" --arg revision "$revision" \
+            --arg core_version "$CORE_MODULE_VERSION" --arg core_target "$CORE_MODULE_TARGET" \
+            --arg core_bundle_sha "$CORE_MODULE_BUNDLE_SHA256" --arg core_module_sha "$CORE_MODULE_SHA256" \
+            '{schema_version:1,source:{repository:"reTsubasa/candy-cloud",commit:$commit},architecture:"arm64",core:{version:$core_version,target:$core_target,bundle_sha256:$core_bundle_sha,module_sha256:$core_module_sha},images:["migrate","cloud-api","cloud-identity","cloud-auth","cloud-worker","cloud-web"]}' \
+            > "candy-cloud-arm64-$revision.json"
+      - name: Publish immutable prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          revision=${GITHUB_SHA::12}
+          tag="cloud-arm64-$revision"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --target "$GITHUB_SHA" --prerelease \
+            --title "Candy Cloud ARM64 $revision" --notes "Native ARM64 deployment images built from $GITHUB_SHA."
+          gh release upload "$tag" candy-cloud-arm64-$revision.tar.gz candy-cloud-arm64-$revision.tar.gz.sha256 candy-cloud-arm64-$revision.json --clobber
