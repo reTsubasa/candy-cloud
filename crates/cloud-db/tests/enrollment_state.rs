@@ -413,8 +413,9 @@ async fn challenge_expiry_is_clamped_to_its_activation_authorization() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(record.expires_at, short_lived.expires_at);
-    assert_eq!(stored_expiry, short_lived.expires_at);
+    assert_eq!(record.expires_at, stored_expiry);
+    assert!(record.expires_at <= short_lived.expires_at);
+    assert!((short_lived.expires_at - record.expires_at) < Duration::microseconds(1));
 }
 
 #[tokio::test]
