@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildEnrollmentBootstrap, buildEnrollmentInstallCommand, validCloudAddress } from './enrollment-bootstrap';
+import { buildEnrollmentBootstrap, buildEnrollmentInstallCommand, enrollmentExpired, validCloudAddress } from './enrollment-bootstrap';
 
 const secret = {
   id: '00000000-0000-4000-8000-000000000001',
@@ -25,6 +25,12 @@ describe('enrollment bootstrap', () => {
     expect(validCloudAddress('not-a-url')).toBe(false);
   });
 
+  it('recognizes expired and malformed enrollment deadlines', () => {
+    expect(enrollmentExpired('2026-08-14T12:00:00Z', Date.parse('2026-08-14T11:59:59Z'))).toBe(false);
+    expect(enrollmentExpired('2026-08-14T12:00:00Z', Date.parse('2026-08-14T12:00:00Z'))).toBe(true);
+    expect(enrollmentExpired('not-a-date', Date.now())).toBe(true);
+  });
+
   it('builds a single install command without piping a network response into a shell', () => {
     const command = buildEnrollmentInstallCommand({
       cloudAddress: 'https://cloud.example.test',
@@ -37,6 +43,7 @@ describe('enrollment bootstrap', () => {
 
     expect(command).toContain("https://cloud.example.test/install/candy-node.sh");
     expect(command).toContain("--proto '=https'");
+    expect(command).toContain("--proto-redir '=https'");
     expect(command).toContain('--bootstrap-base64-stdin');
     expect(command).toContain('mktemp');
     expect(command).not.toMatch(/curl[^&|]*\|\s*(sudo\s+)?sh/);

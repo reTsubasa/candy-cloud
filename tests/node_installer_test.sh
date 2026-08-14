@@ -141,7 +141,7 @@ EOF
 		-v "$tmp:/fixture" -v "$installer:/installer:ro" \
 		-e PATH=/fixture/container-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 		debian:bookworm-slim sh -eu -c '
-			CANDY_INSTALL_LOG=/fixture/install.log /installer --bootstrap-base64-stdin
+			CANDY_INSTALL_LOG=/fixture/fresh-log/node-install.log /installer --bootstrap-base64-stdin
 			test -x /usr/local/bin/candy-server
 			test -x /usr/local/libexec/candy-cloud-enroll
 			grep -F bootstrap /fixture/product-calls >/dev/null
@@ -149,9 +149,11 @@ EOF
 		' >"$tmp/container.out" 2>"$tmp/container.err" <<EOF
 $container_bootstrap
 EOF
-	if grep -F 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' "$tmp/container.out" "$tmp/container.err" "$tmp/install.log" >/dev/null 2>&1; then
+	[ -s "$tmp/fresh-log/node-install.log" ] || fail "fresh installation did not create its log directory"
+	if grep -F 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' "$tmp/container.out" "$tmp/container.err" "$tmp/fresh-log/node-install.log" >/dev/null 2>&1; then
 		fail "Bootstrap credential leaked during fresh installation"
 	fi
+	rm -rf "$tmp/fresh-log"
 	rm -f "$tmp/netd-active" "$tmp/netd-enabled" "$tmp/systemctl-calls" "$tmp/product-calls" "$tmp/install.log"
 	if docker run --rm -i --platform linux/amd64 \
 		-v "$tmp:/fixture" -v "$installer:/installer:ro" \

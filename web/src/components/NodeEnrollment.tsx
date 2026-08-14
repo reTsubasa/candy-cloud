@@ -9,7 +9,7 @@ import {
   revokeNodeJoinCode,
 } from '../api';
 import type { ControlResource, EnrollmentActivation, EnrollmentActivationSecret, Session } from '../types';
-import { buildEnrollmentInstallCommand, downloadEnrollmentBootstrap, validCloudAddress } from '../enrollment-bootstrap';
+import { buildEnrollmentInstallCommand, downloadEnrollmentBootstrap, enrollmentExpired, validCloudAddress } from '../enrollment-bootstrap';
 import { compatibleEnrollmentArchitecture, defaultEnrollmentArchitecture, enrollmentArchitectureOptions, type EnrollmentPlatform } from '../enrollment-platform';
 
 type Props = {
@@ -44,6 +44,7 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished }: Pr
   const [error, setError] = useState<string | null>(null);
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [step, setStep] = useState(0);
+  const [expired, setExpired] = useState(false);
   const [secret, setSecret] = useState<EnrollmentActivationSecret | null>(null);
   const [activation, setActivation] = useState<EnrollmentActivation | null>(null);
   const [creating, setCreating] = useState(false);
@@ -76,6 +77,11 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished }: Pr
         const current = activations.find((item) => item.id === secret.id);
         if (current) {
           setActivation(current);
+          if (current.status === 'EXPIRED' || enrollmentExpired(current.expires_at)) {
+            setExpired(true);
+            setStep(3);
+            return;
+          }
           if (current.status === 'CONSUMED' && current.device_id && current.device_key_id) {
             setNodeName((value) => value || current.display_name || '新节点');
             setStep(2);
@@ -92,13 +98,22 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished }: Pr
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { setArchitecture((value) => compatibleEnrollmentArchitecture(platform, value)); }, [platform]);
   useEffect(() => {
-    if (!drawerVisible || step !== 1 || !secret) return undefined;
+    if (!drawerVisible || step !== 1 || !secret || expired) return undefined;
+    const remaining = Date.parse(secret.expires_at) - Date.now();
+    const expiryTimer = window.setTimeout(() => {
+      setExpired(true);
+      setStep(3);
+    }, Math.max(0, remaining));
     const timer = window.setInterval(() => void load(true), 3000);
-    return () => window.clearInterval(timer);
-  }, [drawerVisible, load, secret, step]);
+    return () => {
+      window.clearTimeout(expiryTimer);
+      window.clearInterval(timer);
+    };
+  }, [drawerVisible, expired, load, secret, step]);
 
   const resetWizard = () => {
     setStep(0);
+    setExpired(false);
     setSecret(null);
     setActivation(null);
     setPlatform('LINUX_SERVER');
@@ -125,6 +140,7 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished }: Pr
       });
       setSecret(created);
       setActivation(null);
+      setExpired(false);
       setStep(1);
       await load(true);
     } catch (reason) {
@@ -257,12 +273,14 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished }: Pr
         visible={drawerVisible}
         onCancel={() => setDrawerVisible(false)}
         className="cloud-drawer resource-drawer enrollment-drawer"
-        title={<div className="drawer-title"><strong>添加节点</strong><span>{step === 0 ? '先确定设备角色与归属' : step === 1 ? '在目标设备上完成安全加入' : '确认设备身份并完成配置'}</span></div>}
+        title={<div className="drawer-title"><strong>添加节点</strong><span>{step === 0 ? '先确定设备角色与归属' : step === 1 ? '在目标设备上完成安全加入' : step === 3 ? '加入文件已过期' : '确认设备身份并完成配置'}</span></div>}
         footer={step === 0
           ? <Space><Button onClick={() => setDrawerVisible(false)}>取消</Button><Button type="primary" disabled={!validCloudAddress(cloudAddress)} loading={creating} onClick={() => void create()}>生成加入文件</Button></Space>
           : step === 1
             ? <Space><Button onClick={() => setDrawerVisible(false)}>稍后继续</Button><Button type="primary" icon={<IconRefresh />} onClick={() => void load(true)}>检查设备状态</Button></Space>
-            : <Space><Button onClick={() => setDrawerVisible(false)}>稍后继续</Button><Button type="primary" loading={finishing} onClick={() => void finish()}>完成添加</Button></Space>}
+            : step === 3
+              ? <Space><Button onClick={() => setDrawerVisible(false)}>关闭</Button><Button type="primary" icon={<IconPlus />} onClick={resetWizard}>重新生成加入文件</Button></Space>
+              : <Space><Button onClick={() => setDrawerVisible(false)}>稍后继续</Button><Button type="primary" loading={finishing} onClick={() => void finish()}>完成添加</Button></Space>}
       >
         {step === 0 && <Form layout="vertical" className="enrollment-form">
           <Form.Item label="设备类型" required>
@@ -277,7 +295,7 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished }: Pr
           <Form.Item label="处理器架构" required><Select value={architecture} onChange={setArchitecture} options={enrollmentArchitectureOptions(platform)} /></Form.Item>
           {!validCloudAddress(cloudAddress) && <Alert type="error" showIcon content="节点加入文件只能由 HTTPS Cloud 生成。请先通过 HTTPS 地址访问当前管理端。" />}
         </Form>}
-        {step === 1 && secret && <div className="activation-content">
+        {step === 1 && secret && !expired && <div className="activation-content">
           <div className="activation-status"><Spin dot /><div><strong>等待设备完成注册</strong><span>页面每 3 秒自动检查一次，加入文件有效期至 {new Date(secret.expires_at).toLocaleString()}</span></div><Tag color="arcoblue">实时等待</Tag></div>
           {platform === 'LINUX_SERVER' && <Radio.Group type="button" className="installation-state-switch" value={installationState} onChange={setInstallationState}>
             <Radio value="new">尚未安装 Candy</Radio>
@@ -297,6 +315,9 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished }: Pr
           </>}
           <Alert type="info" showIcon content="运行成功后，加入文件和临时凭据会自动删除；页面会自动确认设备上线。" />
           {window.location.hostname === 'localhost' && <Alert type="warning" showIcon content="本地 TLS 地址只适合本机验证；远程设备必须能够解析并访问加入文件中的 Cloud 地址。" />}
+        </div>}
+        {step === 3 && secret && <div className="activation-content">
+          <Alert type="warning" showIcon title="加入文件已过期" content={`本次加入文件已于 ${new Date(secret.expires_at).toLocaleString()} 失效。为避免使用过期凭据，页面已停止等待；请重新生成一份加入文件。`} />
         </div>}
         {step === 2 && activation && <div className="activation-content">
           <div className="activation-status completed"><IconCheckCircle /><div><strong>设备身份注册完成</strong><span>{activation.display_name ?? 'Candy 节点'} 已通过一次性凭据和密钥证明</span></div><Tag color="green">可信设备</Tag></div>

@@ -38,7 +38,7 @@ import type {
 } from '../types';
 import type { Spec } from '../resource-form';
 import { ResourceEditor } from './ResourceEditor';
-import { downloadEnrollmentBootstrap, validCloudAddress } from '../enrollment-bootstrap';
+import { downloadEnrollmentBootstrap, enrollmentExpired, validCloudAddress } from '../enrollment-bootstrap';
 import { compatibleEnrollmentArchitecture, defaultEnrollmentArchitecture, enrollmentArchitectureOptions, type EnrollmentPlatform } from '../enrollment-platform';
 
 type Props = {
@@ -372,7 +372,7 @@ function PathStatus({ resources, selection }: { resources: ResourceMap; selectio
 
 function QuickNodeEnrollment({ session, siteId, siteName, onSaved }: { session: Session; siteId: string; siteName: string; onSaved: () => void }) {
   const [message, messageHolder] = Message.useMessage();
-  const [phase, setPhase] = useState<'details' | 'waiting' | 'finish'>('details');
+  const [phase, setPhase] = useState<'details' | 'waiting' | 'finish' | 'expired'>('details');
   const [platform, setPlatform] = useState<EnrollmentPlatform>('LINUX_SERVER');
   const [name, setName] = useState('');
   const [architecture, setArchitecture] = useState(defaultEnrollmentArchitecture('LINUX_SERVER'));
@@ -390,6 +390,10 @@ function QuickNodeEnrollment({ session, siteId, siteName, onSaved }: { session: 
       try {
         const items = await listNodeJoinCodes(session.token, tenantId);
         const current = items.find((item) => item.id === secret.id);
+        if (current?.status === 'EXPIRED' || enrollmentExpired(current?.expires_at ?? secret.expires_at)) {
+          setPhase('expired');
+          return;
+        }
         if (current?.status === 'CONSUMED' && current.device_id && current.device_key_id) {
           setActivation(current);
           setName((value) => value || current.display_name || '新节点');
@@ -400,8 +404,13 @@ function QuickNodeEnrollment({ session, siteId, siteName, onSaved }: { session: 
       }
     };
     void poll();
+    const remaining = Date.parse(secret.expires_at) - Date.now();
+    const expiryTimer = window.setTimeout(() => setPhase('expired'), Math.max(0, remaining));
     const timer = window.setInterval(() => void poll(), 3000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearTimeout(expiryTimer);
+      window.clearInterval(timer);
+    };
   }, [phase, secret, session.token, tenantId]);
 
   const begin = async () => {
@@ -462,6 +471,10 @@ function QuickNodeEnrollment({ session, siteId, siteName, onSaved }: { session: 
       </section>
       <ol className="bootstrap-steps"><li>把 <code>candy-node-bootstrap.json</code> 传到目标设备</li><li>{platform === 'LINUX_SERVER' ? <>执行 <code>sudo candy-server bootstrap candy-node-bootstrap.json</code></> : <>打开 OpenWrt 的 Candy → SD-WAN，导入该文件</>}</li><li>已安装的 Candy Runtime 会读取文件并完成安全注册</li></ol>
       <Alert type="info" showIcon content="设备完成注册后，本页会自动确认上线。加入文件成功使用后会自行删除。" />
+    </div>}
+    {phase === 'expired' && secret && <div className="quick-activation">
+      <Alert type="warning" showIcon title="加入文件已过期" content={`本次加入文件已于 ${new Date(secret.expires_at).toLocaleString()} 失效，页面已停止等待。请重新生成加入文件后再执行安装。`} />
+      <div className="embedded-editor-actions"><Button type="primary" onClick={() => { setPhase('details'); setSecret(null); setActivation(null); }}>重新生成加入文件</Button></div>
     </div>}
     {phase === 'finish' && activation && <div className="quick-activation">
       <div className="activation-status completed"><IconCheckCircle /><div><strong>设备身份已签发</strong><span>最后确认节点名称和站点归属</span></div><Tag color="green">可信设备</Tag></div>

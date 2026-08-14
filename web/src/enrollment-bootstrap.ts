@@ -14,6 +14,11 @@ export function validCloudAddress(value: string): boolean {
   }
 }
 
+export function enrollmentExpired(expiresAt: string, now = Date.now()): boolean {
+  const expiry = Date.parse(expiresAt);
+  return !Number.isFinite(expiry) || expiry <= now;
+}
+
 export function buildEnrollmentBootstrap(input: BootstrapDownload): string {
   return JSON.stringify({
     schema_version: 1,
@@ -37,7 +42,7 @@ function base64Utf8(value: string): string {
 export function buildEnrollmentInstallCommand(input: BootstrapDownload): string {
   const installerUrl = new URL('/install/candy-node.sh', input.cloudAddress).toString();
   const bootstrap = base64Utf8(buildEnrollmentBootstrap(input));
-  return `candy_installer="$(mktemp)" && trap 'rm -f "$candy_installer"' EXIT && curl -fsS --proto '=https' --tlsv1.2 ${shellQuote(installerUrl)} -o "$candy_installer" && chmod 0700 "$candy_installer" && printf '%s' ${shellQuote(bootstrap)} | sudo "$candy_installer" --bootstrap-base64-stdin`;
+  return `candy_installer="$(mktemp)" && trap 'rm -f "$candy_installer"' EXIT && curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 ${shellQuote(installerUrl)} -o "$candy_installer" && chmod 0700 "$candy_installer" && printf '%s' ${shellQuote(bootstrap)} | sudo "$candy_installer" --bootstrap-base64-stdin`;
 }
 
 export function downloadEnrollmentBootstrap(input: BootstrapDownload): void {

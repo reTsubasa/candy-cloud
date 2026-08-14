@@ -14,6 +14,9 @@ NETD_STARTED=0
 log() {
 	printf '%s level=%s stage=%s message=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" >&2
 	if [ "${CANDY_INSTALL_TEST_MODE:-0}" != 1 ]; then
+		install_log_dir=${INSTALL_LOG%/*}
+		[ "$install_log_dir" = "$INSTALL_LOG" ] && install_log_dir=.
+		mkdir -p "$install_log_dir" 2>/dev/null || true
 		printf '%s level=%s stage=%s message=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" >>"$INSTALL_LOG" 2>/dev/null || true
 	fi
 }
