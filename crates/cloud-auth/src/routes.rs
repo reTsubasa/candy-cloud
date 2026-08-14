@@ -10,6 +10,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::device_identity::{DeviceIdentityAuthenticator, DeviceIdentityError};
@@ -20,6 +21,11 @@ use crate::enrollment::{
     EnrollmentChallengeCommand, EnrollmentChallengeReceipt, EnrollmentCompleteCommand,
     EnrollmentCompleteReceipt, EnrollmentCoordinator, EnrollmentCoordinatorError,
 };
+use cloud_db::enrollment::{
+    hash_activation_credential, BootstrapExchangeWrite, BootstrapManifestOutcome,
+    EnrollmentRepository,
+};
+use ed25519_dalek::{Signer, SigningKey};
 
 static VERIFIED_DEVICE_CERTIFICATE_HEADER: HeaderName =
     HeaderName::from_static("x-candy-verified-device-certificate-der");
@@ -372,6 +378,98 @@ where
         .with_state(service)
 }
 
+#[derive(Clone)]
+pub struct BootstrapHttpService {
+    repository: EnrollmentRepository,
+    signing_key: SigningKey,
+    signing_key_id: String,
+}
+
+impl BootstrapHttpService {
+    pub fn new(
+        repository: EnrollmentRepository,
+        signing_key: SigningKey,
+        signing_key_id: String,
+    ) -> Self {
+        Self {
+            repository,
+            signing_key,
+            signing_key_id,
+        }
+    }
+
+    fn enrollment_authorization(
+        &self,
+        bootstrap_hash: &[u8; 32],
+        installation_instance_id: &str,
+    ) -> [u8; 32] {
+        let mut transcript = Vec::with_capacity(64 + installation_instance_id.len());
+        transcript.extend_from_slice(b"candy/bootstrap-enrollment-authorization/v1\0");
+        transcript.extend_from_slice(bootstrap_hash);
+        transcript.extend_from_slice(installation_instance_id.as_bytes());
+        Sha256::digest(self.signing_key.sign(&transcript).to_bytes()).into()
+    }
+}
+
+pub fn bootstrap_app(service: BootstrapHttpService) -> Router {
+    Router::new()
+        .route("/v1/bootstrap/exchange", post(exchange_bootstrap))
+        .with_state(service)
+}
+
+async fn exchange_bootstrap(
+    State(service): State<BootstrapHttpService>,
+    Json(request): Json<BootstrapExchangeHttpRequest>,
+) -> Result<Json<BootstrapManifestHttpResponse>, ApiError> {
+    if !valid_installation_instance_id(&request.installation_instance_id) {
+        return Err(ApiError::Enrollment(
+            EnrollmentCoordinatorError::InvalidRequest,
+        ));
+    }
+    let credential = decode_fixed(&request.bootstrap_code)?;
+    let bootstrap_hash = hash_activation_credential(&credential);
+    let enrollment_credential =
+        service.enrollment_authorization(&bootstrap_hash, &request.installation_instance_id);
+    let (outcome, record) = service
+        .repository
+        .exchange_bootstrap_code(
+            &bootstrap_hash,
+            &BootstrapExchangeWrite {
+                installation_instance_id: request.installation_instance_id,
+                enrollment_credential_hash: hash_activation_credential(&enrollment_credential),
+            },
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|_| ApiError::Service(GrantServiceError::Unavailable))?;
+    let record = match (outcome, record) {
+        (BootstrapManifestOutcome::Issued | BootstrapManifestOutcome::Replay, Some(record)) => {
+            record
+        }
+        (BootstrapManifestOutcome::Conflict, _) => {
+            return Err(ApiError::Service(GrantServiceError::Conflict))
+        }
+        _ => return Err(ApiError::Unauthenticated),
+    };
+    Ok(Json(BootstrapManifestHttpResponse {
+        schema_version: 1,
+        activation_id: record.activation_id,
+        tenant_id: record.tenant_id,
+        site_id: record.site_id,
+        display_name: record.display_name,
+        platform: record.platform,
+        architecture: record.architecture,
+        enrollment_endpoint: "/auth/v1/enrollment/challenges".into(),
+        enrollment_authorization: base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            enrollment_credential,
+        ),
+        signing_key_id: service.signing_key_id,
+        expires_at: record.expires_at,
+        replayed: record.replayed,
+    }))
+}
+
 async fn create_challenge<S>(
     State(service): State<Arc<S>>,
     Json(request): Json<EnrollmentChallengeHttpRequest>,
@@ -680,6 +778,14 @@ fn valid_runtime_error_code(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
+fn valid_installation_instance_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 120
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnrollmentChallengeHttpRequest {
@@ -691,6 +797,29 @@ struct EnrollmentChallengeHttpRequest {
     operational_public_key: String,
     metadata_hash: String,
     attestation_hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BootstrapExchangeHttpRequest {
+    bootstrap_code: String,
+    installation_instance_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BootstrapManifestHttpResponse {
+    schema_version: u8,
+    activation_id: Uuid,
+    tenant_id: Uuid,
+    site_id: Uuid,
+    display_name: String,
+    platform: String,
+    architecture: String,
+    enrollment_endpoint: String,
+    enrollment_authorization: String,
+    signing_key_id: String,
+    expires_at: chrono::DateTime<chrono::Utc>,
+    replayed: bool,
 }
 
 #[derive(Debug, Serialize)]

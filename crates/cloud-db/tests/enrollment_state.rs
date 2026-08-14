@@ -1,8 +1,9 @@
 use chrono::{Duration, Utc};
 use cloud_db::enrollment::{
-    ActivationCodeOutcome, ActivationCodeWrite, ChallengeCreationOutcome, EnrollmentChallengeWrite,
-    EnrollmentRepository,
+    ActivationCodeOutcome, ActivationCodeWrite, BootstrapExchangeWrite, BootstrapManifestOutcome,
+    ChallengeCreationOutcome, EnrollmentChallengeWrite, EnrollmentRepository,
 };
+use sha2::Digest;
 use uuid::Uuid;
 
 async fn test_repository() -> Option<(cloud_db::DbPool, EnrollmentRepository, Uuid, Uuid)> {
@@ -28,11 +29,170 @@ async fn test_repository() -> Option<(cloud_db::DbPool, EnrollmentRepository, Uu
     Some((pool, repository, organization_id, tenant_id))
 }
 
+async fn insert_site(pool: &cloud_db::DbPool, tenant_id: Uuid) -> Uuid {
+    let site_id = Uuid::new_v4();
+    let document = serde_json::json!({
+        "metadata": {
+            "schema_version": 1,
+            "id": site_id,
+            "tenant_id": tenant_id,
+            "revision": 1,
+            "state": "ACTIVE"
+        },
+        "resource": { "kind": "SITE", "spec": { "name": "Test site" } }
+    });
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let document_hash: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+    sqlx::query("INSERT INTO sdwan_control_resources (tenant_id, resource_kind, id, revision, state, document_hash, document_json, created_by, updated_by) VALUES (?, 'SITE', ?, 1, 'ACTIVE', ?, ?, 'test', 'test')")
+        .bind(tenant_id)
+        .bind(site_id)
+        .bind(document_hash.as_slice())
+        .bind(String::from_utf8(bytes).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    site_id
+}
+
+fn bootstrap_activation(
+    organization_id: Uuid,
+    tenant_id: Uuid,
+    site_id: Uuid,
+    code_hash: [u8; 32],
+) -> ActivationCodeWrite {
+    ActivationCodeWrite {
+        id: Uuid::new_v4(),
+        organization_id,
+        tenant_id,
+        site_id: Some(site_id),
+        requested_display_name: Some("Tokyo edge".into()),
+        requested_platform: Some("LINUX".into()),
+        requested_architecture: Some("aarch64".into()),
+        code_hash,
+        expires_at: Utc::now() + Duration::minutes(10),
+        created_by: "admin-1".into(),
+    }
+}
+
+#[tokio::test]
+async fn bootstrap_exchange_is_single_device_and_idempotent() {
+    let Some((pool, repository, organization_id, tenant_id)) = test_repository().await else {
+        return;
+    };
+    let site_id = insert_site(&pool, tenant_id).await;
+    let code_hash = unique_code_hash(organization_id, tenant_id);
+    repository
+        .insert_activation_code(&bootstrap_activation(
+            organization_id,
+            tenant_id,
+            site_id,
+            code_hash,
+        ))
+        .await
+        .unwrap();
+    let write = BootstrapExchangeWrite {
+        installation_instance_id: "linux-install-1".into(),
+        enrollment_credential_hash: [41; 32],
+    };
+
+    let first = repository
+        .exchange_bootstrap_code(&code_hash, &write, Utc::now())
+        .await
+        .unwrap();
+    let replay = repository
+        .exchange_bootstrap_code(&code_hash, &write, Utc::now())
+        .await
+        .unwrap();
+    let other_instance = repository
+        .exchange_bootstrap_code(
+            &code_hash,
+            &BootstrapExchangeWrite {
+                installation_instance_id: "linux-install-2".into(),
+                enrollment_credential_hash: [42; 32],
+            },
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(first.0, BootstrapManifestOutcome::Issued);
+    assert_eq!(first.1.unwrap().site_id, site_id);
+    assert_eq!(replay.0, BootstrapManifestOutcome::Replay);
+    assert_eq!(other_instance.0, BootstrapManifestOutcome::Conflict);
+}
+
+#[tokio::test]
+async fn bootstrap_exchange_rejects_expired_and_legacy_codes() {
+    let Some((pool, repository, organization_id, tenant_id)) = test_repository().await else {
+        return;
+    };
+    let site_id = insert_site(&pool, tenant_id).await;
+    let expired_hash = unique_code_hash(organization_id, site_id);
+    let mut expired = bootstrap_activation(organization_id, tenant_id, site_id, expired_hash);
+    expired.expires_at = Utc::now() + Duration::seconds(1);
+    repository.insert_activation_code(&expired).await.unwrap();
+    let legacy_hash = [44; 32];
+    repository
+        .insert_activation_code(&activation(organization_id, tenant_id, legacy_hash))
+        .await
+        .unwrap();
+    let write = BootstrapExchangeWrite {
+        installation_instance_id: "linux-install-1".into(),
+        enrollment_credential_hash: [43; 32],
+    };
+
+    let expired_result = repository
+        .exchange_bootstrap_code(&expired_hash, &write, Utc::now() + Duration::seconds(2))
+        .await
+        .unwrap();
+    let legacy_result = repository
+        .exchange_bootstrap_code(&legacy_hash, &write, Utc::now())
+        .await;
+
+    assert_eq!(expired_result.0, BootstrapManifestOutcome::Unavailable);
+    assert!(legacy_result.is_err());
+}
+
+#[tokio::test]
+async fn bootstrap_exchange_rejects_unsafe_installation_instance_ids() {
+    let Some((pool, repository, organization_id, tenant_id)) = test_repository().await else {
+        return;
+    };
+    let site_id = insert_site(&pool, tenant_id).await;
+    let code_hash = unique_code_hash(organization_id, site_id);
+    repository
+        .insert_activation_code(&bootstrap_activation(
+            organization_id,
+            tenant_id,
+            site_id,
+            code_hash,
+        ))
+        .await
+        .unwrap();
+
+    let result = repository
+        .exchange_bootstrap_code(
+            &code_hash,
+            &BootstrapExchangeWrite {
+                installation_instance_id: "install instance/1".into(),
+                enrollment_credential_hash: [45; 32],
+            },
+            Utc::now(),
+        )
+        .await;
+
+    assert!(result.is_err());
+}
+
 fn activation(organization_id: Uuid, tenant_id: Uuid, code_hash: [u8; 32]) -> ActivationCodeWrite {
     ActivationCodeWrite {
         id: Uuid::new_v4(),
         organization_id,
         tenant_id,
+        site_id: None,
+        requested_display_name: None,
+        requested_platform: None,
+        requested_architecture: None,
         code_hash,
         expires_at: Utc::now() + Duration::hours(1),
         created_by: "admin-1".into(),

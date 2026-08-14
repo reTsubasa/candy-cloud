@@ -1,6 +1,8 @@
 /target/
 web/node_modules/
 web/dist/
+web/public/install/artifacts/
+web/public/install/manifests/linux-*.json
 .env
 secrets/
 backups/

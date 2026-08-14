@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Avatar, Button, Dropdown, Layout, Menu, Space, Tag, Tooltip, Typography } from '@arco-design/web-react';
+import { Avatar, Button, Dropdown, Layout, Menu, Space, Tabs, Tag, Tooltip, Typography } from '@arco-design/web-react';
 import {
   IconApps,
   IconBranch,
@@ -8,6 +8,7 @@ import {
   IconDesktop,
   IconDown,
   IconLocation,
+  IconLink,
   IconMenuFold,
   IconMenuUnfold,
   IconPoweroff,
@@ -33,6 +34,7 @@ const iconByKey: Record<string, React.ReactNode> = {
   sites: <IconLocation />,
   nodes: <IconDesktop />,
   segments: <IconBranch />,
+  attachments: <IconLink />,
   prefixes: <IconStorage />,
   peers: <IconWifi />,
   egress: <IconCloud />,
@@ -55,6 +57,7 @@ export default function App() {
   const [selected, setSelected] = useState('overview');
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
+  const [createRequest, setCreateRequest] = useState<{ key: string; nonce: number }>({ key: '', nonce: 0 });
   const [memberships, setMemberships] = useState<IdentityMembership[]>([]);
 
   const selectedDefinition = useMemo(() => pageDefinition(selected), [selected]);
@@ -144,15 +147,15 @@ export default function App() {
         <Menu
           theme="dark"
           selectedKeys={[selected]}
-          onClickMenuItem={(key) => { setSelected(key); setMobileNav(false); }}
+          onClickMenuItem={(key) => { setSelected(key); setCreateRequest({ key: '', nonce: 0 }); setMobileNav(false); }}
           collapse={collapsed}
           className="side-menu"
         >
           <Menu.Item key="overview"><IconDashboard />运营概览</Menu.Item>
-          {resourceDefinitions.slice(0, 4).map((item) => <Menu.Item key={item.key} key-path={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
-          <Menu.Item key="enrollment"><IconSafe />节点加入</Menu.Item>
-          <Menu.Item key="peers"><IconWifi />对等与路径</Menu.Item>
-          {resourceDefinitions.slice(5).map((item) => <Menu.Item key={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
+          {resourceDefinitions.filter((item) => ['sites', 'nodes'].includes(item.key)).map((item) => <Menu.Item key={item.key} key-path={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
+          {resourceDefinitions.filter((item) => ['segments', 'attachments', 'prefixes'].includes(item.key)).map((item) => <Menu.Item key={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
+          <Menu.Item key="peers"><IconWifi />站点互联</Menu.Item>
+          {resourceDefinitions.filter((item) => ['egress', 'policies', 'dns', 'relays'].includes(item.key)).map((item) => <Menu.Item key={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
           <Menu.Item key="system"><IconSettings />系统</Menu.Item>
           {['ORGANIZATION_OWNER', 'TENANT_ADMIN', 'AUDITOR'].includes(session.membership?.role ?? session.claims.role ?? '') && <Menu.Item key="access"><IconSafe />成员与权限</Menu.Item>}
           <Menu.Item key="account"><IconUser />账户与安全</Menu.Item>
@@ -181,13 +184,13 @@ export default function App() {
         </header>
         <Layout.Content className="workspace">
           {selected === 'overview' && <Overview session={session} />}
-          {selected === 'enrollment' && <NodeEnrollment session={session} />}
-          {selectedDefinition && selected !== 'peers' && <ResourcePage definition={selectedDefinition} session={session} />}
+          {selected === 'enrollment' && <NodeEnrollment session={session} onBack={() => setSelected('nodes')} onCreateSite={() => { setSelected('sites'); setCreateRequest({ key: 'sites', nonce: Date.now() }); }} onFinished={() => setSelected('nodes')} />}
+          {selectedDefinition && selected !== 'peers' && <ResourcePage definition={selectedDefinition} session={session} createRequest={createRequest.key === selected ? createRequest.nonce : 0} onEnrollNode={() => { setSelected('enrollment'); setCreateRequest({ key: '', nonce: 0 }); }} />}
           {selected === 'peers' && (
-            <div className="dual-page">
-              <ResourcePage definition={pageDefinition('peers')!} session={session} />
-              <ResourcePage definition={pathDefinition} session={session} />
-            </div>
+            <Tabs className="peer-tabs" defaultActiveTab="relationships" destroyOnHide lazyload>
+              <Tabs.TabPane key="relationships" title="互联关系"><ResourcePage definition={pageDefinition('peers')!} session={session} /></Tabs.TabPane>
+              <Tabs.TabPane key="candidates" title="线路配置"><ResourcePage definition={pathDefinition} session={session} /></Tabs.TabPane>
+            </Tabs>
           )}
           {selected === 'system' && <SystemPage session={session} />}
           {selected === 'account' && <AccountSecurity session={session} onDisconnect={clearLocalSession} />}

@@ -24,6 +24,47 @@ compose() {
     -f "$root/docker-compose.yml" -f "$root/docker-compose.demo.yml" "$@"
 }
 
+compose_tls() {
+  docker compose --project-name "$project" --env-file "$env_file" \
+    -f "$root/docker-compose.yml" -f "$root/docker-compose.demo.yml" \
+    -f "$root/docker-compose.demo-tls.yml" "$@"
+}
+
+activate_web() {
+  web_container=$(compose ps -q cloud-web)
+  test -n "$web_container" || {
+    echo 'candy-cloud-demo: cloud-web container is not running' >&2
+    exit 1
+  }
+  source_container=$(docker create candy-cloud-demo-cloud-web:local)
+  web_stage=$(mktemp -d "${TMPDIR:-/tmp}/candy-cloud-demo-web.XXXXXX")
+  cleanup_web() {
+    docker rm -f "$source_container" >/dev/null 2>&1 || :
+    rm -rf "$web_stage"
+  }
+  trap cleanup_web EXIT INT TERM
+  docker cp "$source_container:/srv/." "$web_stage/"
+  docker rm "$source_container" >/dev/null
+  source_container=
+  test -s "$web_stage/index.html"
+  test -d "$web_stage/assets"
+  docker run --rm --volumes-from "$web_container" \
+    -v "$web_stage:/image-web:ro" busybox:1.37.0-musl sh -eu -c '
+      mkdir -p /srv/assets
+      cp -R /image-web/assets/. /srv/assets/
+      if test -d /image-web/install; then
+        rm -rf /srv/.install.next
+        cp -R /image-web/install /srv/.install.next
+        rm -rf /srv/install
+        mv /srv/.install.next /srv/install
+      fi
+      cp /image-web/index.html /srv/.index.html.new
+      mv /srv/.index.html.new /srv/index.html
+    '
+  cleanup_web
+  trap - EXIT INT TERM
+}
+
 initialize() {
   test ! -f "$env_file" || return 0
   umask 077
@@ -38,8 +79,15 @@ initialize() {
     -keyout "$secrets/device-ca.key" -out "$secrets/device-ca.pem" >/dev/null 2>&1
   # The Demo proxy is HTTP-only, but base Compose validates all secret paths.
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-    -subj '/CN=localhost' \
-    -keyout "$secrets/cloud-tls.key" -out "$secrets/cloud-tls.pem" >/dev/null 2>&1
+    -subj '/CN=Candy Demo TLS CA' -addext 'basicConstraints=critical,CA:TRUE' \
+    -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+    -keyout "$secrets/cloud-tls-ca.key" -out "$secrets/cloud-tls-ca.pem" >/dev/null 2>&1
+  openssl req -newkey rsa:2048 -nodes -subj '/CN=localhost' \
+    -keyout "$secrets/cloud-tls.key" -out "$secrets/cloud-tls.csr" >/dev/null 2>&1
+  printf '%s\n' 'subjectAltName=DNS:localhost,IP:127.0.0.1' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyEncipherment' 'extendedKeyUsage=serverAuth' >"$secrets/cloud-tls.ext"
+  openssl x509 -req -days 3650 -sha256 -in "$secrets/cloud-tls.csr" \
+    -CA "$secrets/cloud-tls-ca.pem" -CAkey "$secrets/cloud-tls-ca.key" -CAcreateserial \
+    -extfile "$secrets/cloud-tls.ext" -out "$secrets/cloud-tls.pem" >/dev/null 2>&1
 
   mysql_root=$(openssl rand -hex 24)
   mysql_migrator=$(openssl rand -hex 24)
@@ -60,6 +108,7 @@ initialize() {
     echo 'CANDY_ROUTE_SIGNING_KEY_ID=demo-route'
     echo "CANDY_ROUTE_SIGNING_KEY_HEX=$route_key"
     echo 'CORE_MODULE_VERSION=0.3.10'
+    echo 'CORE_MODULE_TARGET=x86_64-unknown-linux-gnu'
     echo 'CORE_MODULE_BUNDLE_SHA256=b41806ff17359a9ec8151deb61b206403ec01b14aaffd8f7d456111ab0cc042d'
     echo 'CORE_MODULE_SHA256=54c1e6a1f61ef0b28208d5dec13ce7b1351922478987b5eac3ac9a06f183c478'
     echo "CLOUD_SIGNING_KEY_FILE=$secrets/cloud-signing.key"
@@ -84,6 +133,48 @@ initialize() {
 }
 
 case "${1:-up}" in
+
+  tls)
+    initialize
+    if ! test -s "$secrets/cloud-tls-ca.pem" || ! openssl verify -CAfile "$secrets/cloud-tls-ca.pem" "$secrets/cloud-tls.pem" >/dev/null 2>&1; then
+      umask 077
+      openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+        -subj '/CN=Candy Demo TLS CA' -addext 'basicConstraints=critical,CA:TRUE' \
+        -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+        -keyout "$secrets/cloud-tls-ca.key" -out "$secrets/cloud-tls-ca.pem" >/dev/null 2>&1
+      openssl req -newkey rsa:2048 -nodes -subj '/CN=localhost' \
+        -keyout "$secrets/cloud-tls.key" -out "$secrets/cloud-tls.csr" >/dev/null 2>&1
+      printf '%s\n' 'subjectAltName=DNS:localhost,IP:127.0.0.1' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyEncipherment' 'extendedKeyUsage=serverAuth' >"$secrets/cloud-tls.ext"
+      openssl x509 -req -days 3650 -sha256 -in "$secrets/cloud-tls.csr" \
+        -CA "$secrets/cloud-tls-ca.pem" -CAkey "$secrets/cloud-tls-ca.key" -CAcreateserial \
+        -extfile "$secrets/cloud-tls.ext" -out "$secrets/cloud-tls.pem" >/dev/null 2>&1
+    fi
+    if test "${CANDY_CLOUD_DEMO_SKIP_BUILD:-0}" != 1; then
+      for service in cloud-web migrate cloud-api cloud-identity cloud-auth cloud-worker; do
+        compose_tls build "$service"
+      done
+    fi
+    compose_tls up -d --no-build reverse-proxy cloud-worker
+    activate_web
+    tls_port=${CLOUD_DEMO_TLS_PORT:-8443}
+    for _ in $(seq 1 120); do
+      if curl --silent --fail --cacert "$secrets/cloud-tls-ca.pem" "https://localhost:$tls_port/identity/health/ready" >/dev/null &&
+        curl --silent --fail --cacert "$secrets/cloud-tls-ca.pem" "https://localhost:$tls_port/api/health/ready" >/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    curl --silent --fail --cacert "$secrets/cloud-tls-ca.pem" "https://localhost:$tls_port/identity/health/ready" >/dev/null || {
+      compose_tls ps -a >&2 || :
+      compose_tls logs --no-color reverse-proxy cloud-api cloud-identity migrate mysql >&2 || :
+      echo 'candy-cloud-demo: TLS demo did not become ready' >&2
+      exit 1
+    }
+    echo "Candy Cloud TLS Demo: https://localhost:$tls_port"
+    echo "CA certificate: $secrets/cloud-tls-ca.pem"
+    echo 'Email: demo-owner@candy.local'
+    echo 'Password: Candy-Demo-2026!'
+    ;;
   up)
     initialize
     if test "${CANDY_CLOUD_DEMO_SKIP_BUILD:-0}" != 1; then
@@ -92,6 +183,7 @@ case "${1:-up}" in
       done
     fi
     compose up -d --no-build reverse-proxy cloud-worker
+    activate_web
     for _ in $(seq 1 120); do
       if curl --silent --fail "http://localhost:$port/identity/health/ready" >/dev/null &&
         curl --silent --fail "http://localhost:$port/api/health/ready" >/dev/null; then
@@ -114,6 +206,14 @@ case "${1:-up}" in
     echo "Candy Cloud Demo: http://localhost:$port"
     echo 'Email: demo-owner@candy.local'
     echo 'Password: Candy-Demo-2026!'
+    ;;
+  web)
+    initialize
+    compose_tls build cloud-web
+    compose_tls up -d --no-build cloud-web reverse-proxy
+    activate_web
+    echo "Candy Cloud Web refreshed: http://localhost:$port"
+    echo "Candy Cloud TLS Web refreshed: https://localhost:${CLOUD_DEMO_TLS_PORT:-8443}"
     ;;
   down)
     test -f "$env_file" || exit 0
@@ -144,7 +244,7 @@ case "${1:-up}" in
     fi
     ;;
   *)
-    echo 'usage: bin/candy-cloud-demo [up|down|reset|status|logs [service...]]' >&2
+    echo 'usage: bin/candy-cloud-demo [up|tls|web|down|reset|status|logs [service...]]' >&2
     exit 2
     ;;
 esac

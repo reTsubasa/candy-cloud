@@ -469,6 +469,17 @@ async fn validate_cross_resource(
             if !identity_exists {
                 return Err(ControlStoreError::ReferenceConflict);
             }
+            let identity_already_configured: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = 'NODE' AND id <> ? AND state <> 'DELETED' AND JSON_UNQUOTE(JSON_EXTRACT(document_json, '$.resource.spec.device_id')) = ?)",
+            )
+            .bind(resource.metadata.tenant_id)
+            .bind(resource.metadata.id)
+            .bind(value.device_id.to_string())
+            .fetch_one(&mut **transaction)
+            .await?;
+            if identity_already_configured {
+                return Err(ControlStoreError::ReferenceConflict);
+            }
         }
         ResourceSpecV1::Segment(value) => {
             validate_segment_overlay(

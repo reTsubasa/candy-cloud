@@ -1,20 +1,25 @@
 # syntax=docker/dockerfile:1.7
 
-# Build Rust on the native CI CPU and cross-compile the small ARM64 runtime
-# binaries. Running Cargo under QEMU turns every release into an hour-long job.
+# Build Rust on the native host CPU and cross-compile when the image target is
+# different. Running Cargo itself under QEMU makes local and CI builds stall.
 FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS build
+ARG BUILDARCH
 ARG TARGETARCH
 ARG RUST_TARGET=aarch64-unknown-linux-gnu
 ARG BINARY
-RUN case "${TARGETARCH}:${RUST_TARGET}" in \
-      amd64:x86_64-unknown-linux-gnu) ;; \
-      arm64:aarch64-unknown-linux-gnu) \
+RUN case "${BUILDARCH}:${TARGETARCH}:${RUST_TARGET}" in \
+      amd64:amd64:x86_64-unknown-linux-gnu|arm64:arm64:aarch64-unknown-linux-gnu) ;; \
+      amd64:arm64:aarch64-unknown-linux-gnu) \
         apt-get update && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
           && rm -rf /var/lib/apt/lists/* ;; \
-      *) echo "RUST_TARGET does not match target architecture" >&2; exit 1 ;; \
+      arm64:amd64:x86_64-unknown-linux-gnu) \
+        apt-get update && apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu libc6-dev-amd64-cross \
+          && rm -rf /var/lib/apt/lists/* ;; \
+      *) echo "unsupported build/target architecture pair" >&2; exit 1 ;; \
     esac \
     && rustup target add "${RUST_TARGET}"
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
 WORKDIR /workspace
 COPY . ./candy-cloud/
 WORKDIR /workspace/candy-cloud

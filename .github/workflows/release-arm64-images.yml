@@ -29,6 +29,7 @@ jobs:
       CORE_MODULE_VERSION: 0.3.10
       CORE_MODULE_TARGET: aarch64-unknown-linux-gnu
       CORE_MODULE_INPUT_TAG: cloud-core-input-v0.3.10-arm64
+      RUNTIME_RELEASE_TAG: runtime-v0.4.0-r25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: docker/setup-qemu-action@v3
@@ -74,6 +75,25 @@ jobs:
             echo "CORE_MODULE_SHA256=$(jq -r .artifact.sha256 "$manifest")"
             echo "CORE_MODULE_URL=https://github.com/$GITHUB_REPOSITORY/releases/download/$CORE_MODULE_INPUT_TAG/$base.tar.gz"
           } >> "$GITHUB_ENV"
+      - name: Bind node installer to the finalized Runtime release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf web/public/install/manifests
+          mkdir -p web/public/install/manifests
+          gh release download "$RUNTIME_RELEASE_TAG" --repo reTsubasa/candy-release \
+            --pattern 'linux-*.json' --dir web/public/install/manifests
+          test "$(find web/public/install/manifests -maxdepth 1 -type f -name 'linux-*.json' | wc -l | tr -d ' ')" = 2
+          for architecture in x86_64 aarch64; do
+            manifest="web/public/install/manifests/linux-$architecture.json"
+            jq -e --arg architecture "$architecture" --arg tag "$RUNTIME_RELEASE_TAG" '
+              .schema_version == 1 and .platform == "linux" and .architecture == $architecture and
+              (.runtime_url | contains("/reTsubasa/candy-release/releases/download/" + $tag + "/")) and
+              (.runtime_sha256 | test("^[0-9a-f]{64}$")) and
+              (.runtime_size | type == "number" and . > 0)
+            ' "$manifest" >/dev/null
+          done
       - name: Build native ARM64 service images
         run: |
           set -eu

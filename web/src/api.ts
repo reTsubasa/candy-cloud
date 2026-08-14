@@ -318,11 +318,12 @@ export function createNodeJoinCode(
   token: string,
   tenantId: string,
   expiresInSeconds = 600,
+  intent?: { site_id: string; display_name: string; platform: 'OPEN_WRT' | 'LINUX'; architecture: string },
 ): Promise<EnrollmentActivationSecret> {
   return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/enrollment/activations`, token, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ expires_in_seconds: expiresInSeconds }),
+    body: JSON.stringify({ expires_in_seconds: expiresInSeconds, ...intent }),
   });
 }
 

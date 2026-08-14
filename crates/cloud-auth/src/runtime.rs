@@ -12,7 +12,10 @@ use crate::{
     grants::GrantSigner,
     issuance::IssuerConfig,
     keyring::load_signing_key,
-    routes::{device_authenticated_app, device_authenticated_runtime_app, enrollment_app},
+    routes::{
+        bootstrap_app, device_authenticated_app, device_authenticated_runtime_app, enrollment_app,
+        BootstrapHttpService,
+    },
     service::{
         DatabaseRuntimeConfigurationService, DatabaseTenantAuthService, GrantIssuanceCoordinator,
     },
@@ -80,12 +83,19 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
         }
     };
     let certificate_issuer = load_device_ca(&config)?;
+    let enrollment_repository = cloud_db::enrollment::EnrollmentRepository::new(pool.clone());
     let enrollment = enrollment_app(Arc::new(EnrollmentCoordinator::new(
         pool.clone(),
         certificate_issuer,
     )));
+    let bootstrap_signing_key = load_signing_seed(&config)?;
+    let bootstrap = bootstrap_app(BootstrapHttpService::new(
+        enrollment_repository.clone(),
+        bootstrap_signing_key,
+        config.signing_key_id.clone(),
+    ));
     let grant_service = Arc::new(DatabaseTenantAuthService::new(
-        cloud_db::enrollment::EnrollmentRepository::new(pool.clone()),
+        enrollment_repository,
         GrantIssuanceCoordinator::new_optional(
             cloud_db::authorization::AuthorizationRepository::new(pool.clone()),
             cloud_db::repositories::GrantIssuanceRepository::new(pool.clone()),
@@ -115,7 +125,8 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
         .with_state(readiness);
-    Ok(enrollment
+    Ok(bootstrap
+        .merge(enrollment)
         .merge(grants)
         .merge(runtime_configuration)
         .merge(health))
@@ -138,11 +149,7 @@ async fn ready(State(state): State<Arc<ReadinessState>>) -> (StatusCode, &'stati
 }
 
 fn load_grant_signer(config: &CloudAuthConfig) -> Result<GrantSigner> {
-    let bytes = load_signing_key(&config.signing_key_path).context("load Grant signing key")?;
-    let seed: &[u8; 32] = bytes
-        .expose()
-        .try_into()
-        .context("parse Grant signing key")?;
+    let signing_key = load_signing_seed(config)?;
     if config.signing_key_id.is_empty() || config.signing_key_id.len() > 64 {
         anyhow::bail!("CLOUD_SIGNING_KEY_ID must be between 1 and 64 bytes");
     }
@@ -167,9 +174,18 @@ fn load_grant_signer(config: &CloudAuthConfig) -> Result<GrantSigner> {
     );
     Ok(GrantSigner::new(
         config.signing_key_id.clone(),
-        SigningKey::from_bytes(seed),
+        signing_key,
         module,
     ))
+}
+
+fn load_signing_seed(config: &CloudAuthConfig) -> Result<SigningKey> {
+    let bytes = load_signing_key(&config.signing_key_path).context("load Cloud signing key")?;
+    let seed: &[u8; 32] = bytes
+        .expose()
+        .try_into()
+        .context("parse Cloud signing key")?;
+    Ok(SigningKey::from_bytes(seed))
 }
 
 fn validate_grant_signing_key(config: &CloudAuthConfig) -> Result<()> {

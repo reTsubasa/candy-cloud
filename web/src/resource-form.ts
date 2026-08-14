@@ -15,6 +15,13 @@ function validIpv4(value: string): boolean {
   return ipv4Number(value) !== null;
 }
 
+function validUnicastIpv4(value: string): boolean {
+  const address = ipv4Number(value);
+  if (address === null || address === 0 || address === 0xffffffff) return false;
+  const firstOctet = address >>> 24;
+  return firstOctet !== 127 && (firstOctet < 224 || firstOctet > 239);
+}
+
 function validIpv6(value: string): boolean {
   if (!value.includes(':') || !/^[0-9a-f:]+$/i.test(value) || value.length > 39) return false;
   try {
@@ -63,6 +70,7 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
   delete spec.capacity_mbps;
 
   if (kind === 'SEGMENT') spec.overlay_prefix = parseCidr(cleanText(editor.overlay_cidr));
+  if (kind === 'ATTACHMENT') spec.epoch_floor = positiveInteger(editor.epoch_floor);
   if (kind === 'PREFIX') spec.prefix = parseCidr(cleanText(editor.cidr));
   if (kind === 'PEER') {
     const sites = [cleanText(editor.site_a_id), cleanText(editor.site_b_id)].sort();
@@ -110,6 +118,7 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
   const errors: string[] = [];
   const uuidFields: Record<string, string[]> = {
     NODE: ['device_id', 'device_key_id', 'site_id'],
+    ATTACHMENT: ['segment_id', 'site_id', 'node_id'],
     PREFIX: ['site_id', 'segment_id'],
     PEER: ['segment_id', 'site_a_id', 'site_b_id'],
     PATH_CANDIDATE: ['segment_id', 'peer_id', 'source_attachment_id', 'destination_attachment_id'],
@@ -119,7 +128,7 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
     DNS_INTENT: ['segment_id', 'site_id'],
   };
   const textFields: Record<string, string[]> = {
-    SITE: ['name', 'kind'], NODE: ['display_name', 'platform', 'architecture'], SEGMENT: ['name'],
+    SITE: ['name', 'kind'], NODE: ['display_name', 'platform', 'architecture'], SEGMENT: ['name'], ATTACHMENT: ['overlay_router_ipv4'],
     PREFIX: ['source'], PEER: ['path_policy'], PATH_CANDIDATE: ['kind', 'endpoint'],
     EGRESS: ['name'], RELAY: ['name', 'region'], DNS_INTENT: ['zone'],
   };
@@ -129,6 +138,10 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
     if (value && !uuidPattern.test(value)) errors.push(`${field}:uuid`);
   });
   if (kind === 'SEGMENT' && !parseCidr(cleanText(spec.overlay_cidr))) errors.push('overlay_cidr:cidr');
+  if (kind === 'ATTACHMENT') {
+    if (!validUnicastIpv4(cleanText(spec.overlay_router_ipv4))) errors.push('overlay_router_ipv4:ipv4');
+    if (!Number.isInteger(Number(spec.epoch_floor)) || Number(spec.epoch_floor) < 1) errors.push('epoch_floor:positive');
+  }
   if (kind === 'PREFIX' && !parseCidr(cleanText(spec.cidr))) errors.push('cidr:cidr');
   if (kind === 'PEER' && spec.site_a_id === spec.site_b_id) errors.push('site_b_id:different');
   if (kind === 'RELAY' || kind === 'EGRESS') {
@@ -141,6 +154,7 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
     const validAddress = endpointMatch && (endpointMatch[1] ? validIpv4(endpointMatch[1]) : validIpv6(endpointMatch[2]));
     if (!endpointMatch || !validAddress || Number(endpointMatch[3]) < 1 || Number(endpointMatch[3]) > 65535) errors.push('endpoint:endpoint');
     if (!Number.isInteger(Number(spec.priority)) || Number(spec.priority) < 1 || Number(spec.priority) > 65535) errors.push('priority:range');
+    if (spec.source_attachment_id === spec.destination_attachment_id) errors.push('destination_attachment_id:different');
     if (spec.kind === 'RELAY' && !uuidPattern.test(cleanText(spec.relay_id))) errors.push('relay_id:uuid');
   }
   if (kind === 'SERVICE_POLICY') {

@@ -1,0 +1,54 @@
+(candy_demo_routes) {
+  header {
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "same-origin"
+    X-Frame-Options "DENY"
+    Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+    Content-Security-Policy "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+    -Server
+  }
+
+  handle_path /api/* {
+    reverse_proxy cloud-api:8080
+  }
+
+  handle_path /identity/* {
+    reverse_proxy cloud-identity:8082 {
+      header_up -X-Candy-Client-IP
+      header_up X-Candy-Client-IP {http.request.remote.host}
+    }
+  }
+
+  handle_path /auth/* {
+    reverse_proxy cloud-auth:8081 {
+      header_up -X-Candy-Verified-Device-Certificate-Der
+    }
+  }
+
+  handle {
+    root * /srv/web
+    @immutable path /assets/*
+    header @immutable Cache-Control "public, max-age=31536000, immutable"
+    @index path / /index.html
+    header @index Cache-Control "no-cache"
+    try_files {path} /index.html
+    file_server
+  }
+}
+
+http://:80 {
+  import candy_demo_routes
+}
+
+:443 {
+  tls /run/secrets/cloud_tls_certificate /run/secrets/cloud_tls_key {
+    client_auth {
+      mode verify_if_given
+      trust_pool file {
+        pem_file /run/secrets/cloud_device_ca_certificate
+      }
+    }
+  }
+  header Strict-Transport-Security "max-age=31536000"
+  import candy_demo_routes
+}

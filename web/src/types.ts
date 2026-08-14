@@ -112,17 +112,39 @@ export type MutationResponse = {
 export type EnrollmentActivation = {
   id: string;
   tenant_id: string;
+  site_id: string | null;
+  requested_display_name: string | null;
+  requested_platform: 'OPEN_WRT' | 'LINUX' | null;
+  requested_architecture: string | null;
   status: 'ACTIVE' | 'RESERVED' | 'CONSUMED' | 'REVOKED' | 'EXPIRED';
   expires_at: string;
   created_at: string;
   reserved_at: string | null;
   consumed_at: string | null;
+  display_name: string | null;
+  device_id: string | null;
+  device_key_id: string | null;
 };
 
 export type EnrollmentActivationSecret = {
   id: string;
   credential: string;
   expires_at: string;
+};
+
+export type EnrollmentBootstrapManifest = {
+  schema_version: 1;
+  activation_id: string;
+  tenant_id: string;
+  site_id: string;
+  display_name: string;
+  platform: 'OPEN_WRT' | 'LINUX';
+  architecture: string;
+  enrollment_endpoint: string;
+  enrollment_authorization: string;
+  signing_key_id: string;
+  expires_at: string;
+  replayed: boolean;
 };
 
 export type ApiErrorBody = {

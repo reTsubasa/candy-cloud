@@ -159,6 +159,10 @@ pub struct MutationResponse {
 #[serde(deny_unknown_fields)]
 pub struct ActivationCreateRequest {
     pub expires_in_seconds: Option<u64>,
+    pub site_id: Option<Uuid>,
+    pub display_name: Option<String>,
+    pub platform: Option<String>,
+    pub architecture: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -172,11 +176,18 @@ pub struct ActivationCreateResponse {
 pub struct ActivationResponse {
     pub id: Uuid,
     pub tenant_id: Uuid,
+    pub site_id: Option<Uuid>,
+    pub requested_display_name: Option<String>,
+    pub requested_platform: Option<String>,
+    pub requested_architecture: Option<String>,
     pub status: String,
     pub expires_at: chrono::DateTime<Utc>,
     pub created_at: chrono::DateTime<Utc>,
     pub reserved_at: Option<chrono::DateTime<Utc>>,
     pub consumed_at: Option<chrono::DateTime<Utc>>,
+    pub display_name: Option<String>,
+    pub device_id: Option<Uuid>,
+    pub device_key_id: Option<Uuid>,
 }
 
 pub async fn list_activations(
@@ -208,11 +219,18 @@ pub async fn list_activations(
             .map(|record| ActivationResponse {
                 id: record.id,
                 tenant_id: record.tenant_id,
+                site_id: record.site_id,
+                requested_display_name: record.requested_display_name,
+                requested_platform: record.requested_platform,
+                requested_architecture: record.requested_architecture,
                 status: record.status,
                 expires_at: record.expires_at,
                 created_at: record.created_at,
                 reserved_at: record.reserved_at,
                 consumed_at: record.consumed_at,
+                display_name: record.display_name,
+                device_id: record.device_id,
+                device_key_id: record.device_key_id,
             })
             .collect(),
     ))
@@ -234,6 +252,44 @@ pub async fn create_activation(
             message: "expires_in_seconds must be between 300 and 3600",
         });
     }
+    let intent_fields = [
+        body.site_id.is_some(),
+        body.display_name.is_some(),
+        body.platform.is_some(),
+        body.architecture.is_some(),
+    ];
+    if intent_fields.iter().any(|value| *value) && !intent_fields.iter().all(|value| *value) {
+        return Err(ApiError {
+            status: StatusCode::BAD_REQUEST,
+            code: "INVALID_BOOTSTRAP_INTENT",
+            message: "site_id, display_name, platform and architecture must be provided together",
+        });
+    }
+    if body
+        .display_name
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty() || value.len() > 200)
+        || body
+            .platform
+            .as_ref()
+            .is_some_and(|value| !matches!(value.as_str(), "OPEN_WRT" | "LINUX"))
+        || body
+            .platform
+            .as_deref()
+            .zip(body.architecture.as_deref())
+            .is_some_and(|(platform, architecture)| {
+                !matches!(
+                    (platform, architecture),
+                    ("OPEN_WRT", "x86_64" | "armv7") | ("LINUX", "x86_64" | "aarch64")
+                )
+            })
+    {
+        return Err(ApiError {
+            status: StatusCode::BAD_REQUEST,
+            code: "INVALID_BOOTSTRAP_INTENT",
+            message: "node bootstrap configuration is invalid",
+        });
+    }
     let repository = state.enrollment.as_ref().ok_or(ApiError {
         status: StatusCode::SERVICE_UNAVAILABLE,
         code: "ENROLLMENT_UNAVAILABLE",
@@ -253,6 +309,10 @@ pub async fn create_activation(
             id,
             organization_id: principal.context.organization_id,
             tenant_id,
+            site_id: body.site_id,
+            requested_display_name: body.display_name.map(|value| value.trim().to_owned()),
+            requested_platform: body.platform,
+            requested_architecture: body.architecture,
             code_hash: cloud_db::enrollment::hash_activation_credential(&credential),
             expires_at,
             created_by: principal.actor_id,

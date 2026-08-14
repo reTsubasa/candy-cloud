@@ -91,8 +91,9 @@ environment is exactly `development`. The command creates deployment-local
 keys and random database passwords under the ignored
 `.candy-cloud-demo.local/` directory, uses the dedicated `candy-cloud-demo`
 Compose project, and serves the console at `http://localhost:8088`. Use
-`bin/candy-cloud-demo status`, `logs`, or `down` to inspect or stop it. `reset`
-also removes the Demo database volume.
+`bin/candy-cloud-demo web` rebuilds and activates only the current Web source,
+without rebuilding Rust services. Use `status`, `logs`, or `down` to inspect or
+stop the stack. `reset` also removes the Demo database volume.
 
 For local UI development:
 

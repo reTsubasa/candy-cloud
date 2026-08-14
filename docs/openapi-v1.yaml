@@ -412,7 +412,7 @@ paths:
     get:
       tags: [Management]
       operationId: listEnrollmentActivations
-      summary: List node join code status without revealing join codes
+      summary: List node Bootstrap request status without revealing Bootstrap codes
       security: [{ managementBearer: [] }]
       responses:
         "200":
@@ -426,7 +426,7 @@ paths:
     post:
       tags: [Management]
       operationId: createEnrollmentActivation
-      summary: Create a single-use node join code
+      summary: Create a short-lived, single-use node Bootstrap code
       security: [{ managementBearer: [] }]
       requestBody:
         required: false
@@ -435,7 +435,7 @@ paths:
             schema: { $ref: "#/components/schemas/ActivationCreateRequest" }
       responses:
         "201":
-          description: The node join code is returned exactly once, expires after 10 minutes by default, and is never persisted in plaintext.
+          description: The node Bootstrap code is returned exactly once, expires after 10 minutes by default, and is never persisted in plaintext. Ordinary users download it inside the Bootstrap JSON document rather than handling the code directly.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ActivationCreateResponse" }
@@ -522,14 +522,42 @@ paths:
         "412": { $ref: "#/components/responses/RevisionConflict" }
         "428": { $ref: "#/components/responses/IfMatchRequired" }
         "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/bootstrap/exchange:
+    post:
+      tags: [Enrollment]
+      operationId: exchangeEnrollmentBootstrap
+      summary: Exchange a short-lived bootstrap code for the node installation manifest
+      description: |-
+        The first successful installation instance atomically reserves the code. The same
+        installation_instance_id may replay after interruption; another instance is rejected.
+        The bootstrap code is not accepted by the enrollment endpoint after exchange. Cloud
+        returns a distinct short-lived enrollment authorization bound to the installation instance.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BootstrapExchangeRequest" }
+      responses:
+        "200":
+          description: Installation intent and enrollment authorization bound to this installer.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BootstrapManifest" }
+        "400": { $ref: "#/components/responses/DeviceBadRequest" }
+        "401": { $ref: "#/components/responses/EnrollmentDenied" }
+        "409": { $ref: "#/components/responses/DeviceConflict" }
+        "422": { $ref: "#/components/responses/UnprocessableJson" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
   /v1/enrollment/challenges:
     post:
       tags: [Enrollment]
       operationId: createEnrollmentChallenge
       summary: Reserve a node join code and create an enrollment challenge
       description: |-
-        Public bootstrap endpoint. Tenant and organization scope are derived from
-        the single-use node join code and MUST NOT be accepted from the body.
+        Public enrollment endpoint. Tenant and organization scope are derived from
+        the credential and MUST NOT be accepted from the body. Bootstrap-based installs
+        use the distinct enrollment_authorization returned by /v1/bootstrap/exchange;
+        the original bootstrap code is rejected after it has been exchanged.
       requestBody:
         required: true
         content:
@@ -843,6 +871,10 @@ components:
       additionalProperties: false
       properties:
         expires_in_seconds: { type: integer, minimum: 300, maximum: 3600, default: 600 }
+        site_id: { $ref: "#/components/schemas/Uuid" }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        platform: { type: string, enum: [OPEN_WRT, LINUX] }
+        architecture: { type: string, minLength: 1, maxLength: 80 }
     ActivationCreateResponse:
       type: object
       additionalProperties: false
@@ -854,16 +886,46 @@ components:
     EnrollmentActivation:
       type: object
       additionalProperties: false
-      required: [id, tenant_id, status, expires_at, created_at, reserved_at, consumed_at]
+      required: [id, tenant_id, site_id, requested_display_name, requested_platform, requested_architecture, status, expires_at, created_at, reserved_at, consumed_at, display_name, device_id, device_key_id]
       properties:
         id: { $ref: "#/components/schemas/Uuid" }
         tenant_id: { $ref: "#/components/schemas/Uuid" }
+        site_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
+        requested_display_name: { oneOf: [{ type: string, minLength: 1, maxLength: 200 }, { type: "null" }] }
+        requested_platform: { oneOf: [{ type: string, enum: [OPEN_WRT, LINUX] }, { type: "null" }] }
+        requested_architecture: { oneOf: [{ type: string, enum: [x86_64, aarch64, armv7] }, { type: "null" }] }
         status: { type: string, enum: [ACTIVE, RESERVED, CONSUMED, REVOKED, EXPIRED] }
         expires_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
         reserved_at: { oneOf: [{ type: string, format: date-time }, { type: "null" }] }
         consumed_at: { oneOf: [{ type: string, format: date-time }, { type: "null" }] }
-        device_label: { type: string, minLength: 1, maxLength: 200 }
+        display_name: { oneOf: [{ type: string, minLength: 1, maxLength: 200 }, { type: "null" }] }
+        device_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
+        device_key_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
+    BootstrapExchangeRequest:
+      type: object
+      additionalProperties: false
+      required: [bootstrap_code, installation_instance_id]
+      properties:
+        bootstrap_code: { $ref: "#/components/schemas/Base64Url32" }
+        installation_instance_id: { type: string, minLength: 1, maxLength: 120, pattern: '^[A-Za-z0-9._:-]+$' }
+    BootstrapManifest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, activation_id, tenant_id, site_id, display_name, platform, architecture, enrollment_endpoint, enrollment_authorization, signing_key_id, expires_at, replayed]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        activation_id: { $ref: "#/components/schemas/Uuid" }
+        tenant_id: { $ref: "#/components/schemas/Uuid" }
+        site_id: { $ref: "#/components/schemas/Uuid" }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        platform: { type: string, enum: [OPEN_WRT, LINUX] }
+        architecture: { type: string, enum: [x86_64, aarch64, armv7] }
+        enrollment_endpoint: { type: string, minLength: 1, maxLength: 255 }
+        enrollment_authorization: { $ref: "#/components/schemas/Base64Url32" }
+        signing_key_id: { type: string, minLength: 1, maxLength: 64 }
+        expires_at: { type: string, format: date-time }
+        replayed: { type: boolean }
     RefreshAccountSessionRequest:
       type: object
       additionalProperties: false

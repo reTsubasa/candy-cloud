@@ -29,6 +29,10 @@ pub struct ActivationCodeWrite {
     pub id: Uuid,
     pub organization_id: Uuid,
     pub tenant_id: Uuid,
+    pub site_id: Option<Uuid>,
+    pub requested_display_name: Option<String>,
+    pub requested_platform: Option<String>,
+    pub requested_architecture: Option<String>,
     pub code_hash: [u8; 32],
     pub expires_at: DateTime<Utc>,
     pub created_by: String,
@@ -44,11 +48,44 @@ pub enum ActivationCodeOutcome {
 pub struct ActivationCodeRecord {
     pub id: Uuid,
     pub tenant_id: Uuid,
+    pub site_id: Option<Uuid>,
+    pub requested_display_name: Option<String>,
+    pub requested_platform: Option<String>,
+    pub requested_architecture: Option<String>,
     pub status: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub reserved_at: Option<DateTime<Utc>>,
     pub consumed_at: Option<DateTime<Utc>>,
+    pub display_name: Option<String>,
+    pub device_id: Option<Uuid>,
+    pub device_key_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapManifestRecord {
+    pub activation_id: Uuid,
+    pub tenant_id: Uuid,
+    pub site_id: Uuid,
+    pub display_name: String,
+    pub platform: String,
+    pub architecture: String,
+    pub expires_at: DateTime<Utc>,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapManifestOutcome {
+    Issued,
+    Replay,
+    Unavailable,
+    Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapExchangeWrite {
+    pub installation_instance_id: String,
+    pub enrollment_credential_hash: [u8; 32],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +239,24 @@ impl EnrollmentRepository {
             || write.created_by.is_empty()
             || write.created_by.len() > 120
             || write.expires_at <= Utc::now()
+            || write
+                .requested_display_name
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.len() > 200)
+            || write
+                .requested_platform
+                .as_ref()
+                .is_some_and(|value| !matches!(value.as_str(), "OPEN_WRT" | "LINUX"))
+            || write.requested_architecture.as_ref().is_some_and(|value| {
+                value.is_empty()
+                    || value.len() > 80
+                    || !value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+                    })
+            })
+            || write.site_id.is_some() != write.requested_display_name.is_some()
+            || write.site_id.is_some() != write.requested_platform.is_some()
+            || write.site_id.is_some() != write.requested_architecture.is_some()
         {
             return Err(RepositoryError::InvalidActivationScope);
         }
@@ -217,12 +272,28 @@ impl EnrollmentRepository {
             return Err(RepositoryError::InvalidActivationScope);
         }
 
+        if let Some(site_id) = write.site_id {
+            let site_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = 'SITE' AND id = ? AND state = 'ACTIVE')")
+                .bind(write.tenant_id)
+                .bind(site_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+            if !site_exists {
+                transaction.rollback().await?;
+                return Err(RepositoryError::InvalidActivationScope);
+            }
+        }
+
         let inserted = sqlx::query(
-            "INSERT INTO enrollment_activation_codes (id, organization_id, tenant_id, code_hash, expires_at, created_by) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO enrollment_activation_codes (id, organization_id, tenant_id, site_id, requested_display_name, requested_platform, requested_architecture, code_hash, expires_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(write.id)
         .bind(write.organization_id)
         .bind(write.tenant_id)
+        .bind(write.site_id)
+        .bind(&write.requested_display_name)
+        .bind(&write.requested_platform)
+        .bind(&write.requested_architecture)
         .bind(write.code_hash.as_slice())
         .bind(write.expires_at)
         .bind(&write.created_by)
@@ -251,6 +322,94 @@ impl EnrollmentRepository {
         Ok(ActivationCodeOutcome::Inserted)
     }
 
+    pub async fn exchange_bootstrap_code(
+        &self,
+        code_hash: &[u8; 32],
+        write: &BootstrapExchangeWrite,
+        now: DateTime<Utc>,
+    ) -> Result<(BootstrapManifestOutcome, Option<BootstrapManifestRecord>), RepositoryError> {
+        if *code_hash == [0; 32]
+            || write.installation_instance_id.is_empty()
+            || write.installation_instance_id.len() > 120
+            || !write.installation_instance_id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+            })
+            || write.enrollment_credential_hash == [0; 32]
+        {
+            return Err(RepositoryError::InvalidActivationScope);
+        }
+        let mut transaction = self.pool.begin().await?;
+        let row = sqlx::query("SELECT id, tenant_id, site_id, requested_display_name, requested_platform, requested_architecture, status, expires_at, bootstrap_instance_id, enrollment_credential_hash FROM enrollment_activation_codes WHERE code_hash = ? FOR UPDATE")
+            .bind(code_hash.as_slice())
+            .fetch_optional(&mut *transaction)
+            .await?;
+        let Some(row) = row else {
+            transaction.rollback().await?;
+            return Ok((BootstrapManifestOutcome::Unavailable, None));
+        };
+        let status: String = row.try_get("status")?;
+        let expires_at: DateTime<Utc> = row.try_get("expires_at")?;
+        let bound: Option<String> = row.try_get("bootstrap_instance_id")?;
+        let site_id: Option<Uuid> = row.try_get("site_id")?;
+        let display_name: Option<String> = row.try_get("requested_display_name")?;
+        let platform: Option<String> = row.try_get("requested_platform")?;
+        let architecture: Option<String> = row.try_get("requested_architecture")?;
+        if site_id.is_none()
+            || display_name.is_none()
+            || platform.is_none()
+            || architecture.is_none()
+        {
+            transaction.rollback().await?;
+            return Ok((BootstrapManifestOutcome::Unavailable, None));
+        }
+        if expires_at <= now || !matches!(status.as_str(), "ACTIVE" | "RESERVED") {
+            transaction.rollback().await?;
+            return Ok((BootstrapManifestOutcome::Unavailable, None));
+        }
+        if let Some(existing) = &bound {
+            if existing != &write.installation_instance_id {
+                transaction.rollback().await?;
+                return Ok((BootstrapManifestOutcome::Conflict, None));
+            }
+        } else {
+            sqlx::query("UPDATE enrollment_activation_codes SET bootstrap_instance_id = ?, bootstrap_reserved_at = ?, enrollment_credential_hash = ?, status = 'RESERVED', reserved_at = COALESCE(reserved_at, ?) WHERE id = ? AND status = 'ACTIVE'")
+                .bind(&write.installation_instance_id)
+                .bind(now)
+                .bind(write.enrollment_credential_hash.as_slice())
+                .bind(now)
+                .bind(row.try_get::<Uuid, _>("id")?)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        let stored_enrollment_hash: Option<Vec<u8>> = row.try_get("enrollment_credential_hash")?;
+        if bound.is_some()
+            && stored_enrollment_hash.as_deref()
+                != Some(write.enrollment_credential_hash.as_slice())
+        {
+            transaction.rollback().await?;
+            return Ok((BootstrapManifestOutcome::Conflict, None));
+        }
+        let record = BootstrapManifestRecord {
+            activation_id: row.try_get("id")?,
+            tenant_id: row.try_get("tenant_id")?,
+            site_id: site_id.expect("validated site intent"),
+            display_name: display_name.expect("validated display name intent"),
+            platform: platform.expect("validated platform intent"),
+            architecture: architecture.expect("validated architecture intent"),
+            expires_at,
+            replayed: bound.is_some(),
+        };
+        transaction.commit().await?;
+        Ok((
+            if record.replayed {
+                BootstrapManifestOutcome::Replay
+            } else {
+                BootstrapManifestOutcome::Issued
+            },
+            Some(record),
+        ))
+    }
+
     pub async fn list_activation_codes(
         &self,
         tenant_id: Uuid,
@@ -267,7 +426,7 @@ impl EnrollmentRepository {
         .execute(&self.pool)
         .await?;
         let rows = sqlx::query(
-            "SELECT id, tenant_id, status, expires_at, created_at, reserved_at, consumed_at FROM enrollment_activation_codes WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT 100",
+            "SELECT ac.id, ac.tenant_id, ac.site_id, ac.requested_display_name, ac.requested_platform, ac.requested_architecture, ac.status, ac.expires_at, ac.created_at, ac.reserved_at, ac.consumed_at, COALESCE(ec.display_name, ac.requested_display_name) AS display_name, ec.device_id, dc.device_key_id FROM enrollment_activation_codes ac LEFT JOIN enrollment_challenges ec ON ec.activation_code_id = ac.id LEFT JOIN device_certificates dc ON dc.id = ec.certificate_id WHERE ac.tenant_id = ? ORDER BY ac.created_at DESC, ac.id DESC LIMIT 100",
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -338,8 +497,9 @@ impl EnrollmentRepository {
 
         let mut transaction = self.pool.begin().await?;
         let activation = sqlx::query(
-            "SELECT id, organization_id, tenant_id, status, expires_at FROM enrollment_activation_codes WHERE code_hash = ? FOR UPDATE",
+            "SELECT id, organization_id, tenant_id, status, expires_at, bootstrap_instance_id FROM enrollment_activation_codes WHERE (bootstrap_instance_id IS NULL AND code_hash = ?) OR (bootstrap_instance_id IS NOT NULL AND enrollment_credential_hash = ?) FOR UPDATE",
         )
+        .bind(activation_code_hash.as_slice())
         .bind(activation_code_hash.as_slice())
         .fetch_optional(&mut *transaction)
         .await?;
@@ -352,6 +512,7 @@ impl EnrollmentRepository {
         let tenant_id: Uuid = activation.try_get("tenant_id")?;
         let activation_status: String = activation.try_get("status")?;
         let activation_expires_at: DateTime<Utc> = activation.try_get("expires_at")?;
+        let bootstrap_instance_id: Option<String> = activation.try_get("bootstrap_instance_id")?;
 
         if let Some(existing) = sqlx::query(
             "SELECT ec.id, ec.activation_code_id, ec.organization_id, ec.tenant_id, ec.request_id, ec.request_fingerprint, ec.operational_public_key, ec.server_nonce, ec.status, ec.expires_at FROM enrollment_challenges ec WHERE ec.tenant_id = ? AND ec.request_id = ?",
@@ -373,7 +534,17 @@ impl EnrollmentRepository {
             ));
         }
 
-        if activation_status != "ACTIVE" || activation_expires_at <= now {
+        let usable_status = if bootstrap_instance_id.is_some() {
+            activation_status == "RESERVED"
+        } else {
+            activation_status == "ACTIVE"
+        };
+        if !usable_status
+            || bootstrap_instance_id
+                .as_deref()
+                .is_some_and(|value| value != write.enrollment_instance_id)
+            || activation_expires_at <= now
+        {
             transaction.rollback().await?;
             return Ok(ChallengeCreationOutcome::ActivationUnavailable);
         }
@@ -431,7 +602,7 @@ impl EnrollmentRepository {
         }
         inserted?;
         sqlx::query(
-            "UPDATE enrollment_activation_codes SET status = 'RESERVED', reserved_at = ? WHERE id = ? AND status = 'ACTIVE'",
+            "UPDATE enrollment_activation_codes SET status = 'RESERVED', reserved_at = COALESCE(reserved_at, ?) WHERE id = ? AND status IN ('ACTIVE', 'RESERVED')",
         )
         .bind(now)
         .bind(activation_id)
@@ -491,11 +662,18 @@ fn activation_from_row(
     Ok(ActivationCodeRecord {
         id: row.try_get("id")?,
         tenant_id: row.try_get("tenant_id")?,
+        site_id: row.try_get("site_id")?,
+        requested_display_name: row.try_get("requested_display_name")?,
+        requested_platform: row.try_get("requested_platform")?,
+        requested_architecture: row.try_get("requested_architecture")?,
         status: row.try_get("status")?,
         expires_at: row.try_get("expires_at")?,
         created_at: row.try_get("created_at")?,
         reserved_at: row.try_get("reserved_at")?,
         consumed_at: row.try_get("consumed_at")?,
+        display_name: row.try_get("display_name")?,
+        device_id: row.try_get("device_id")?,
+        device_key_id: row.try_get("device_key_id")?,
     })
 }
 

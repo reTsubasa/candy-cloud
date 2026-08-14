@@ -37,6 +37,10 @@ async fn setup() -> Option<(cloud_db::DbPool, Uuid, Uuid, Uuid)> {
             id: Uuid::new_v4(),
             organization_id,
             tenant_id,
+            site_id: None,
+            requested_display_name: None,
+            requested_platform: None,
+            requested_architecture: None,
             code_hash,
             expires_at: Utc::now() + Duration::hours(1),
             created_by: "admin".into(),
@@ -125,6 +129,18 @@ async fn completion_atomically_consumes_activation_and_issues_identity() {
     .unwrap();
     assert_eq!(challenge_status, "ISSUED");
     assert_eq!(activation_status, "CONSUMED");
+
+    let activations = EnrollmentRepository::new(pool)
+        .list_activation_codes(tenant_id, Utc::now())
+        .await
+        .unwrap();
+    let activation = activations
+        .into_iter()
+        .find(|item| item.status == "CONSUMED")
+        .unwrap();
+    assert_eq!(activation.display_name.as_deref(), Some("branch-router"));
+    assert_eq!(activation.device_id, Some(write.device_record_id));
+    assert_eq!(activation.device_key_id, Some(write.key_record_id));
 }
 
 #[tokio::test]
@@ -192,6 +208,10 @@ async fn completion_request_id_is_unique_across_a_tenant() {
             id: Uuid::new_v4(),
             organization_id,
             tenant_id,
+            site_id: None,
+            requested_display_name: None,
+            requested_platform: None,
+            requested_architecture: None,
             code_hash: second_code_hash,
             expires_at: Utc::now() + Duration::hours(1),
             created_by: "admin".into(),

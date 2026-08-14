@@ -1,0 +1,18 @@
+services:
+  reverse-proxy:
+    ports: !override
+      - "${CLOUD_DEMO_PORT:-8088}:80/tcp"
+      - "${CLOUD_DEMO_TLS_PORT:-8443}:443/tcp"
+    volumes: !override
+      - ./docker/reverse-proxy/Caddyfile.demo-tls:/etc/caddy/Caddyfile:ro
+      - candy-cloud-web-assets:/srv/web:ro
+    secrets:
+      - source: cloud_tls_certificate
+        target: cloud_tls_certificate
+        mode: 0444
+      - source: cloud_tls_key
+        target: cloud_tls_key
+        mode: 0400
+      - source: cloud_device_ca_certificate
+        target: cloud_device_ca_certificate
+        mode: 0444

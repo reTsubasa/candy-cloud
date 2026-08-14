@@ -20,7 +20,18 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
-      '@typescript-eslint/no-explicit-any': 'off'
+      '@typescript-eslint/no-explicit-any': 'off',
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "CallExpression[callee.object.name='Modal'][callee.property.name=/^(confirm|info|warning|error|success)$/]",
+          message: 'Use a controlled Modal component; Arco static modals are incompatible with React 19.',
+        },
+        {
+          selector: "CallExpression[callee.object.name='Message'][callee.property.name=/^(success|error|warning|info|normal)$/]",
+          message: 'Use Message.useMessage() with its context holder; Arco static messages are incompatible with React 19.',
+        },
+      ],
     },
   },
 );

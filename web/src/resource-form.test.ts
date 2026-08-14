@@ -50,6 +50,20 @@ describe('resource form contract mapping', () => {
     })).toContain('records.0.value:ipv6');
   });
 
+  it('validates network attachment addresses and epochs', () => {
+    const uuid = '019ff9c1-ac24-7303-a6c3-905768fe5901';
+    const attachment = {
+      segment_id: uuid, site_id: uuid, node_id: uuid, overlay_router_ipv4: '100.64.0.2', epoch_floor: 1,
+    };
+    expect(validateResourceEditor('ATTACHMENT', attachment)).toEqual([]);
+    expect(buildResourceSpec('ATTACHMENT', { ...attachment, epoch_floor: '2' })).toEqual({
+      kind: 'ATTACHMENT', spec: { ...attachment, epoch_floor: 2 },
+    });
+    expect(validateResourceEditor('ATTACHMENT', {
+      segment_id: uuid, site_id: uuid, node_id: uuid, overlay_router_ipv4: '127.0.0.1', epoch_floor: 0,
+    })).toEqual(expect.arrayContaining(['overlay_router_ipv4:ipv4', 'epoch_floor:positive']));
+  });
+
   it('serializes DNS rows into tagged record data', () => {
     expect(buildResourceSpec('DNS_INTENT', {
       segment_id: 'segment', site_id: 'site', zone: 'corp.test', records: [
