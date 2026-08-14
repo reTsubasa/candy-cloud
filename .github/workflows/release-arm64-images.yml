@@ -3,7 +3,7 @@ name: release-arm64-images
 on:
   workflow_dispatch:
   push:
-    branches: [main, feat/cloud-saas-identity]
+    branches: [main]
     paths:
       - Cargo.lock
       - Cargo.toml
