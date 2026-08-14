@@ -62,6 +62,10 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished }: Pr
 
   const load = useCallback(async (quiet = false) => {
     if (!tenantId) return;
+    if (secret && enrollmentExpired(secret.expires_at)) {
+      setExpired(true);
+      setStep(3);
+    }
     if (!quiet) setLoading(true);
     setError(null);
     try {
@@ -99,15 +103,24 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished }: Pr
   useEffect(() => { setArchitecture((value) => compatibleEnrollmentArchitecture(platform, value)); }, [platform]);
   useEffect(() => {
     if (!drawerVisible || step !== 1 || !secret || expired) return undefined;
-    const remaining = Date.parse(secret.expires_at) - Date.now();
-    const expiryTimer = window.setTimeout(() => {
+    const syncExpiry = () => {
+      if (!enrollmentExpired(secret.expires_at)) return false;
       setExpired(true);
       setStep(3);
-    }, Math.max(0, remaining));
+      return true;
+    };
+    if (syncExpiry()) return undefined;
+    const remaining = Date.parse(secret.expires_at) - Date.now();
+    const expiryTimer = window.setTimeout(syncExpiry, Math.max(0, remaining));
     const timer = window.setInterval(() => void load(true), 3000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && !syncExpiry()) void load(true);
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       window.clearTimeout(expiryTimer);
       window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [drawerVisible, expired, load, secret, step]);
 

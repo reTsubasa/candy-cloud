@@ -385,6 +385,65 @@ async fn expired_activation_code_fails_closed() {
 }
 
 #[tokio::test]
+async fn listing_expires_reserved_activation_and_its_challenge() {
+    let Some((pool, repository, organization_id, tenant_id)) = test_repository().await else {
+        return;
+    };
+    let code_hash = unique_code_hash(organization_id, tenant_id);
+    let active = activation(organization_id, tenant_id, code_hash);
+    repository.insert_activation_code(&active).await.unwrap();
+    let write = challenge("challenge-request-expired-reservation");
+    let reserved = repository
+        .reserve_challenge(&code_hash, &write, Utc::now())
+        .await
+        .unwrap();
+    assert!(matches!(reserved, ChallengeCreationOutcome::Created(_)));
+    let expired_at = Utc::now() - Duration::seconds(1);
+    sqlx::query("UPDATE enrollment_activation_codes SET expires_at = ? WHERE id = ?")
+        .bind(expired_at)
+        .bind(active.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE enrollment_challenges SET expires_at = ? WHERE id = ?")
+        .bind(expired_at)
+        .bind(write.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let activations = repository
+        .list_activation_codes(tenant_id, Utc::now())
+        .await
+        .unwrap();
+    let activation = activations
+        .iter()
+        .find(|item| item.id == active.id)
+        .expect("expired activation remains visible in enrollment history");
+    let challenge_status: String =
+        sqlx::query_scalar("SELECT status FROM enrollment_challenges WHERE id = ?")
+            .bind(write.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    assert_eq!(activation.status, "EXPIRED");
+    assert_eq!(challenge_status, "EXPIRED");
+    assert_eq!(
+        repository
+            .reserve_challenge(&code_hash, &write, Utc::now())
+            .await
+            .unwrap(),
+        ChallengeCreationOutcome::ActivationUnavailable
+    );
+    assert!(repository
+        .load_challenge_for_proof(write.id, Utc::now())
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn challenge_expiry_is_clamped_to_its_activation_authorization() {
     let Some((pool, repository, organization_id, tenant_id)) = test_repository().await else {
         return;

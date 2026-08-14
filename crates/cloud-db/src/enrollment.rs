@@ -418,19 +418,28 @@ impl EnrollmentRepository {
         if tenant_id.is_nil() {
             return Err(RepositoryError::InvalidActivationScope);
         }
+        let mut transaction = self.pool.begin().await?;
         sqlx::query(
-            "UPDATE enrollment_activation_codes SET status = 'EXPIRED' WHERE tenant_id = ? AND status = 'ACTIVE' AND expires_at <= ?",
+            "UPDATE enrollment_challenges SET status = 'EXPIRED' WHERE tenant_id = ? AND status IN ('PENDING', 'CHALLENGED') AND expires_at <= ?",
         )
         .bind(tenant_id)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE enrollment_activation_codes SET status = 'EXPIRED' WHERE tenant_id = ? AND status IN ('ACTIVE', 'RESERVED') AND expires_at <= ?",
+        )
+        .bind(tenant_id)
+        .bind(now)
+        .execute(&mut *transaction)
         .await?;
         let rows = sqlx::query(
             "SELECT ac.id, ac.tenant_id, ac.site_id, ac.requested_display_name, ac.requested_platform, ac.requested_architecture, ac.status, ac.expires_at, ac.created_at, ac.reserved_at, ac.consumed_at, COALESCE(ec.display_name, ac.requested_display_name) AS display_name, ec.device_id, dc.device_key_id FROM enrollment_activation_codes ac LEFT JOIN enrollment_challenges ec ON ec.activation_code_id = ac.id LEFT JOIN device_certificates dc ON dc.id = ec.certificate_id WHERE ac.tenant_id = ? ORDER BY ac.created_at DESC, ac.id DESC LIMIT 100",
         )
         .bind(tenant_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *transaction)
         .await?;
+        transaction.commit().await?;
         rows.into_iter().map(activation_from_row).collect()
     }
 

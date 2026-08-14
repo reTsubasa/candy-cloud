@@ -386,7 +386,13 @@ function QuickNodeEnrollment({ session, siteId, siteName, onSaved }: { session: 
 
   useEffect(() => {
     if (phase !== 'waiting' || !secret || !tenantId) return undefined;
+    const syncExpiry = () => {
+      if (!enrollmentExpired(secret.expires_at)) return false;
+      setPhase('expired');
+      return true;
+    };
     const poll = async () => {
+      if (syncExpiry()) return;
       try {
         const items = await listNodeJoinCodes(session.token, tenantId);
         const current = items.find((item) => item.id === secret.id);
@@ -403,13 +409,19 @@ function QuickNodeEnrollment({ session, siteId, siteName, onSaved }: { session: 
         // Keep waiting; the explicit refresh button reports persistent failures.
       }
     };
+    if (syncExpiry()) return undefined;
     void poll();
     const remaining = Date.parse(secret.expires_at) - Date.now();
-    const expiryTimer = window.setTimeout(() => setPhase('expired'), Math.max(0, remaining));
+    const expiryTimer = window.setTimeout(syncExpiry, Math.max(0, remaining));
     const timer = window.setInterval(() => void poll(), 3000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && !syncExpiry()) void poll();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       window.clearTimeout(expiryTimer);
       window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [phase, secret, session.token, tenantId]);
 
