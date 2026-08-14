@@ -20,10 +20,11 @@ printf '%s\n' "$compose_config" | awk '
   worker && /^  [[:alnum:]_-]+:$/ { worker = 0 }
   worker && /target: runtime-core/ { target = 1 }
   worker && /CORE_MODULE_VERSION: 0.3.10/ { version = 1 }
+  worker && /CORE_MODULE_TARGET: x86_64-unknown-linux-gnu/ { architecture = 1 }
   worker && /CORE_MODULE_BUNDLE_URL:/ { url = 1 }
   worker && /CORE_MODULE_BUNDLE_SHA256: b41806ff17359a9ec8151deb61b206403ec01b14aaffd8f7d456111ab0cc042d/ { bundle = 1 }
   worker && /CORE_MODULE_SHA256: 54c1e6a1f61ef0b28208d5dec13ce7b1351922478987b5eac3ac9a06f183c478/ { module = 1 }
-  END { exit (target && version && !url && bundle && module) ? 0 : 1 }
+  END { exit (target && version && architecture && !url && bundle && module) ? 0 : 1 }
 ' || {
   echo "cloud-worker verified Core module build contract is missing" >&2
   exit 1
