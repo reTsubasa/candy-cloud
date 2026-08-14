@@ -98,10 +98,19 @@ EOF
 #!/bin/sh
 output=
 url=
+location=0
+redirect_protocol=
 while [ "$#" -gt 0 ]; do
-	case "$1" in -o) shift; output=$1 ;; https://*) url=$1 ;; esac
+	case "$1" in
+		--location) location=1 ;;
+		--proto-redir) shift; redirect_protocol=$1 ;;
+		-o) shift; output=$1 ;;
+		https://*) url=$1 ;;
+	esac
 	shift
 done
+[ "$location" = 1 ] || exit 65
+[ "$redirect_protocol" = '=https' ] || exit 65
 case "$url" in
 	*/install/manifests/linux-x86_64.json) cp /fixture/manifest.json "$output" ;;
 	*/install/artifacts/runtime.tar.gz) cp /fixture/runtime.tar.gz "$output" ;;

@@ -62,7 +62,8 @@ download() {
 	case "$url" in https://*) ;; *) fail "download URL must use HTTPS" ;; esac
 	case "$url" in *' '*|*'\t'*|*'\r'*|*'\n'*|*'\\'*|*'"'*|*"'"*) fail "download URL contains an invalid character" ;; esac
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsS --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 "$url" -o "$destination"
+		curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+			--tlsv1.2 --connect-timeout 15 --max-time 600 "$url" -o "$destination"
 	elif command -v wget >/dev/null 2>&1; then
 		wget -q --https-only -O "$destination" "$url"
 	else
