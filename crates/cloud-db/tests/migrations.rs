@@ -62,6 +62,19 @@ async fn migration_is_repeatable_and_creates_core_tables() {
     }
 }
 
+#[tokio::test]
+async fn database_connections_use_read_committed_isolation() {
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        return;
+    };
+    let pool = cloud_db::connect(&url).await.unwrap();
+    let isolation: String = sqlx::query_scalar("SELECT @@transaction_isolation")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(isolation, "READ-COMMITTED");
+}
+
 #[test]
 fn identity_abuse_buckets_are_digest_only_and_expiring() {
     let migration = include_str!("../migrations/0013_identity_public_security.sql");

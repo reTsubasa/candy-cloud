@@ -147,10 +147,12 @@ async fn bootstrap_exchange_rejects_expired_and_legacy_codes() {
         .unwrap();
     let legacy_result = repository
         .exchange_bootstrap_code(&legacy_hash, &write, Utc::now())
-        .await;
+        .await
+        .unwrap();
 
     assert_eq!(expired_result.0, BootstrapManifestOutcome::Unavailable);
-    assert!(legacy_result.is_err());
+    assert_eq!(legacy_result.0, BootstrapManifestOutcome::Unavailable);
+    assert!(legacy_result.1.is_none());
 }
 
 #[tokio::test]

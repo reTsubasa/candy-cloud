@@ -67,8 +67,21 @@ impl EnrollmentCompletionRepository {
         validate_completion(write)?;
         let fingerprint = completion_fingerprint(write);
         let mut transaction = self.pool.begin().await?;
+
+        // Serialize completion by a concrete tenant row. Locking a missing
+        // completion_request_id range creates MySQL next-key locks that can
+        // deadlock otherwise independent enrollment transactions.
+        let tenant_lock: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM tenants WHERE id = ? FOR UPDATE")
+                .bind(write.tenant_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if tenant_lock.is_none() {
+            transaction.rollback().await?;
+            return Ok(EnrollmentCompletionOutcome::ChallengeUnavailable);
+        }
         let existing_request: Option<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM enrollment_challenges WHERE tenant_id = ? AND completion_request_id = ? FOR UPDATE",
+            "SELECT id FROM enrollment_challenges WHERE tenant_id = ? AND completion_request_id = ?",
         )
         .bind(write.tenant_id)
         .bind(&write.completion_request_id)
