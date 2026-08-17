@@ -228,6 +228,7 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                         grant_verification_keys: self.grant_verification_keys.clone(),
                     }))
                 }
+                Err(RuntimeConfigurationError::MissingCurrentProjection) => Ok(None),
                 Err(_) => Err(RuntimeConfigurationServiceError::Unavailable),
             }
         })
