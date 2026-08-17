@@ -108,11 +108,13 @@ def main() -> None:
         "/v1/tenants/{tenant_id}/{collection}/{id}": {"get:", "put:", "delete:"},
         "/v1/tenants/{tenant_id}/enrollment/activations": {"get:", "post:"},
         "/v1/tenants/{tenant_id}/enrollment/activations/{activation_id}": {"delete:"},
+        "/v1/tenants/{tenant_id}/runtime-activation-readiness": {"get:"},
         "/v1/enrollment/challenges": {"post:"},
         "/v1/enrollment/complete": {"post:"},
         "/v1/access-grants": {"post:"},
         "/v1/runtime/capabilities": {"get:"},
         "/v1/runtime/profile": {"get:"},
+        "/v1/runtime/transport-identity": {"put:", "delete:"},
         "/v1/runtime/configuration": {"get:"},
         "/v1/runtime/configuration/status": {"put:"},
     }
@@ -135,10 +137,16 @@ def main() -> None:
     for path in [
         "/v1/tenants/{tenant_id}/enrollment/activations",
         "/v1/tenants/{tenant_id}/enrollment/activations/{activation_id}",
+        "/v1/tenants/{tenant_id}/runtime-activation-readiness",
     ]:
         require(blocks[path], "managementBearer", f"activation path {path}")
     require(blocks["/v1/tenants/{tenant_id}/enrollment/activations"], "ActivationCreateResponse", "activation create contract")
     require(blocks["/v1/tenants/{tenant_id}/enrollment/activations"], "EnrollmentActivation", "activation list contract")
+    require(
+        blocks["/v1/tenants/{tenant_id}/runtime-activation-readiness"],
+        "RuntimeActivationReadiness",
+        "runtime activation readiness contract",
+    )
 
     for path in ["/v1/auth/login", "/v1/auth/refresh"]:
         block = blocks[path]
@@ -162,6 +170,7 @@ def main() -> None:
         "/v1/access-grants",
         "/v1/runtime/capabilities",
         "/v1/runtime/profile",
+        "/v1/runtime/transport-identity",
         "/v1/runtime/configuration",
         "/v1/runtime/configuration/status",
     ]:
@@ -188,8 +197,34 @@ def main() -> None:
         "RuntimeConfiguration",
     ]:
         require(runtime_fetch, boundary, "Runtime fetch contract")
-    for boundary in ["segment_snapshot", "site_projection", "route_signing_public_key"]:
+    transport_identity = blocks["/v1/runtime/transport-identity"]
+    for boundary in [
+        "RuntimeTransportIdentityRequest",
+        "RuntimeTransportIdentityResponse",
+        "deviceMtls",
+        '"204"',
+        '"409"',
+    ]:
+        require(transport_identity, boundary, "Runtime transport identity contract")
+    for boundary in [
+        "segment_snapshot",
+        "site_projection",
+        "peer_projection_catalog",
+        "route_signing_public_key",
+        "grant_verification_keys",
+        "ed25519_public_key",
+        "issuer_id",
+        "environment_id",
+    ]:
         require(openapi, boundary, "Runtime configuration schema")
+    path_candidate = re.search(
+        r"(?ms)^    PathCandidateSpec:\n(?P<body>.*?)(?=^    [A-Za-z][A-Za-z0-9]+:\n)",
+        openapi,
+    )
+    if path_candidate is None:
+        fail("cannot extract OpenAPI PathCandidateSpec")
+    require(path_candidate.group("body"), "transport_node_id", "PathCandidate contract")
+    reject(path_candidate.group("body"), "endpoint:", "PathCandidate contract")
     runtime_status = blocks["/v1/runtime/configuration/status"]
     for boundary in ["RuntimeIfMatch", "projection_publication_id", "projection_content_hash", "state", "error_code"]:
         require(runtime_status, boundary, "Runtime status contract")
@@ -206,6 +241,7 @@ def main() -> None:
     for route in [
         "/v1/tenants/{tenant_id}/{collection}",
         "/v1/tenants/{tenant_id}/{collection}/{id}",
+        "/v1/tenants/{tenant_id}/runtime-activation-readiness",
     ]:
         require(cloud_api, route, "cloud-api router")
     for route in [
@@ -220,6 +256,7 @@ def main() -> None:
         for route in [
             "/v1/runtime/capabilities",
             "/v1/runtime/profile",
+            "/v1/runtime/transport-identity",
             "/v1/runtime/configuration",
             "/v1/runtime/configuration/status",
         ]
@@ -227,9 +264,9 @@ def main() -> None:
     runtime_status_count = len(
         re.findall(r"(?m)^      x-candy-status: runtime-sync$", openapi)
     )
-    if runtime_routes_implemented and runtime_status_count != 4:
+    if runtime_routes_implemented and runtime_status_count != 5:
         fail("implemented Runtime routes must retain all OpenAPI synchronization markers")
-    if not runtime_routes_implemented and runtime_status_count != 4:
+    if not runtime_routes_implemented and runtime_status_count != 5:
         fail("Runtime routes being synchronized must retain all OpenAPI markers")
 
     require(caddy, "header_up -X-Candy-Verified-Device-Certificate-Der", "Caddy identity boundary")

@@ -109,6 +109,16 @@ export type MutationResponse = {
   resource: ControlResource;
 };
 
+export type RuntimeActivationReadiness = {
+  schema_version: number;
+  segment_id: string;
+  ready: boolean;
+  candidate_count: number;
+  ready_candidate_count: number;
+  missing_transport_count: number;
+  reason_codes: ('node_offline' | 'service_not_enabled' | 'config_pending')[];
+};
+
 export type EnrollmentActivation = {
   id: string;
   tenant_id: string;

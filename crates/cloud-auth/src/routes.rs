@@ -182,6 +182,7 @@ pub struct GrantIssueCommand {
 pub struct GrantIssuanceReceipt {
     pub grant_id: Uuid,
     pub expires_at_unix: i64,
+    pub refresh_after_unix: i64,
     pub replayed: bool,
     pub access_grant: Vec<u8>,
 }
@@ -208,6 +209,24 @@ pub struct RuntimeConfigurationDelivery {
     pub signed_projection_envelope: Vec<u8>,
     pub route_signing_key_id: String,
     pub route_signing_public_key: [u8; 32],
+    pub peer_projection_catalog: Vec<RuntimePeerProjectionDelivery>,
+    pub grant_verification_keys: Vec<RuntimeGrantVerificationKeyDelivery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuntimeGrantVerificationKeyDelivery {
+    pub key_id: String,
+    pub ed25519_public_key: [u8; 32],
+    pub issuer_id: Uuid,
+    pub environment_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimePeerProjectionDelivery {
+    pub projection_id: Uuid,
+    pub projection_generation: u64,
+    pub projection_content_hash: [u8; 32],
+    pub signed_projection_envelope: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -243,6 +262,40 @@ pub struct RuntimeConfigurationStatusCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeTransportPreset {
+    Current,
+    BbrV1,
+    Aggressive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTransportIdentityCommand {
+    pub actor: AuthenticatedDevice,
+    pub request_id: String,
+    pub endpoints: Vec<RuntimeTransportEndpointCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTransportEndpointCommand {
+    pub endpoint: std::net::SocketAddr,
+    pub server_cert_sha256: [u8; 32],
+    pub transport_preset: RuntimeTransportPreset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuntimeTransportIdentityDelivery {
+    pub node_id: Uuid,
+    pub endpoints: Vec<RuntimeTransportEndpointDelivery>,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuntimeTransportEndpointDelivery {
+    pub endpoint: String,
+    pub server_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeConfigurationServiceError {
     Conflict,
     Unavailable,
@@ -266,6 +319,21 @@ pub trait RuntimeConfigurationService: Send + Sync + 'static {
         &self,
         command: RuntimeConfigurationStatusCommand,
     ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>>;
+
+    fn publish_transport_identity(
+        &self,
+        _command: RuntimeTransportIdentityCommand,
+    ) -> ServiceFuture<'_, Result<RuntimeTransportIdentityDelivery, RuntimeConfigurationServiceError>>
+    {
+        Box::pin(async { Err(RuntimeConfigurationServiceError::Unavailable) })
+    }
+
+    fn withdraw_transport_identity(
+        &self,
+        _actor: AuthenticatedDevice,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async { Err(RuntimeConfigurationServiceError::Unavailable) })
+    }
 }
 
 /// The implementation owns database transactions, authorization snapshots, signing and audit.
@@ -343,6 +411,11 @@ where
         .route("/v1/runtime/capabilities", get(runtime_capabilities))
         .route("/v1/runtime/profile", get(runtime_profile::<S>))
         .route(
+            "/v1/runtime/transport-identity",
+            put(publish_runtime_transport_identity::<S>)
+                .delete(withdraw_runtime_transport_identity::<S>),
+        )
+        .route(
             "/v1/runtime/configuration",
             get(current_runtime_configuration::<S>),
         )
@@ -351,6 +424,76 @@ where
             put(record_runtime_configuration_status::<S>),
         )
         .with_state(service)
+}
+
+async fn withdraw_runtime_transport_identity<S>(
+    actor: AuthenticatedDevice,
+    State(service): State<Arc<S>>,
+) -> Result<StatusCode, ApiError>
+where
+    S: RuntimeConfigurationService,
+{
+    service
+        .withdraw_transport_identity(actor)
+        .await
+        .map_err(ApiError::RuntimeConfiguration)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn publish_runtime_transport_identity<S>(
+    actor: AuthenticatedDevice,
+    State(service): State<Arc<S>>,
+    Json(request): Json<RuntimeTransportIdentityHttpRequest>,
+) -> Result<Json<RuntimeTransportIdentityDelivery>, ApiError>
+where
+    S: RuntimeConfigurationService,
+{
+    if request.schema_version != 1
+        || request.request_id.is_empty()
+        || request.request_id.len() > 120
+        || !(1..=8).contains(&request.endpoints.len())
+        || !request
+            .request_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(ApiError::InvalidRuntimeConfigurationStatus);
+    }
+    let endpoints = request
+        .endpoints
+        .into_iter()
+        .map(|item| {
+            Ok(RuntimeTransportEndpointCommand {
+                endpoint: item
+                    .endpoint
+                    .parse()
+                    .map_err(|_| ApiError::InvalidRuntimeConfigurationStatus)?,
+                server_cert_sha256: decode_hash(&item.server_cert_sha256)
+                    .ok_or(ApiError::InvalidRuntimeConfigurationStatus)?,
+                transport_preset: match item.transport_preset {
+                    RuntimeTransportPresetHttp::Current => RuntimeTransportPreset::Current,
+                    RuntimeTransportPresetHttp::BbrV1 => RuntimeTransportPreset::BbrV1,
+                    RuntimeTransportPresetHttp::Aggressive => RuntimeTransportPreset::Aggressive,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    let mut unique_endpoints = std::collections::HashSet::new();
+    if endpoints
+        .iter()
+        .any(|endpoint| !unique_endpoints.insert(endpoint.endpoint))
+    {
+        return Err(ApiError::InvalidRuntimeConfigurationStatus);
+    }
+    service
+        .publish_transport_identity(RuntimeTransportIdentityCommand {
+            actor,
+            request_id: request.request_id,
+            endpoints,
+        })
+        .await
+        .map(Json)
+        .map_err(ApiError::RuntimeConfiguration)
 }
 
 async fn runtime_profile<S>(
@@ -601,6 +744,7 @@ where
     Ok(Json(GrantIssuanceHttpResponse {
         grant_id: receipt.grant_id,
         expires_at_unix: receipt.expires_at_unix,
+        refresh_after_unix: receipt.refresh_after_unix,
         replayed: receipt.replayed,
         access_grant: base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -676,6 +820,26 @@ where
         route_signing_public_key: hex(&delivery.route_signing_public_key),
         segment_snapshot: encode_base64(delivery.signed_segment_envelope.clone()),
         site_projection: encode_base64(delivery.signed_projection_envelope.clone()),
+        peer_projection_catalog: delivery
+            .peer_projection_catalog
+            .iter()
+            .map(|projection| RuntimePeerProjectionHttpResponse {
+                projection_id: projection.projection_id,
+                projection_generation: projection.projection_generation,
+                projection_content_hash: hex(&projection.projection_content_hash),
+                site_projection: encode_base64(projection.signed_projection_envelope.clone()),
+            })
+            .collect(),
+        grant_verification_keys: delivery
+            .grant_verification_keys
+            .iter()
+            .map(|key| RuntimeGrantVerificationKeyHttpResponse {
+                key_id: key.key_id.clone(),
+                ed25519_public_key: hex(&key.ed25519_public_key),
+                issuer_id: key.issuer_id,
+                environment_id: key.environment_id,
+            })
+            .collect(),
     })
     .map_err(|_| ApiError::InvalidRuntimeConfigurationStatus)?;
     let mut response = Response::new(Body::empty());
@@ -912,6 +1076,30 @@ struct GrantIssueHttpRequest {
     service_permission: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeTransportIdentityHttpRequest {
+    schema_version: u8,
+    request_id: String,
+    endpoints: Vec<RuntimeTransportEndpointHttpRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeTransportEndpointHttpRequest {
+    endpoint: String,
+    server_cert_sha256: String,
+    transport_preset: RuntimeTransportPresetHttp,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RuntimeTransportPresetHttp {
+    Current,
+    BbrV1,
+    Aggressive,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ServiceClassHttp {
@@ -936,6 +1124,7 @@ impl From<ServiceClassHttp> for ServiceClass {
 struct GrantIssuanceHttpResponse {
     grant_id: Uuid,
     expires_at_unix: i64,
+    refresh_after_unix: i64,
     replayed: bool,
     access_grant: String,
 }
@@ -965,6 +1154,24 @@ struct RuntimeConfigurationHttpResponse {
     route_signing_public_key: String,
     segment_snapshot: String,
     site_projection: String,
+    peer_projection_catalog: Vec<RuntimePeerProjectionHttpResponse>,
+    grant_verification_keys: Vec<RuntimeGrantVerificationKeyHttpResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimePeerProjectionHttpResponse {
+    projection_id: Uuid,
+    projection_generation: u64,
+    projection_content_hash: String,
+    site_projection: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeGrantVerificationKeyHttpResponse {
+    key_id: String,
+    ed25519_public_key: String,
+    issuer_id: Uuid,
+    environment_id: Uuid,
 }
 
 #[derive(Debug, Serialize)]

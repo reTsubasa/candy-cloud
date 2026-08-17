@@ -23,9 +23,10 @@ use crate::{
     },
     route_types::{
         AttachmentId, AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1, DeviceId,
-        DeviceKeyId, Ipv4PrefixV1, NodeId, NodeKeyId, PacketResourcePolicyV1, PathCandidateId,
-        PathSelectionPolicyV1, PeerEndpointV1, PeerPathCandidateV1, PeerPathKindV1, PolicyId,
-        PolicyRefV1, RelayNodeIdentityV1, SegmentAttachmentV1, SegmentId, SiteId, TenantId,
+        DeviceKeyId, Ipv4PrefixV1, NodeId, NodeKeyId, NodePoolId, PacketResourcePolicyV1,
+        PathCandidateId, PathSelectionPolicyV1, PeerEndpointV1, PeerPathCandidateV1,
+        PeerPathKindV1, PolicyId, PolicyRefV1, RelayNodeIdentityV1, SegmentAttachmentV1, SegmentId,
+        SiteId, TenantId, TransportNodeIdentityV1, TransportPresetV1,
     },
 };
 
@@ -145,21 +146,46 @@ impl ControlRoutePublisher {
                 )
             })
             .collect();
-        let path_candidates = paths
-            .iter()
-            .map(|(resource, value)| {
-                let (_, peer_attachment) = attachment_ids
-                    .get(&value.destination_attachment_id)
-                    .copied()
-                    .context("Path candidate references a missing destination Attachment")?;
-                let peer_site = attachments
-                    .iter()
-                    .find(|(item, _)| item.metadata.id == value.destination_attachment_id)
-                    .map(|(_, item)| SiteId(item.site_id.into_bytes()))
-                    .context("Path candidate destination site is missing")?;
-                let endpoint: SocketAddr =
-                    value.endpoint.parse().context("invalid path endpoint")?;
-                let endpoint = match endpoint {
+        let mut path_map: HashMap<Uuid, Vec<PeerPathCandidateV1>> = HashMap::new();
+        for (resource, value) in &paths {
+            let (_, peer_attachment) = attachment_ids
+                .get(&value.destination_attachment_id)
+                .copied()
+                .context("Path candidate references a missing destination Attachment")?;
+            let peer_site = attachments
+                .iter()
+                .find(|(item, _)| item.metadata.id == value.destination_attachment_id)
+                .map(|(_, item)| SiteId(item.site_id.into_bytes()))
+                .context("Path candidate destination site is missing")?;
+            let transports = snapshot
+                .transport_bindings
+                .get(&resource.metadata.id)
+                .context("path candidate has no active Candy QUIC/UDP transport identity")?;
+            let kind = match value.kind {
+                PathCandidateKindV1::Direct => PeerPathKindV1::Direct,
+                PathCandidateKindV1::Relay => PeerPathKindV1::Relay,
+            };
+            if let Some(relay_id) = value.relay_id {
+                let relay = relays
+                    .get(&relay_id)
+                    .context("relay path references a missing Relay")?;
+                nodes
+                    .get(&relay.service_node_id)
+                    .context("Relay references a missing service Node")?;
+            }
+            if (value.kind == PathCandidateKindV1::Relay) != value.relay_id.is_some() {
+                bail!("path candidate relay binding does not match its kind");
+            }
+            let authorization_hash = resource
+                .resource
+                .document_hash()
+                .map_err(|_| anyhow::anyhow!("path candidate hash failed"))?;
+            let mut expanded = Vec::with_capacity(transports.len());
+            for transport in transports {
+                if transport.candidate_id != resource.metadata.id {
+                    bail!("transport binding does not match its path resource");
+                }
+                let endpoint = match transport.endpoint {
                     SocketAddr::V4(value) => PeerEndpointV1::Ipv4 {
                         address: value.ip().octets(),
                         port: value.port(),
@@ -169,51 +195,50 @@ impl ControlRoutePublisher {
                         port: value.port(),
                     },
                 };
-                let kind = match value.kind {
-                    PathCandidateKindV1::Direct => PeerPathKindV1::Direct,
-                    PathCandidateKindV1::Relay => PeerPathKindV1::Relay,
+                let transport_node = TransportNodeIdentityV1 {
+                    node_id: NodeId(transport.service_node_id.into_bytes()),
+                    node_key_id: NodeKeyId(transport.service_node_key_id.into_bytes()),
                 };
-                let relay_node = if let Some(relay_id) = value.relay_id {
-                    let relay = relays
-                        .get(&relay_id)
-                        .context("relay path references a missing Relay")?;
-                    let node = nodes
-                        .get(&relay.service_node_id)
-                        .context("Relay references a missing service Node")?;
-                    Some(RelayNodeIdentityV1 {
-                        node_id: NodeId(relay.service_node_id.into_bytes()),
-                        node_key_id: NodeKeyId(node.device_key_id.into_bytes()),
-                    })
-                } else {
-                    None
-                };
-                if (value.kind == PathCandidateKindV1::Relay) != relay_node.is_some() {
-                    bail!("path candidate relay binding does not match its kind");
-                }
-                let authorization_hash = resource
-                    .resource
-                    .document_hash()
-                    .map_err(|_| anyhow::anyhow!("path candidate hash failed"))?;
-                Ok((
-                    resource.metadata.id,
-                    PeerPathCandidateV1 {
-                        candidate_id: PathCandidateId(resource.metadata.id.into_bytes()),
-                        peer_site_id: peer_site,
-                        peer_attachment_id: peer_attachment,
-                        kind,
-                        relay_node,
-                        endpoint,
-                        priority: value.priority,
-                        authorization: PolicyRefV1 {
-                            policy_id: PolicyId(resource.metadata.id.into_bytes()),
-                            generation: resource.metadata.revision,
-                            content_hash: authorization_hash,
-                        },
+                let relay_node =
+                    (value.kind == PathCandidateKindV1::Relay).then(|| RelayNodeIdentityV1 {
+                        node_id: transport_node.node_id,
+                        node_key_id: transport_node.node_key_id,
+                    });
+                expanded.push(PeerPathCandidateV1 {
+                    candidate_id: PathCandidateId(stable_candidate_id(
+                        resource.metadata.id,
+                        transport.endpoint_id,
+                    )),
+                    peer_site_id: peer_site,
+                    peer_attachment_id: peer_attachment,
+                    kind,
+                    relay_node,
+                    node_pool_id: NodePoolId(transport.node_pool_id.into_bytes()),
+                    transport_node,
+                    endpoint,
+                    server_name: transport.server_name.clone(),
+                    server_cert_sha256: transport.server_cert_sha256,
+                    transport_preset: match transport.transport_preset {
+                        cloud_db::control::RuntimeTransportPreset::Current => {
+                            TransportPresetV1::Current
+                        }
+                        cloud_db::control::RuntimeTransportPreset::BbrV1 => {
+                            TransportPresetV1::BbrV1
+                        }
+                        cloud_db::control::RuntimeTransportPreset::Aggressive => {
+                            TransportPresetV1::Aggressive
+                        }
                     },
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let path_map: HashMap<Uuid, PeerPathCandidateV1> = path_candidates.into_iter().collect();
+                    priority: value.priority,
+                    authorization: PolicyRefV1 {
+                        policy_id: PolicyId(resource.metadata.id.into_bytes()),
+                        generation: resource.metadata.revision,
+                        content_hash: authorization_hash,
+                    },
+                });
+            }
+            path_map.insert(resource.metadata.id, expanded);
+        }
         let policy_for = |site_a: SiteId, site_b: SiteId| -> Result<PathSelectionPolicyV1> {
             let peer = peers
                 .iter()
@@ -241,7 +266,7 @@ impl ControlRoutePublisher {
             let mut peer_paths = Vec::new();
             for (path_resource, path) in &paths {
                 if path.source_attachment_id == resource.metadata.id {
-                    peer_paths.push(
+                    peer_paths.extend(
                         path_map
                             .get(&path_resource.metadata.id)
                             .cloned()
@@ -291,6 +316,18 @@ impl ControlRoutePublisher {
                 projection_id,
                 projection_generation,
                 previous_hash,
+                local_transport_node: snapshot
+                    .transport_bindings
+                    .values()
+                    .flatten()
+                    .find(|binding| {
+                        binding.service_device_id == node.device_id
+                            && binding.service_device_key_id == node.device_key_id
+                    })
+                    .map(|binding| TransportNodeIdentityV1 {
+                        node_id: NodeId(binding.service_node_id.into_bytes()),
+                        node_key_id: NodeKeyId(binding.service_node_key_id.into_bytes()),
+                    }),
                 path_policy: policy_for(site, remote_site)?,
                 peer_paths,
                 coherent_manifest: CoherentPolicyManifestV1 {
@@ -442,4 +479,15 @@ fn stable_uuid(a: Uuid, b: Uuid, generation: u64) -> Uuid {
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     Uuid::from_bytes(bytes)
+}
+
+fn stable_candidate_id(path_resource_id: Uuid, endpoint_id: Uuid) -> [u8; 16] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"candy/path-endpoint-candidate-v1\0");
+    hasher.update(path_resource_id.as_bytes());
+    hasher.update(endpoint_id.as_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes
 }

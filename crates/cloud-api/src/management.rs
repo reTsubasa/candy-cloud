@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Extension, Path, State},
+    extract::{Extension, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -188,6 +188,53 @@ pub struct ActivationResponse {
     pub display_name: Option<String>,
     pub device_id: Option<Uuid>,
     pub device_key_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RuntimeActivationReadinessQuery {
+    pub segment_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeActivationReadinessResponse {
+    pub schema_version: u16,
+    pub segment_id: Uuid,
+    pub ready: bool,
+    pub candidate_count: usize,
+    pub ready_candidate_count: usize,
+    pub missing_transport_count: usize,
+    pub reason_codes: Vec<&'static str>,
+}
+
+pub async fn runtime_activation_readiness(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path(tenant_id): Path<Uuid>,
+    Query(query): Query<RuntimeActivationReadinessQuery>,
+) -> Result<Json<RuntimeActivationReadinessResponse>, ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::ReadConfiguration)?;
+    let repository = state.repository.as_ref().ok_or(ApiError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        code: "CONTROL_PLANE_UNAVAILABLE",
+        message: "control plane storage is not configured",
+    })?;
+    let result = repository
+        .runtime_activation_readiness(tenant_id, query.segment_id)
+        .await
+        .map_err(ApiError::from_store)?;
+    let missing_transport_count = result.missing_candidate_ids.len();
+    Ok(Json(RuntimeActivationReadinessResponse {
+        schema_version: CONTROL_SCHEMA_V1,
+        segment_id: result.segment_id,
+        ready: result.candidate_count > 0
+            && missing_transport_count == 0
+            && result.reason_codes.is_empty(),
+        candidate_count: result.candidate_count,
+        ready_candidate_count: result.ready_candidate_count,
+        missing_transport_count,
+        reason_codes: result.reason_codes,
+    }))
 }
 
 pub async fn list_activations(

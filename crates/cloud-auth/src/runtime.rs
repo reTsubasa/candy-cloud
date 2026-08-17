@@ -93,6 +93,12 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
         certificate_issuer,
     )));
     let bootstrap_signing_key = load_signing_seed(&config)?;
+    let grant_verification_key = crate::routes::RuntimeGrantVerificationKeyDelivery {
+        key_id: config.signing_key_id.clone(),
+        ed25519_public_key: bootstrap_signing_key.verifying_key().to_bytes(),
+        issuer_id: config.issuer_id,
+        environment_id: config.environment_id,
+    };
     let bootstrap = bootstrap_app(BootstrapHttpService::new(
         enrollment_repository.clone(),
         bootstrap_signing_key,
@@ -117,8 +123,10 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
     let runtime_configuration = device_authenticated_runtime_app(
         Arc::new(DatabaseRuntimeConfigurationService::new(
             cloud_db::sdwan::SdwanRepository::new(pool.clone()),
+            cloud_db::control::ControlRepository::new(pool.clone()),
             config.route_signing_key_id.clone(),
             config.route_signing_public_key,
+            vec![grant_verification_key],
         )),
         device_authenticator,
     );

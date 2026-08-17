@@ -37,6 +37,7 @@ fn publication(tenant_id: Uuid, segment_id: Uuid) -> SegmentPublicationWrite {
             projection_generation: 1,
             previous_hash: [0; 32],
             object: signed(8),
+            transport_nodes: vec![(Uuid::new_v4(), Uuid::new_v4())],
         }],
         expansions: Vec::new(),
         audit_event_id: Uuid::new_v4(),
@@ -100,6 +101,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     let attachment_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let device_key_id = Uuid::new_v4();
+    let service_node_id = Uuid::new_v4();
     sqlx::query("INSERT INTO organizations (id, name) VALUES (?, ?)")
         .bind(organization_id)
         .bind(format!("org-{organization_id}"))
@@ -156,6 +158,16 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO nodes (id, tenant_id, device_id, device_key_id, node_pool_id, node_id, status) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')")
+        .bind(service_node_id)
+        .bind(tenant_id)
+        .bind(device_id)
+        .bind(device_key_id)
+        .bind(node_pool_id)
+        .bind(format!("publication-node-{service_node_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
     let runtime_lookup = RuntimeConfigurationLookup {
         tenant_id,
         device_id,
@@ -191,6 +203,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     write.projections[0].attachment_id = attachment_id;
     write.projections[0].device_id = device_id;
     write.projections[0].device_key_id = device_key_id;
+    write.projections[0].transport_nodes = vec![(service_node_id, device_key_id)];
     write.expansions.push(ExpansionObjectPublicationWrite {
         publication_id: Uuid::new_v4(),
         kind: ExpansionObjectKind::MeshMembership,

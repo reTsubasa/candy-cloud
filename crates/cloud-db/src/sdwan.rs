@@ -61,6 +61,15 @@ pub struct RuntimeConfigurationRecord {
     pub projection_content_hash: [u8; 32],
     pub signed_segment_envelope: Vec<u8>,
     pub signed_projection_envelope: Vec<u8>,
+    pub peer_projection_catalog: Vec<RuntimePeerProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimePeerProjection {
+    pub projection_id: Uuid,
+    pub projection_generation: u64,
+    pub projection_content_hash: [u8; 32],
+    pub signed_projection_envelope: Vec<u8>,
 }
 
 impl RuntimeConfigurationRecord {
@@ -71,6 +80,14 @@ impl RuntimeConfigurationRecord {
         digest.update(&self.signed_segment_envelope);
         digest.update((self.signed_projection_envelope.len() as u64).to_be_bytes());
         digest.update(&self.signed_projection_envelope);
+        digest.update((self.peer_projection_catalog.len() as u64).to_be_bytes());
+        for projection in &self.peer_projection_catalog {
+            digest.update(projection.projection_id.as_bytes());
+            digest.update(projection.projection_generation.to_be_bytes());
+            digest.update(projection.projection_content_hash);
+            digest.update((projection.signed_projection_envelope.len() as u64).to_be_bytes());
+            digest.update(&projection.signed_projection_envelope);
+        }
         digest.finalize().into()
     }
 
@@ -94,10 +111,63 @@ impl RuntimeConfigurationRecord {
             || self.tenant_id != lookup.tenant_id
             || self.device_id != lookup.device_id
             || self.device_key_id != lookup.device_key_id
+            || self.peer_projection_catalog.len() > MAX_PROJECTIONS
+            || self.peer_projection_catalog.iter().any(|projection| {
+                projection.projection_id.is_nil()
+                    || projection.projection_generation == 0
+                    || projection.projection_content_hash == [0; 32]
+                    || projection.signed_projection_envelope.is_empty()
+                    || projection.signed_projection_envelope.len() > MAX_SIGNED_ENVELOPE_LEN
+            })
         {
             return Err(RuntimeConfigurationError::InvalidRecord);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod runtime_configuration_tests {
+    use super::*;
+
+    fn record(catalog: Vec<RuntimePeerProjection>) -> RuntimeConfigurationRecord {
+        RuntimeConfigurationRecord {
+            projection_publication_id: Uuid::from_bytes([1; 16]),
+            projection_id: Uuid::from_bytes([2; 16]),
+            tenant_id: Uuid::from_bytes([3; 16]),
+            segment_id: Uuid::from_bytes([4; 16]),
+            site_id: Uuid::from_bytes([5; 16]),
+            attachment_id: Uuid::from_bytes([6; 16]),
+            device_id: Uuid::from_bytes([7; 16]),
+            device_key_id: Uuid::from_bytes([8; 16]),
+            segment_generation: 1,
+            segment_content_hash: [9; 32],
+            projection_generation: 1,
+            projection_content_hash: [10; 32],
+            signed_segment_envelope: vec![11],
+            signed_projection_envelope: vec![12],
+            peer_projection_catalog: catalog,
+        }
+    }
+
+    fn peer(byte: u8) -> RuntimePeerProjection {
+        RuntimePeerProjection {
+            projection_id: Uuid::from_bytes([byte; 16]),
+            projection_generation: u64::from(byte),
+            projection_content_hash: [byte; 32],
+            signed_projection_envelope: vec![byte],
+        }
+    }
+
+    #[test]
+    fn runtime_configuration_hash_covers_ordered_peer_catalog() {
+        let empty = record(Vec::new()).envelope_sha256();
+        let one = record(vec![peer(1)]).envelope_sha256();
+        let two = record(vec![peer(1), peer(2)]).envelope_sha256();
+        let reordered = record(vec![peer(2), peer(1)]).envelope_sha256();
+        assert_ne!(empty, one);
+        assert_ne!(one, two);
+        assert_ne!(two, reordered);
     }
 }
 
@@ -386,6 +456,7 @@ pub struct SiteProjectionPublicationWrite {
     pub projection_generation: u64,
     pub previous_hash: [u8; 32],
     pub object: SignedObjectWrite,
+    pub transport_nodes: Vec<(Uuid, Uuid)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -491,6 +562,19 @@ impl SegmentPublicationWrite {
                 return Err(SdwanError::GenerationGap);
             }
             projection.object.validate()?;
+            let mut transport_nodes = HashSet::new();
+            if projection.transport_nodes.is_empty()
+                || projection
+                    .transport_nodes
+                    .iter()
+                    .any(|(node_id, node_key_id)| {
+                        node_id.is_nil()
+                            || node_key_id.is_nil()
+                            || !transport_nodes.insert((*node_id, *node_key_id))
+                    })
+            {
+                return Err(SdwanError::InvalidScope);
+            }
             if !row_ids.insert(projection.publication_id)
                 || !projection_versions
                     .insert((projection.projection_id, projection.projection_generation))
@@ -671,7 +755,6 @@ impl SdwanRepository {
         };
         if configuration.projection_publication_id != status.projection_publication_id
             || configuration.projection_content_hash != status.projection_content_hash
-            || configuration.envelope_sha256() != status.envelope_sha256
         {
             transaction.rollback().await?;
             return Err(RuntimeConfigurationError::StaleConfiguration);
@@ -935,16 +1018,49 @@ async fn load_current_runtime_configuration(
         return Err(RuntimeConfigurationError::AmbiguousConfiguration);
     }
     let row = &rows[0];
+    let tenant_id: Uuid = row.try_get("tenant_id")?;
+    let segment_id: Uuid = row.try_get("segment_id")?;
+    let segment_generation: u64 = row.try_get("segment_generation")?;
+    let catalog_rows = sqlx::query(
+        "SELECT p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope FROM nodes n JOIN runtime_projection_transport_catalog catalog ON catalog.transport_node_id = n.id AND catalog.transport_node_key_id = n.device_key_id AND catalog.tenant_id = n.tenant_id JOIN site_route_projection_publications p ON p.id = catalog.projection_publication_id AND p.tenant_id = catalog.tenant_id AND p.segment_id = catalog.segment_id AND p.segment_generation = catalog.segment_generation AND p.projection_id = catalog.projection_id WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' AND catalog.segment_id = ? AND catalog.segment_generation = ? ORDER BY p.projection_id, p.projection_generation",
+    )
+    .bind(lookup.tenant_id)
+    .bind(lookup.device_id)
+    .bind(lookup.device_key_id)
+    .bind(segment_id)
+    .bind(segment_generation)
+    .fetch_all(&mut **transaction)
+    .await?;
+    if catalog_rows.len() > MAX_PROJECTIONS {
+        return Err(RuntimeConfigurationError::AmbiguousConfiguration);
+    }
+    let mut peer_projection_catalog = Vec::with_capacity(catalog_rows.len());
+    let mut catalog_ids = HashSet::new();
+    for catalog in catalog_rows {
+        let projection_id: Uuid = catalog.try_get("projection_id")?;
+        if !catalog_ids.insert(projection_id) {
+            return Err(RuntimeConfigurationError::AmbiguousConfiguration);
+        }
+        peer_projection_catalog.push(RuntimePeerProjection {
+            projection_id,
+            projection_generation: catalog.try_get("projection_generation")?,
+            projection_content_hash: decode_hash(
+                &catalog.try_get::<Vec<u8>, _>("projection_content_hash")?,
+            )
+            .map_err(|_| RuntimeConfigurationError::InvalidRecord)?,
+            signed_projection_envelope: catalog.try_get("signed_envelope")?,
+        });
+    }
     let record = RuntimeConfigurationRecord {
         projection_publication_id: row.try_get("projection_publication_id")?,
         projection_id: row.try_get("projection_id")?,
-        tenant_id: row.try_get("tenant_id")?,
-        segment_id: row.try_get("segment_id")?,
+        tenant_id,
+        segment_id,
         site_id: row.try_get("site_id")?,
         attachment_id: row.try_get("attachment_id")?,
         device_id: row.try_get("device_id")?,
         device_key_id: row.try_get("device_key_id")?,
-        segment_generation: row.try_get("segment_generation")?,
+        segment_generation,
         segment_content_hash: decode_hash(&row.try_get::<Vec<u8>, _>("segment_content_hash")?)
             .map_err(|_| RuntimeConfigurationError::InvalidRecord)?,
         projection_generation: row.try_get("projection_generation")?,
@@ -954,6 +1070,7 @@ async fn load_current_runtime_configuration(
         .map_err(|_| RuntimeConfigurationError::InvalidRecord)?,
         signed_segment_envelope: row.try_get("signed_segment_envelope")?,
         signed_projection_envelope: row.try_get("signed_projection_envelope")?,
+        peer_projection_catalog,
     };
     record.validate(lookup)?;
     Ok(RuntimeConfigurationState::Current(Box::new(record)))
@@ -1195,5 +1312,19 @@ async fn insert_projection(
     .bind(projection.attachment_id)
     .execute(&mut **transaction)
     .await?;
+    for (transport_node_id, transport_node_key_id) in &projection.transport_nodes {
+        sqlx::query(
+            "INSERT INTO runtime_projection_transport_catalog (tenant_id, segment_id, segment_generation, transport_node_id, transport_node_key_id, projection_publication_id, projection_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(projection.tenant_id)
+        .bind(projection.segment_id)
+        .bind(projection.segment_generation)
+        .bind(transport_node_id)
+        .bind(transport_node_key_id)
+        .bind(projection.publication_id)
+        .bind(projection.projection_id)
+        .execute(&mut **transaction)
+        .await?;
+    }
     Ok(())
 }

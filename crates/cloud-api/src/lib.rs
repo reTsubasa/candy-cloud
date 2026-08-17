@@ -99,6 +99,10 @@ fn management_routes() -> Router<Arc<ManagementState>> {
             axum::routing::delete(management::revoke_activation),
         )
         .route(
+            "/v1/tenants/{tenant_id}/runtime-activation-readiness",
+            get(management::runtime_activation_readiness),
+        )
+        .route(
             "/v1/tenants/{tenant_id}/{collection}",
             get(management::list).post(management::create),
         )

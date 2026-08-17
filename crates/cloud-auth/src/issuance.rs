@@ -114,6 +114,7 @@ pub struct PreparedGrant {
     pub authorization_generation: u64,
     pub request_fingerprint: [u8; 32],
     pub expires_at: u64,
+    pub refresh_after: u64,
     pub issued: IssuedGrant,
 }
 
@@ -268,6 +269,7 @@ pub fn prepare_private_grant_with_id(
         authorization_generation: material.snapshot.authorization_generation,
         request_fingerprint,
         expires_at,
+        refresh_after,
         issued,
     })
 }

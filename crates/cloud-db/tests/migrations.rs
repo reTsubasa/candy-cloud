@@ -49,6 +49,8 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "organization_invitations",
         "development_demo_accounts",
         "identity_abuse_buckets",
+        "runtime_projection_transport_catalog",
+        "runtime_transport_identity_requests",
     ];
     for table in required {
         let count: i64 = sqlx::query_scalar(
@@ -60,6 +62,21 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+}
+
+#[test]
+fn transport_activation_migration_is_identity_scoped_and_fail_closed() {
+    let migration = include_str!("../migrations/0015_sdwan_transport_activation.sql");
+    assert!(migration.contains("uq_nodes_device_identity"));
+    assert!(migration.contains("transport ENUM('CANDY_QUIC_UDP')"));
+    assert!(migration.contains("server_cert_sha256 BINARY(32)"));
+    assert!(migration.contains("status ENUM('ACTIVE','DISABLED')"));
+    assert!(migration.contains("runtime_projection_transport_catalog"));
+    assert!(migration.contains("runtime_transport_identity_requests"));
+    assert!(migration.contains("PRIMARY KEY (tenant_id, device_id, request_id)"));
+    assert!(migration.contains("request_hash BINARY(32)"));
+    assert!(!migration.contains("private_key"));
+    assert!(!migration.contains("certificate_der"));
 }
 
 #[tokio::test]

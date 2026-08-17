@@ -1,10 +1,15 @@
-use std::{collections::HashSet, net::Ipv4Addr, time::Duration as StdDuration};
+use std::{
+    collections::{HashMap, HashSet},
+    net::{Ipv4Addr, SocketAddr},
+    time::Duration as StdDuration,
+};
 
 use chrono::{DateTime, Utc};
 use cloud_control::{
     ControlResourceV1, Ipv4PrefixV1, PathCandidateKindV1, PathCandidateV1, PeerPathPolicyV1,
     PolicyActionV1, ResourceKind, ResourceSpecV1, ResourceState,
 };
+use sha2::{Digest, Sha256};
 use sqlx::{MySql, Row, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
@@ -122,6 +127,58 @@ pub struct SegmentControlSnapshot {
     pub segment_id: Uuid,
     pub desired_revision: u64,
     pub resources: Vec<ControlResourceV1>,
+    pub transport_bindings: HashMap<Uuid, Vec<RuntimeTransportBinding>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTransportBinding {
+    pub candidate_id: Uuid,
+    pub endpoint_id: Uuid,
+    pub service_node_id: Uuid,
+    pub service_node_key_id: Uuid,
+    pub service_device_id: Uuid,
+    pub service_device_key_id: Uuid,
+    pub node_pool_id: Uuid,
+    pub endpoint: SocketAddr,
+    pub server_name: String,
+    pub server_cert_sha256: [u8; 32],
+    pub transport_preset: RuntimeTransportPreset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeTransportPreset {
+    Current,
+    BbrV1,
+    Aggressive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportIdentityProvision {
+    pub endpoint: SocketAddr,
+    pub server_cert_sha256: [u8; 32],
+    pub transport_preset: RuntimeTransportPreset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProvisionedTransportIdentity {
+    pub node_id: Uuid,
+    pub endpoints: Vec<ProvisionedTransportEndpoint>,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProvisionedTransportEndpoint {
+    pub endpoint: SocketAddr,
+    pub server_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeActivationReadiness {
+    pub segment_id: Uuid,
+    pub candidate_count: usize,
+    pub ready_candidate_count: usize,
+    pub missing_candidate_ids: Vec<Uuid>,
+    pub reason_codes: Vec<&'static str>,
 }
 
 impl ControlRepository {
@@ -142,6 +199,91 @@ impl ControlRepository {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    pub async fn runtime_activation_readiness(
+        &self,
+        tenant_id: Uuid,
+        segment_id: Uuid,
+    ) -> Result<RuntimeActivationReadiness, ControlStoreError> {
+        validate_scope(tenant_id, segment_id)?;
+        let desired_revision = sqlx::query_scalar::<_, u64>(
+            "SELECT desired_revision FROM segment_generation_heads WHERE tenant_id = ? AND segment_id = ?",
+        )
+        .bind(tenant_id)
+        .bind(segment_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(ControlStoreError::NotFound)?;
+        let snapshot = self
+            .segment_snapshot(tenant_id, segment_id, desired_revision)
+            .await?;
+        let mut candidate_ids = snapshot
+            .resources
+            .iter()
+            .filter_map(|resource| {
+                matches!(resource.resource, ResourceSpecV1::PathCandidate(_))
+                    .then_some(resource.metadata.id)
+            })
+            .collect::<Vec<_>>();
+        candidate_ids.sort_unstable();
+        let missing_candidate_ids = candidate_ids
+            .iter()
+            .copied()
+            .filter(|id| !snapshot.transport_bindings.contains_key(id))
+            .collect::<Vec<_>>();
+        let mut reason_codes = Vec::new();
+        let service_enabled: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM entitlements e JOIN subscriptions s ON s.id = e.subscription_id AND s.tenant_id = e.tenant_id AND s.status IN ('TRIAL','ACTIVE') JOIN node_pools np ON np.id = e.node_pool_id AND np.tenant_id = e.tenant_id AND np.status = 'ACTIVE' WHERE e.tenant_id = ? AND e.service_permission = 'private.tun.connect' AND e.status = 'ACTIVE')",
+        )
+        .bind(tenant_id)
+        .fetch_one(&self.pool)
+        .await?;
+        if !service_enabled {
+            reason_codes.push("service_not_enabled");
+        } else if candidate_ids.is_empty() || !missing_candidate_ids.is_empty() {
+            reason_codes.push("node_offline");
+        }
+        let published: Option<(u64, Vec<u8>)> = sqlx::query_as(
+            "SELECT current_generation, current_content_hash FROM segments WHERE tenant_id = ? AND id = ? AND state = 'ACTIVE'",
+        )
+        .bind(tenant_id)
+        .bind(segment_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let publication_current = published
+            .as_ref()
+            .is_some_and(|(generation, hash)| *generation == desired_revision && hash.len() == 32);
+        if !publication_current {
+            reason_codes.push("config_pending");
+        } else if !snapshot.transport_bindings.is_empty() {
+            let generation = published.as_ref().map(|value| value.0).unwrap_or_default();
+            for binding in snapshot.transport_bindings.values().flatten() {
+                let catalog_count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM runtime_projection_transport_catalog WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND transport_node_id = ? AND transport_node_key_id = ?",
+                )
+                .bind(tenant_id)
+                .bind(segment_id)
+                .bind(generation)
+                .bind(binding.service_node_id)
+                .bind(binding.service_node_key_id)
+                .fetch_one(&self.pool)
+                .await?;
+                if catalog_count == 0 {
+                    reason_codes.push("config_pending");
+                    break;
+                }
+            }
+        }
+        reason_codes.sort_unstable();
+        reason_codes.dedup();
+        Ok(RuntimeActivationReadiness {
+            segment_id,
+            candidate_count: candidate_ids.len(),
+            ready_candidate_count: candidate_ids.len() - missing_candidate_ids.len(),
+            missing_candidate_ids,
+            reason_codes,
+        })
     }
 
     pub async fn segment_snapshot(
@@ -179,6 +321,8 @@ impl ControlRepository {
             .into_iter()
             .map(|row| decode_resource(row.try_get("document_json")?))
             .collect::<Result<Vec<_>, _>>()?;
+        let transport_bindings =
+            load_transport_bindings(&mut transaction, tenant_id, &resources).await?;
         transaction.commit().await?;
         if !resources.iter().any(|resource| {
             resource.metadata.id == segment_id
@@ -191,7 +335,281 @@ impl ControlRepository {
             segment_id,
             desired_revision,
             resources,
+            transport_bindings,
         })
+    }
+
+    pub async fn provision_private_transport_identity(
+        &self,
+        tenant_id: Uuid,
+        control_node_id: Uuid,
+        request_id: &str,
+        provisions: &[TransportIdentityProvision],
+    ) -> Result<ProvisionedTransportIdentity, ControlStoreError> {
+        if tenant_id.is_nil()
+            || control_node_id.is_nil()
+            || request_id.is_empty()
+            || request_id.len() > 120
+            || !request_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+            || provisions.is_empty()
+            || provisions.len() > 8
+            || provisions.iter().any(|provision| {
+                provision.endpoint.port() == 0 || provision.server_cert_sha256 == [0; 32]
+            })
+        {
+            return Err(ControlStoreError::InvalidRequest);
+        }
+        let mut canonical = provisions.to_vec();
+        canonical.sort_unstable_by_key(|item| item.endpoint);
+        if canonical
+            .windows(2)
+            .any(|items| items[0].endpoint == items[1].endpoint)
+        {
+            return Err(ControlStoreError::InvalidRequest);
+        }
+        let mut transaction = self.pool.begin().await?;
+        let resource = load_control_resource(
+            &mut transaction,
+            tenant_id,
+            ResourceKind::Node,
+            control_node_id,
+        )
+        .await?;
+        let ResourceSpecV1::Node(control_node) = resource.resource else {
+            return Err(ControlStoreError::ReferenceConflict);
+        };
+        let server_name = format!("device-{}.sdwan.candy.internal", control_node.device_id);
+        if !valid_server_name(&server_name) {
+            return Err(ControlStoreError::InvalidTransition);
+        }
+        let mut request_digest = Sha256::new();
+        request_digest.update(b"candy/runtime-transport-identity-v1\0");
+        request_digest.update((canonical.len() as u64).to_be_bytes());
+        for provision in &canonical {
+            let endpoint = provision.endpoint.to_string();
+            request_digest.update((endpoint.len() as u64).to_be_bytes());
+            request_digest.update(endpoint.as_bytes());
+            request_digest.update(provision.server_cert_sha256);
+            request_digest.update(transport_preset_value(provision.transport_preset).as_bytes());
+        }
+        let request_hash: [u8; 32] = request_digest.finalize().into();
+        if let Some(row) = sqlx::query(
+            "SELECT request_hash, CAST(response_json AS CHAR) AS response_json FROM runtime_transport_identity_requests WHERE tenant_id = ? AND device_id = ? AND request_id = ? FOR UPDATE",
+        )
+        .bind(tenant_id)
+        .bind(control_node.device_id)
+        .bind(request_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        {
+            if row.try_get::<Vec<u8>, _>("request_hash")?.as_slice() != request_hash {
+                return Err(ControlStoreError::IdempotencyConflict);
+            }
+            let mut response: ProvisionedTransportIdentity =
+                serde_json::from_str(&row.try_get::<String, _>("response_json")?)
+                .map_err(|_| ControlStoreError::InvalidTransition)?;
+            response.replayed = true;
+            transaction.commit().await?;
+            return Ok(response);
+        }
+        let valid_device: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM devices d JOIN device_keys dk ON dk.id = ? AND dk.device_id = d.id AND dk.tenant_id = d.tenant_id WHERE d.id = ? AND d.tenant_id = ? AND d.status = 'ACTIVE' AND dk.status = 'ACTIVE')",
+        )
+        .bind(control_node.device_key_id)
+        .bind(control_node.device_id)
+        .bind(tenant_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if !valid_device {
+            return Err(ControlStoreError::ReferenceConflict);
+        }
+
+        let node_pools = sqlx::query_scalar::<_, Uuid>(
+            "SELECT np.id FROM node_pools np JOIN entitlements e ON e.node_pool_id = np.id AND e.tenant_id = ? AND e.service_permission = 'private.tun.connect' AND e.status = 'ACTIVE' JOIN subscriptions s ON s.id = e.subscription_id AND s.tenant_id = e.tenant_id AND s.status IN ('TRIAL','ACTIVE') WHERE np.tenant_id = ? AND np.service_class = 'PRIVATE' AND np.status = 'ACTIVE' FOR UPDATE",
+        )
+        .bind(tenant_id)
+        .bind(tenant_id)
+        .fetch_all(&mut *transaction)
+        .await?;
+        if node_pools.len() != 1 {
+            return Err(ControlStoreError::ReferenceConflict);
+        }
+        let node_pool_id = node_pools[0];
+        let service_node_id = match sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM nodes WHERE tenant_id = ? AND device_id = ? AND device_key_id = ? FOR UPDATE",
+        )
+        .bind(tenant_id)
+        .bind(control_node.device_id)
+        .bind(control_node.device_key_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        {
+            Some(id) => {
+                sqlx::query("UPDATE nodes SET node_pool_id = ?, status = 'ACTIVE' WHERE id = ?")
+                    .bind(node_pool_id)
+                    .bind(id)
+                    .execute(&mut *transaction)
+                    .await?;
+                id
+            }
+            None => {
+                let id = Uuid::now_v7();
+                sqlx::query(
+                    "INSERT INTO nodes (id, tenant_id, device_id, device_key_id, node_pool_id, node_id, status) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')",
+                )
+                .bind(id)
+                .bind(tenant_id)
+                .bind(control_node.device_id)
+                .bind(control_node.device_key_id)
+                .bind(node_pool_id)
+                .bind(format!("candy:device:{}", control_node.device_id))
+                .execute(&mut *transaction)
+                .await?;
+                id
+            }
+        };
+        sqlx::query("UPDATE node_endpoints SET status = 'DISABLED' WHERE node_id = ?")
+            .bind(service_node_id)
+            .execute(&mut *transaction)
+            .await?;
+        let mut effective_endpoints = Vec::with_capacity(canonical.len());
+        for provision in &canonical {
+            let endpoint = provision.endpoint.to_string();
+            if let Some(endpoint_id) = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM node_endpoints WHERE node_id = ? AND endpoint = ? FOR UPDATE",
+            )
+            .bind(service_node_id)
+            .bind(&endpoint)
+            .fetch_optional(&mut *transaction)
+            .await?
+            {
+                sqlx::query(
+                "UPDATE node_endpoints SET transport = 'CANDY_QUIC_UDP', server_name = ?, server_cert_sha256 = ?, transport_preset = ?, status = 'ACTIVE' WHERE id = ?",
+            )
+            .bind(&server_name)
+            .bind(provision.server_cert_sha256.as_slice())
+            .bind(transport_preset_value(provision.transport_preset))
+            .bind(endpoint_id)
+            .execute(&mut *transaction)
+            .await?;
+            } else {
+                sqlx::query(
+                "INSERT INTO node_endpoints (id, node_id, endpoint, transport, server_name, server_cert_sha256, transport_preset, status, region) VALUES (?, ?, ?, 'CANDY_QUIC_UDP', ?, ?, ?, 'ACTIVE', 'tenant-managed')",
+            )
+            .bind(Uuid::now_v7())
+            .bind(service_node_id)
+            .bind(&endpoint)
+            .bind(&server_name)
+            .bind(provision.server_cert_sha256.as_slice())
+            .bind(transport_preset_value(provision.transport_preset))
+            .execute(&mut *transaction)
+            .await?;
+            }
+            effective_endpoints.push(ProvisionedTransportEndpoint {
+                endpoint: provision.endpoint,
+                server_name: server_name.clone(),
+            });
+        }
+        let response = ProvisionedTransportIdentity {
+            node_id: control_node_id,
+            endpoints: effective_endpoints,
+            replayed: false,
+        };
+        let response_json =
+            serde_json::to_string(&response).map_err(|_| ControlStoreError::InvalidTransition)?;
+        sqlx::query(
+            "INSERT INTO runtime_transport_identity_requests (tenant_id, device_id, request_id, request_hash, response_json) VALUES (?, ?, ?, ?, CAST(? AS JSON))",
+        )
+        .bind(tenant_id)
+        .bind(control_node.device_id)
+        .bind(request_id)
+        .bind(request_hash.as_slice())
+        .bind(response_json)
+        .execute(&mut *transaction)
+        .await?;
+        for segment_id in dependent_segments(
+            &mut transaction,
+            tenant_id,
+            ResourceKind::Node,
+            control_node_id,
+        )
+        .await?
+        {
+            enqueue_generation(&mut transaction, tenant_id, segment_id, request_hash).await?;
+        }
+        transaction.commit().await?;
+        Ok(response)
+    }
+
+    pub async fn provision_private_transport_identity_for_device(
+        &self,
+        tenant_id: Uuid,
+        device_id: Uuid,
+        device_key_id: Uuid,
+        request_id: &str,
+        provisions: &[TransportIdentityProvision],
+    ) -> Result<ProvisionedTransportIdentity, ControlStoreError> {
+        if tenant_id.is_nil() || device_id.is_nil() || device_key_id.is_nil() {
+            return Err(ControlStoreError::InvalidRequest);
+        }
+        let node_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = 'NODE' AND state = 'ACTIVE' AND JSON_UNQUOTE(JSON_EXTRACT(document_json, '$.resource.spec.device_id')) = ? AND JSON_UNQUOTE(JSON_EXTRACT(document_json, '$.resource.spec.device_key_id')) = ?",
+        )
+        .bind(tenant_id)
+        .bind(device_id.to_string())
+        .bind(device_key_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(ControlStoreError::NotFound)?;
+        self.provision_private_transport_identity(tenant_id, node_id, request_id, provisions)
+            .await
+    }
+
+    pub async fn withdraw_private_transport_identity_for_device(
+        &self,
+        tenant_id: Uuid,
+        device_id: Uuid,
+        device_key_id: Uuid,
+    ) -> Result<(), ControlStoreError> {
+        if tenant_id.is_nil() || device_id.is_nil() || device_key_id.is_nil() {
+            return Err(ControlStoreError::InvalidRequest);
+        }
+        let mut transaction = self.pool.begin().await?;
+        let control_node_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = 'NODE' AND state = 'ACTIVE' AND JSON_UNQUOTE(JSON_EXTRACT(document_json, '$.resource.spec.device_id')) = ? AND JSON_UNQUOTE(JSON_EXTRACT(document_json, '$.resource.spec.device_key_id')) = ? FOR UPDATE",
+        )
+        .bind(tenant_id)
+        .bind(device_id.to_string())
+        .bind(device_key_id.to_string())
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(ControlStoreError::NotFound)?;
+        sqlx::query(
+            "UPDATE node_endpoints ne JOIN nodes n ON n.id = ne.node_id SET ne.status = 'DISABLED' WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ?",
+        )
+        .bind(tenant_id)
+        .bind(device_id)
+        .bind(device_key_id)
+        .execute(&mut *transaction)
+        .await?;
+        let mut digest = Sha256::new();
+        digest.update(b"candy/runtime-transport-withdraw-v1\0");
+        digest.update(device_id.as_bytes());
+        let request_hash: [u8; 32] = digest.finalize().into();
+        for segment_id in dependent_segments(
+            &mut transaction,
+            tenant_id,
+            ResourceKind::Node,
+            control_node_id,
+        )
+        .await?
+        {
+            enqueue_generation(&mut transaction, tenant_id, segment_id, request_hash).await?;
+        }
+        transaction.commit().await?;
+        Ok(())
     }
 
     pub async fn get(
@@ -353,6 +771,125 @@ impl ControlRepository {
     }
 }
 
+async fn load_transport_bindings(
+    transaction: &mut Transaction<'_, MySql>,
+    tenant_id: Uuid,
+    resources: &[ControlResourceV1],
+) -> Result<HashMap<Uuid, Vec<RuntimeTransportBinding>>, ControlStoreError> {
+    let nodes: HashMap<Uuid, &cloud_control::NodeV1> = resources
+        .iter()
+        .filter_map(|resource| match &resource.resource {
+            ResourceSpecV1::Node(node) => Some((resource.metadata.id, node)),
+            _ => None,
+        })
+        .collect();
+    let relays: HashMap<Uuid, &cloud_control::RelayV1> = resources
+        .iter()
+        .filter_map(|resource| match &resource.resource {
+            ResourceSpecV1::Relay(relay) => Some((resource.metadata.id, relay)),
+            _ => None,
+        })
+        .collect();
+    let mut result = HashMap::new();
+    for resource in resources {
+        let ResourceSpecV1::PathCandidate(candidate) = &resource.resource else {
+            continue;
+        };
+        let expected_transport_node = nodes
+            .get(&candidate.transport_node_id)
+            .ok_or(ControlStoreError::ReferenceConflict)?;
+        let rows = sqlx::query(
+            "SELECT ne.id AS endpoint_id, n.id AS service_node_id, n.device_key_id AS service_node_key_id, n.device_id AS service_device_id, n.device_key_id AS service_device_key_id, n.node_pool_id, ne.endpoint, ne.server_name, ne.server_cert_sha256, ne.transport_preset FROM nodes n JOIN devices d ON d.id = n.device_id AND d.tenant_id = n.tenant_id AND d.status = 'ACTIVE' JOIN device_keys dk ON dk.id = n.device_key_id AND dk.device_id = d.id AND dk.tenant_id = d.tenant_id AND dk.status = 'ACTIVE' JOIN node_pools np ON np.id = n.node_pool_id AND np.tenant_id = n.tenant_id AND np.status = 'ACTIVE' JOIN entitlements entitlement ON entitlement.tenant_id = n.tenant_id AND entitlement.node_pool_id = np.id AND entitlement.service_permission = 'private.tun.connect' AND entitlement.status = 'ACTIVE' JOIN subscriptions subscription ON subscription.id = entitlement.subscription_id AND subscription.tenant_id = entitlement.tenant_id AND subscription.status IN ('TRIAL','ACTIVE') JOIN node_endpoints ne ON ne.node_id = n.id AND ne.status = 'ACTIVE' AND ne.transport = 'CANDY_QUIC_UDP' WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' ORDER BY ne.id",
+        )
+        .bind(tenant_id)
+        .bind(expected_transport_node.device_id)
+        .bind(expected_transport_node.device_key_id)
+        .fetch_all(&mut **transaction)
+        .await?;
+        if rows.len() > 8 {
+            return Err(ControlStoreError::InvalidTransition);
+        }
+        if rows.is_empty() {
+            continue;
+        }
+        if candidate.kind == PathCandidateKindV1::Relay {
+            let expected_relay_node = candidate
+                .relay_id
+                .and_then(|relay_id| relays.get(&relay_id))
+                .and_then(|relay| nodes.get(&relay.service_node_id))
+                .ok_or(ControlStoreError::ReferenceConflict)?;
+            if expected_relay_node.device_id != expected_transport_node.device_id
+                || expected_relay_node.device_key_id != expected_transport_node.device_key_id
+            {
+                return Err(ControlStoreError::ReferenceConflict);
+            }
+        }
+        let mut bindings = Vec::with_capacity(rows.len());
+        for row in rows {
+            let endpoint: String = row.try_get("endpoint")?;
+            let pin: Vec<u8> = row.try_get("server_cert_sha256")?;
+            bindings.push(RuntimeTransportBinding {
+                candidate_id: resource.metadata.id,
+                endpoint_id: row.try_get("endpoint_id")?,
+                service_node_id: row.try_get("service_node_id")?,
+                service_node_key_id: row.try_get("service_node_key_id")?,
+                service_device_id: row.try_get("service_device_id")?,
+                service_device_key_id: row.try_get("service_device_key_id")?,
+                node_pool_id: row.try_get("node_pool_id")?,
+                endpoint: endpoint
+                    .parse()
+                    .map_err(|_| ControlStoreError::InvalidTransition)?,
+                server_name: row.try_get("server_name")?,
+                server_cert_sha256: pin
+                    .try_into()
+                    .map_err(|_| ControlStoreError::InvalidTransition)?,
+                transport_preset: parse_transport_preset(row.try_get("transport_preset")?)?,
+            });
+        }
+        result.insert(resource.metadata.id, bindings);
+    }
+    Ok(result)
+}
+
+fn valid_server_name(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    !value.is_empty()
+        && value.len() <= 253
+        && value.is_ascii()
+        && lower != "localhost"
+        && !lower.ends_with(".localhost")
+        && !lower.ends_with(".invalid")
+        && !lower.ends_with(".example")
+        && !lower.ends_with(".test")
+        && value.parse::<std::net::IpAddr>().is_err()
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+fn transport_preset_value(value: RuntimeTransportPreset) -> &'static str {
+    match value {
+        RuntimeTransportPreset::Current => "CURRENT",
+        RuntimeTransportPreset::BbrV1 => "BBR_V1",
+        RuntimeTransportPreset::Aggressive => "AGGRESSIVE",
+    }
+}
+
+fn parse_transport_preset(value: String) -> Result<RuntimeTransportPreset, ControlStoreError> {
+    match value.as_str() {
+        "CURRENT" => Ok(RuntimeTransportPreset::Current),
+        "BBR_V1" => Ok(RuntimeTransportPreset::BbrV1),
+        "AGGRESSIVE" => Ok(RuntimeTransportPreset::Aggressive),
+        _ => Err(ControlStoreError::InvalidTransition),
+    }
+}
+
 fn affected_segment_id(resource: &ControlResourceV1) -> Option<Uuid> {
     match &resource.resource {
         ResourceSpecV1::Segment(_) => Some(resource.metadata.id),
@@ -388,6 +925,7 @@ fn resource_references(resource: &ControlResourceV1) -> HashSet<(ResourceKind, U
             insert(ResourceKind::Peer, value.peer_id);
             insert(ResourceKind::Attachment, value.source_attachment_id);
             insert(ResourceKind::Attachment, value.destination_attachment_id);
+            insert(ResourceKind::Node, value.transport_node_id);
             if let Some(relay_id) = value.relay_id {
                 insert(ResourceKind::Relay, relay_id);
             }

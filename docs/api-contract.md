@@ -171,6 +171,8 @@ The Runtime delivery endpoints are implemented as part of the V1 contract:
 ```text
 GET  /auth/v1/runtime/capabilities
 GET  /auth/v1/runtime/profile
+PUT  /auth/v1/runtime/transport-identity
+DELETE /auth/v1/runtime/transport-identity
 GET  /auth/v1/runtime/configuration
 PUT  /auth/v1/runtime/configuration/status
 ```
@@ -188,8 +190,9 @@ Cloud has completed the network assignment. These display fields never grant
 data-plane authority.
 
 The configuration response is a bounded JSON package containing the exact
-Core-signed Segment snapshot and site projection from one generation, the route
-verification key, and immutable publication identity. Its media type is:
+Core-signed Segment snapshot, local site projection, peer projection catalog,
+route verification key, Grant verification trust bundle, and immutable
+publication identity from one generation. Its media type is:
 
 ```text
 application/vnd.candy.runtime-configuration.v1+json
@@ -209,8 +212,10 @@ X-Candy-Projection-Content-Hash: <64 lowercase hex>
 X-Candy-Refresh-After: 30
 ```
 
-The ETag is the domain-separated SHA-256 of both length-delimited signed
-envelopes and is a strong ETag.
+The ETag is the domain-separated SHA-256 of all length-delimited signed
+envelopes plus route and Grant verification trust material, and is a strong
+ETag. Any peer projection or verification-key change therefore creates a new
+candidate even when the local projection itself did not change.
 Runtime sends the last verified candidate in `If-None-Match`; a match returns
 `304` with no body. Runtime must reject missing or malformed identity headers,
 hash mismatch, an invalid Core signature, an unsupported object version, a
@@ -221,6 +226,36 @@ active but has no SD-WAN attachment. A missing projection for an active
 attachment, identity ambiguity, or invalid stored publication fails closed as
 `503`. None of these responses authorizes deleting the locally applied
 last-known-good state.
+
+### Transport identity publication
+
+After the Candy QUIC/UDP listener is ready, Runtime publishes one to eight
+reachable endpoints with `PUT /auth/v1/runtime/transport-identity`. The request
+contains `schema_version: 1`, a bounded idempotency `request_id`, and for each
+endpoint its socket address, full DER certificate SHA-256 pin, and Candy
+transport preset (`current`, `bbr_v1`, or `aggressive`). Tenant, device, and
+device-key identity come only from verified mTLS; they are never accepted in
+the body.
+
+Cloud derives a stable lowercase `server_name` from the enrolled device
+identity. An accepted PUT atomically activates the supplied set and disables
+older endpoints outside that set. Exact replay of the same request id and body
+returns the original result with `replayed: true`; reuse with different content
+returns `409`. Failed publication leaves the prior active endpoint set intact.
+
+Runtime must not withdraw last-known-good reachability because a refresh or
+Cloud call failed. `DELETE /auth/v1/runtime/transport-identity` is the only
+explicit withdrawal operation and disables the authenticated device's active
+endpoints. Endpoint changes enqueue every dependent Segment for a new coherent
+generation; Runtime never invents a Node Pool, TLS identity, peer, route, or
+authorization reference locally.
+
+For a transport node, `peer_projection_catalog` contains the signed projections
+that reference that node in the same tenant, Segment, and exact generation. It
+is bounded, sorted by projection id, duplicate-free, and covered by the ETag.
+`grant_verification_keys` contains bounded Ed25519 key id/public key/issuer/
+environment tuples and is also covered by the ETag. Runtime verifies these
+objects before enabling the full-duplex TUN data plane.
 
 ### Apply and status report
 

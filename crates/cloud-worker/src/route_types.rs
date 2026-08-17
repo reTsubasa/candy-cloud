@@ -149,13 +149,31 @@ pub struct RelayNodeIdentityV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransportNodeIdentityV1 {
+    pub node_id: NodeId,
+    pub node_key_id: NodeKeyId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportPresetV1 {
+    Current = 1,
+    BbrV1 = 2,
+    Aggressive = 3,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PeerPathCandidateV1 {
     pub candidate_id: PathCandidateId,
     pub peer_site_id: SiteId,
     pub peer_attachment_id: AttachmentId,
     pub kind: PeerPathKindV1,
     pub relay_node: Option<RelayNodeIdentityV1>,
+    pub node_pool_id: NodePoolId,
+    pub transport_node: TransportNodeIdentityV1,
     pub endpoint: PeerEndpointV1,
+    pub server_name: String,
+    pub server_cert_sha256: [u8; 32],
+    pub transport_preset: TransportPresetV1,
     pub priority: u16,
     pub authorization: PolicyRefV1,
 }
@@ -196,6 +214,7 @@ pub struct SiteRouteProjectionV1 {
     pub attachment_id: AttachmentId,
     pub device_id: DeviceId,
     pub device_key_id: DeviceKeyId,
+    pub local_transport_node: Option<TransportNodeIdentityV1>,
     pub overlay_router_ipv4: [u8; 4],
     pub local_prefixes: Vec<Ipv4PrefixV1>,
     pub remote_routes: Vec<RemoteRouteV1>,

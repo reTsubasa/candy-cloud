@@ -14,6 +14,7 @@ import type {
   OrganizationMember,
   EnrollmentActivation,
   EnrollmentActivationSecret,
+  RuntimeActivationReadiness,
 } from './types';
 
 export class CloudApiError extends Error {
@@ -253,6 +254,17 @@ export function listResources(
       ...(after ? { 'X-Page-After': after } : {}),
     },
   });
+}
+
+export function fetchRuntimeActivationReadiness(
+  token: string,
+  tenantId: string,
+  segmentId: string,
+): Promise<RuntimeActivationReadiness> {
+  return requestJson(
+    `/v1/tenants/${encodeURIComponent(tenantId)}/runtime-activation-readiness?segment_id=${encodeURIComponent(segmentId)}`,
+    token,
+  );
 }
 
 export function getResource(token: string, tenantId: string, collection: string, id: string): Promise<ControlResource> {

@@ -25,6 +25,7 @@ import {
 import {
   createNodeJoinCode,
   createResource,
+  fetchRuntimeActivationReadiness,
   listNodeJoinCodes,
   listResources,
 } from '../api';
@@ -35,6 +36,7 @@ import type {
   EnrollmentActivationSecret,
   ResourceDefinition,
   Session,
+  RuntimeActivationReadiness,
 } from '../types';
 import type { Spec } from '../resource-form';
 import { ResourceEditor } from './ResourceEditor';
@@ -131,7 +133,7 @@ function nextOverlayAddress(segment: ControlResource | undefined, attachments: C
   return '';
 }
 
-function completion(resources: ResourceMap, selection: Selection): boolean[] {
+function completion(resources: ResourceMap, selection: Selection, activationReady: boolean): boolean[] {
   const nodeA = byId(resources.nodes, selection.nodeA);
   const nodeB = byId(resources.nodes, selection.nodeB);
   const attachmentA = byId(resources.attachments, selection.attachmentA);
@@ -147,7 +149,7 @@ function completion(resources: ResourceMap, selection: Selection): boolean[] {
     Boolean(attachmentA && attachmentB),
     prefixA && prefixB,
     Boolean(selection.peer && byId(resources.peers, selection.peer)),
-    forward && reverse,
+    forward && reverse && activationReady,
     resources.egress.some((item) => specText(item, 'site_id') === selection.siteA || specText(item, 'site_id') === selection.siteB),
     resources.policies.some((item) => specText(item, 'segment_id') === selection.segment),
     resources.dns.some((item) => specText(item, 'segment_id') === selection.segment),
@@ -162,6 +164,7 @@ export function QuickSetupWizard({ visible, session, onClose, onChanged }: Props
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [advanceWhenReady, setAdvanceWhenReady] = useState(false);
+  const [activationReadiness, setActivationReadiness] = useState<RuntimeActivationReadiness | null>(null);
   const tenantId = session.claims.tenant_id;
 
   const load = useCallback(async () => {
@@ -216,7 +219,22 @@ export function QuickSetupWizard({ visible, session, onClose, onChanged }: Props
     });
   }, [resources, visible]);
 
-  const completed = useMemo(() => completion(resources, selection), [resources, selection]);
+  useEffect(() => {
+    if (!visible || !tenantId || !selection.segment) {
+      setActivationReadiness(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchRuntimeActivationReadiness(session.token, tenantId, selection.segment)
+      .then((result) => { if (!cancelled) setActivationReadiness(result); })
+      .catch(() => { if (!cancelled) setActivationReadiness(null); });
+    return () => { cancelled = true; };
+  }, [resources.paths, selection.segment, session.token, tenantId, visible]);
+
+  const completed = useMemo(
+    () => completion(resources, selection, activationReadiness?.ready === true),
+    [activationReadiness, resources, selection],
+  );
   const requiredDone = completed.slice(0, 7).filter(Boolean).length;
 
   useEffect(() => {
@@ -265,7 +283,7 @@ export function QuickSetupWizard({ visible, session, onClose, onChanged }: Props
         peer_id: selection.peer,
         source_attachment_id: forwardExists ? selection.attachmentB : selection.attachmentA,
         destination_attachment_id: forwardExists ? selection.attachmentA : selection.attachmentB,
-        kind: 'DIRECT', relay_id: null, endpoint: '', priority: 100,
+        kind: 'DIRECT', relay_id: null, transport_node_id: forwardExists ? selection.nodeA : selection.nodeB, priority: 100,
       }, label: `保存${forwardExists ? '返程' : '去程'}线路` };
     }
     if (current === 7) return { definition: definitionByKey.egress, initialSpec: { name: '', site_id: selection.siteB, attachment_id: selection.attachmentB, max_sessions: 10000, capacity_mbps: 1000 }, label: '发布出口' };
@@ -326,7 +344,7 @@ export function QuickSetupWizard({ visible, session, onClose, onChanged }: Props
             {renderSelections()}
             {current === 1 && !completed[1] && <QuickNodeEnrollment session={session} siteId={missingNodeSite} siteName={resourceName(byId(resources.sites, missingNodeSite))} onSaved={() => void saved()} />}
             {current === 4 && completed[4] && <StageComplete text="两个站点都已声明至少一个可达网段。" />}
-            {current === 6 && <PathStatus resources={resources} selection={selection} />}
+            {current === 6 && <PathStatus resources={resources} selection={selection} readiness={activationReadiness} />}
             {completed[current] && current !== 1 && current !== 4 && current !== 6 && <StageComplete text="已选择并验证可用于此次编排的配置。" />}
             {!completed[current] && current !== 1 && editorConfig && <ResourceEditor
               key={`${current}-${editorConfig.definition.kind}-${selection.siteA}-${selection.siteB}-${selection.segment}-${selection.peer}-${resources[steps[current].key as ResourceKey].length}`}
@@ -364,10 +382,14 @@ function StageComplete({ text }: { text: string }) {
   return <div className="quick-stage-complete"><IconCheckCircle /><div><strong>当前步骤已就绪</strong><span>{text}</span></div></div>;
 }
 
-function PathStatus({ resources, selection }: { resources: ResourceMap; selection: Selection }) {
+function PathStatus({ resources, selection, readiness }: { resources: ResourceMap; selection: Selection; readiness: RuntimeActivationReadiness | null }) {
   const forward = resources.paths.some((item) => pathDirection(item, selection.attachmentA, selection.attachmentB, selection));
   const reverse = resources.paths.some((item) => pathDirection(item, selection.attachmentB, selection.attachmentA, selection));
-  return <div className="path-direction-status"><div className={forward ? 'done' : ''}><span>{forward ? <IconCheck /> : '1'}</span><strong>去程线路</strong><small>第一个站点 → 第二个站点</small></div><IconRight /><div className={reverse ? 'done' : ''}><span>{reverse ? <IconCheck /> : '2'}</span><strong>返程线路</strong><small>第二个站点 → 第一个站点</small></div></div>;
+  return <>
+    <div className="path-direction-status"><div className={forward ? 'done' : ''}><span>{forward ? <IconCheck /> : '1'}</span><strong>去程线路</strong><small>第一个站点 → 第二个站点</small></div><IconRight /><div className={reverse ? 'done' : ''}><span>{reverse ? <IconCheck /> : '2'}</span><strong>返程线路</strong><small>第二个站点 → 第一个站点</small></div></div>
+    {forward && reverse && readiness && !readiness.ready && <Alert type="warning" showIcon content={`线路已保存，但还有 ${readiness.missing_transport_count} 个节点未发布安全传输身份。节点上线并完成 Cloud 同步后会自动就绪。`} />}
+    {forward && reverse && readiness?.ready && <StageComplete text="双向线路、服务授权和节点安全身份均已验证，可生成运行配置。" />}
+  </>;
 }
 
 function QuickNodeEnrollment({ session, siteId, siteName, onSaved }: { session: Session; siteId: string; siteName: string; onSaved: () => void }) {

@@ -15,6 +15,7 @@ use crate::route_types::{
     PacketResourcePolicyV1, PathSelectionPolicyV1, PeerEndpointV1, PeerPathCandidateV1, PolicyId,
     RemoteRouteV1, SegmentAttachmentV1, SegmentId, SegmentRouteSnapshotV1, SegmentRouteV1,
     SharedHubAdmissionPolicyV1, SharedHubQuotaV1, SiteRouteProjectionV1, TenantId,
+    TransportNodeIdentityV1,
 };
 
 #[derive(Clone)]
@@ -138,7 +139,15 @@ fn peer_path_json(path: &PeerPathCandidateV1) -> Value {
             "node_id_hex": hex(&node.node_id.0),
             "node_key_id_hex": hex(&node.node_key_id.0),
         })),
+        "node_pool_id_hex": hex(&path.node_pool_id.0),
+        "transport_node": {
+            "node_id_hex": hex(&path.transport_node.node_id.0),
+            "node_key_id_hex": hex(&path.transport_node.node_key_id.0),
+        },
         "endpoint": endpoint_json(&path.endpoint),
+        "server_name": path.server_name,
+        "server_cert_sha256_hex": hex(&path.server_cert_sha256),
+        "transport_preset": path.transport_preset as u64,
         "priority": path.priority,
         "authorization": policy_ref_json(&path.authorization),
     })
@@ -165,6 +174,10 @@ fn site_projection_json(object: &SiteRouteProjectionV1) -> Value {
         "attachment_id_hex": hex(&object.attachment_id.0),
         "device_id_hex": hex(&object.device_id.0),
         "device_key_id_hex": hex(&object.device_key_id.0),
+        "local_transport_node": object.local_transport_node.as_ref().map(|node| json!({
+            "node_id_hex": hex(&node.node_id.0),
+            "node_key_id_hex": hex(&node.node_key_id.0),
+        })),
         "overlay_router_ipv4_hex": hex(&object.overlay_router_ipv4),
         "local_prefixes": object.local_prefixes.iter().map(prefix_json).collect::<Vec<_>>(),
         "remote_routes": object.remote_routes.iter().map(remote_route_json).collect::<Vec<_>>(),
@@ -450,6 +463,7 @@ pub struct DeviceProjectionInput {
     pub projection_id: PolicyId,
     pub projection_generation: u64,
     pub previous_hash: [u8; 32],
+    pub local_transport_node: Option<TransportNodeIdentityV1>,
     pub path_policy: PathSelectionPolicyV1,
     pub peer_paths: Vec<PeerPathCandidateV1>,
     pub coherent_manifest: CoherentPolicyManifestV1,
@@ -554,6 +568,21 @@ impl BuiltRoutePublication {
                         object: SignedObjectWrite {
                             content_hash: built.sealed.content_hash,
                             signed_envelope: built.sealed.envelope.clone(),
+                        },
+                        transport_nodes: {
+                            let mut nodes = projection
+                                .peer_paths
+                                .iter()
+                                .map(|path| {
+                                    (
+                                        uuid(path.transport_node.node_id.0),
+                                        uuid(path.transport_node.node_key_id.0),
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            nodes.sort_unstable();
+                            nodes.dedup();
+                            nodes
                         },
                     })
                 })
@@ -798,6 +827,7 @@ pub fn build_route_publication(
             attachment_id: attachment.attachment_id,
             device_id,
             device_key_id,
+            local_transport_node: plan.local_transport_node.clone(),
             overlay_router_ipv4: attachment.overlay_router_ipv4,
             local_prefixes: attachment.local_prefixes.clone(),
             remote_routes,

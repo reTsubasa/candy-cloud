@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -184,7 +184,7 @@ pub struct PathCandidateV1 {
     pub destination_attachment_id: Uuid,
     pub kind: PathCandidateKindV1,
     pub relay_id: Option<Uuid>,
-    pub endpoint: String,
+    pub transport_node_id: Uuid,
     pub priority: u16,
 }
 
@@ -424,10 +424,10 @@ impl ResourceSpecV1 {
                     value.peer_id,
                     value.source_attachment_id,
                     value.destination_attachment_id,
+                    value.transport_node_id,
                 ])?;
                 if value.source_attachment_id == value.destination_attachment_id
                     || value.priority == 0
-                    || !valid_peer_endpoint(&value.endpoint)
                     || matches!(
                         (value.kind, value.relay_id),
                         (PathCandidateKindV1::Direct, Some(_)) | (PathCandidateKindV1::Relay, None)
@@ -452,26 +452,6 @@ impl ResourceSpecV1 {
         self.validate()?;
         let bytes = serde_json::to_vec(self).map_err(|_| ContractError::Serialization)?;
         Ok(Sha256::digest(bytes).into())
-    }
-}
-
-fn valid_peer_endpoint(value: &str) -> bool {
-    let Ok(endpoint) = value.parse::<SocketAddr>() else {
-        return false;
-    };
-    if endpoint.port() == 0 {
-        return false;
-    }
-    match endpoint.ip() {
-        IpAddr::V4(address) => {
-            !address.is_unspecified()
-                && !address.is_loopback()
-                && !address.is_multicast()
-                && !address.is_broadcast()
-        }
-        IpAddr::V6(address) => {
-            !address.is_unspecified() && !address.is_loopback() && !address.is_multicast()
-        }
     }
 }
 
@@ -676,7 +656,7 @@ mod tests {
             destination_attachment_id: id(4),
             kind: PathCandidateKindV1::Direct,
             relay_id: Some(id(5)),
-            endpoint: "192.0.2.10:443".into(),
+            transport_node_id: Uuid::new_v4(),
             priority: 10,
         };
         assert_eq!(
@@ -688,24 +668,6 @@ mod tests {
             ..base
         };
         assert_eq!(ResourceSpecV1::PathCandidate(relay).validate(), Ok(()));
-    }
-
-    #[test]
-    fn path_endpoint_rejects_non_routable_listener_addresses() {
-        for endpoint in [
-            "0.0.0.0:443",
-            "127.0.0.1:443",
-            "224.0.0.1:443",
-            "255.255.255.255:443",
-            "[::]:443",
-            "[::1]:443",
-            "[ff02::1]:443",
-            "192.0.2.1:0",
-        ] {
-            assert!(!valid_peer_endpoint(endpoint), "accepted {endpoint}");
-        }
-        assert!(valid_peer_endpoint("192.0.2.1:443"));
-        assert!(valid_peer_endpoint("[2001:db8::1]:443"));
     }
 
     #[test]

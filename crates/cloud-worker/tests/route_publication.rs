@@ -5,9 +5,10 @@ use cloud_worker::route_publication::{
 };
 use cloud_worker::route_types::{
     AttachmentId, AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1, DeviceId,
-    DeviceKeyId, Ipv4PrefixV1, PacketResourcePolicyV1, PathCandidateId, PathSelectionPolicyV1,
-    PeerEndpointV1, PeerPathCandidateV1, PeerPathKindV1, PolicyId, PolicyRefV1,
-    SegmentAttachmentV1, SegmentId, SharedHubAdmissionPolicyV1, SharedHubQuotaV1, SiteId, TenantId,
+    DeviceKeyId, Ipv4PrefixV1, NodeId, NodeKeyId, NodePoolId, PacketResourcePolicyV1,
+    PathCandidateId, PathSelectionPolicyV1, PeerEndpointV1, PeerPathCandidateV1, PeerPathKindV1,
+    PolicyId, PolicyRefV1, SegmentAttachmentV1, SegmentId, SharedHubAdmissionPolicyV1,
+    SharedHubQuotaV1, SiteId, TenantId, TransportNodeIdentityV1, TransportPresetV1,
 };
 use ed25519_dalek::SigningKey;
 use sha2::Digest;
@@ -65,10 +66,18 @@ fn peer(site: SiteId, attachment: AttachmentId, candidate: u8, policy: u8) -> Pe
         peer_attachment_id: attachment,
         kind: PeerPathKindV1::Direct,
         relay_node: None,
+        node_pool_id: NodePoolId([candidate.wrapping_add(2); 16]),
+        transport_node: TransportNodeIdentityV1 {
+            node_id: NodeId([candidate.wrapping_add(3); 16]),
+            node_key_id: NodeKeyId([candidate.wrapping_add(4); 16]),
+        },
         endpoint: PeerEndpointV1::Ipv4 {
             address: [203, 0, 113, candidate],
             port: 18_443,
         },
+        server_name: format!("node-{candidate}.candy.invalid-net"),
+        server_cert_sha256: [candidate.wrapping_add(5); 32],
+        transport_preset: TransportPresetV1::Current,
         priority: 100,
         authorization: PolicyRefV1 {
             policy_id: PolicyId([policy; 16]),
@@ -96,6 +105,7 @@ fn projection(
         projection_id: PolicyId([policy; 16]),
         projection_generation: 1,
         previous_hash: [0; 32],
+        local_transport_node: None,
         path_policy: PathSelectionPolicyV1::DirectPreferred,
         peer_paths: vec![path],
         coherent_manifest: CoherentPolicyManifestV1 {

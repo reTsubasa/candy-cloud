@@ -11,6 +11,7 @@ use cloud_db::{
         RuntimeConfigurationStatusWrite, SdwanRepository,
     },
 };
+use sha2::{Digest, Sha256};
 
 use crate::{
     db_mapping::{private_material_from_record, MappingError},
@@ -23,14 +24,16 @@ use crate::{
         AuthenticatedTenant, EnrollmentReceipt, GrantIssuanceReceipt, GrantIssueCommand,
         GrantServiceError, RuntimeConfigurationApplyState, RuntimeConfigurationDelivery,
         RuntimeConfigurationService, RuntimeConfigurationServiceError,
-        RuntimeConfigurationStatusCommand, RuntimeProfileDelivery, ServiceFuture,
-        TenantAuthService,
+        RuntimeConfigurationStatusCommand, RuntimeGrantVerificationKeyDelivery,
+        RuntimePeerProjectionDelivery, RuntimeProfileDelivery, RuntimeTransportIdentityCommand,
+        RuntimeTransportIdentityDelivery, RuntimeTransportPreset, ServiceFuture, TenantAuthService,
     },
 };
 
 pub struct GrantDelivery {
     pub grant_id: uuid::Uuid,
     pub expires_at_unix: i64,
+    pub refresh_after_unix: i64,
     pub replayed: bool,
     raw: Vec<u8>,
 }
@@ -110,6 +113,7 @@ impl TenantAuthService for DatabaseTenantAuthService {
             Ok(GrantIssuanceReceipt {
                 grant_id: delivery.grant_id,
                 expires_at_unix: delivery.expires_at_unix,
+                refresh_after_unix: delivery.refresh_after_unix,
                 replayed: delivery.replayed,
                 access_grant: delivery.raw().to_vec(),
             })
@@ -119,20 +123,26 @@ impl TenantAuthService for DatabaseTenantAuthService {
 
 pub struct DatabaseRuntimeConfigurationService {
     repository: SdwanRepository,
+    control: cloud_db::control::ControlRepository,
     route_signing_key_id: String,
     route_signing_public_key: [u8; 32],
+    grant_verification_keys: Vec<RuntimeGrantVerificationKeyDelivery>,
 }
 
 impl DatabaseRuntimeConfigurationService {
     pub fn new(
         repository: SdwanRepository,
+        control: cloud_db::control::ControlRepository,
         route_signing_key_id: String,
         route_signing_public_key: [u8; 32],
+        grant_verification_keys: Vec<RuntimeGrantVerificationKeyDelivery>,
     ) -> Self {
         Self {
             repository,
+            control,
             route_signing_key_id,
             route_signing_public_key,
+            grant_verification_keys,
         }
     }
 }
@@ -186,6 +196,12 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
             match self.repository.current_runtime_configuration(&lookup).await {
                 Ok(RuntimeConfigurationState::Unassigned) => Ok(None),
                 Ok(RuntimeConfigurationState::Current(record)) => {
+                    let envelope_sha256 = runtime_configuration_etag(
+                        record.envelope_sha256(),
+                        &self.route_signing_key_id,
+                        &self.route_signing_public_key,
+                        &self.grant_verification_keys,
+                    );
                     Ok(Some(RuntimeConfigurationDelivery {
                         projection_publication_id: record.projection_publication_id,
                         projection_id: record.projection_id,
@@ -194,11 +210,22 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                         segment_generation: record.segment_generation,
                         projection_generation: record.projection_generation,
                         projection_content_hash: record.projection_content_hash,
-                        envelope_sha256: record.envelope_sha256(),
+                        envelope_sha256,
                         signed_segment_envelope: record.signed_segment_envelope,
                         signed_projection_envelope: record.signed_projection_envelope,
                         route_signing_key_id: self.route_signing_key_id.clone(),
                         route_signing_public_key: self.route_signing_public_key,
+                        peer_projection_catalog: record
+                            .peer_projection_catalog
+                            .into_iter()
+                            .map(|projection| RuntimePeerProjectionDelivery {
+                                projection_id: projection.projection_id,
+                                projection_generation: projection.projection_generation,
+                                projection_content_hash: projection.projection_content_hash,
+                                signed_projection_envelope: projection.signed_projection_envelope,
+                            })
+                            .collect(),
+                        grant_verification_keys: self.grant_verification_keys.clone(),
                     }))
                 }
                 Err(_) => Err(RuntimeConfigurationServiceError::Unavailable),
@@ -211,12 +238,30 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
         command: RuntimeConfigurationStatusCommand,
     ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
         Box::pin(async move {
+            let lookup = RuntimeConfigurationLookup {
+                tenant_id: command.actor.tenant_id(),
+                device_id: command.actor.device_id(),
+                device_key_id: command.actor.device_key_id(),
+            };
+            let RuntimeConfigurationState::Current(current) = self
+                .repository
+                .current_runtime_configuration(&lookup)
+                .await
+                .map_err(|_| RuntimeConfigurationServiceError::Unavailable)?
+            else {
+                return Err(RuntimeConfigurationServiceError::Conflict);
+            };
+            let expected_etag = runtime_configuration_etag(
+                current.envelope_sha256(),
+                &self.route_signing_key_id,
+                &self.route_signing_public_key,
+                &self.grant_verification_keys,
+            );
+            if command.envelope_sha256 != expected_etag {
+                return Err(RuntimeConfigurationServiceError::Conflict);
+            }
             let status = RuntimeConfigurationStatusWrite {
-                lookup: RuntimeConfigurationLookup {
-                    tenant_id: command.actor.tenant_id(),
-                    device_id: command.actor.device_id(),
-                    device_key_id: command.actor.device_key_id(),
-                },
+                lookup,
                 projection_publication_id: command.projection_publication_id,
                 projection_content_hash: command.projection_content_hash,
                 envelope_sha256: command.envelope_sha256,
@@ -240,6 +285,162 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                     _ => RuntimeConfigurationServiceError::Unavailable,
                 })
         })
+    }
+
+    fn publish_transport_identity(
+        &self,
+        command: RuntimeTransportIdentityCommand,
+    ) -> ServiceFuture<'_, Result<RuntimeTransportIdentityDelivery, RuntimeConfigurationServiceError>>
+    {
+        Box::pin(async move {
+            let provisions = command
+                .endpoints
+                .iter()
+                .map(|endpoint| cloud_db::control::TransportIdentityProvision {
+                    endpoint: endpoint.endpoint,
+                    server_cert_sha256: endpoint.server_cert_sha256,
+                    transport_preset: match endpoint.transport_preset {
+                        RuntimeTransportPreset::Current => {
+                            cloud_db::control::RuntimeTransportPreset::Current
+                        }
+                        RuntimeTransportPreset::BbrV1 => {
+                            cloud_db::control::RuntimeTransportPreset::BbrV1
+                        }
+                        RuntimeTransportPreset::Aggressive => {
+                            cloud_db::control::RuntimeTransportPreset::Aggressive
+                        }
+                    },
+                })
+                .collect::<Vec<_>>();
+            let result = self
+                .control
+                .provision_private_transport_identity_for_device(
+                    command.actor.tenant_id(),
+                    command.actor.device_id(),
+                    command.actor.device_key_id(),
+                    &command.request_id,
+                    &provisions,
+                )
+                .await
+                .map_err(|error| match error {
+                    cloud_db::control::ControlStoreError::ReferenceConflict
+                    | cloud_db::control::ControlStoreError::NotFound
+                    | cloud_db::control::ControlStoreError::InvalidRequest
+                    | cloud_db::control::ControlStoreError::IdempotencyConflict => {
+                        RuntimeConfigurationServiceError::Conflict
+                    }
+                    _ => RuntimeConfigurationServiceError::Unavailable,
+                })?;
+            Ok(RuntimeTransportIdentityDelivery {
+                node_id: result.node_id,
+                endpoints: result
+                    .endpoints
+                    .into_iter()
+                    .map(|endpoint| crate::routes::RuntimeTransportEndpointDelivery {
+                        endpoint: endpoint.endpoint.to_string(),
+                        server_name: endpoint.server_name,
+                    })
+                    .collect(),
+                replayed: result.replayed,
+            })
+        })
+    }
+
+    fn withdraw_transport_identity(
+        &self,
+        actor: crate::routes::AuthenticatedDevice,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async move {
+            self.control
+                .withdraw_private_transport_identity_for_device(
+                    actor.tenant_id(),
+                    actor.device_id(),
+                    actor.device_key_id(),
+                )
+                .await
+                .map_err(|error| match error {
+                    cloud_db::control::ControlStoreError::NotFound => {
+                        RuntimeConfigurationServiceError::Conflict
+                    }
+                    _ => RuntimeConfigurationServiceError::Unavailable,
+                })
+        })
+    }
+}
+
+fn runtime_configuration_etag(
+    signed_objects_hash: [u8; 32],
+    route_key_id: &str,
+    route_public_key: &[u8; 32],
+    grant_keys: &[RuntimeGrantVerificationKeyDelivery],
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"candy/runtime-delivery-v1\0");
+    digest.update(signed_objects_hash);
+    digest.update((route_key_id.len() as u64).to_be_bytes());
+    digest.update(route_key_id.as_bytes());
+    digest.update(route_public_key);
+    digest.update((grant_keys.len() as u64).to_be_bytes());
+    for key in grant_keys {
+        digest.update((key.key_id.len() as u64).to_be_bytes());
+        digest.update(key.key_id.as_bytes());
+        digest.update(key.ed25519_public_key);
+        digest.update(key.issuer_id.as_bytes());
+        digest.update(key.environment_id.as_bytes());
+    }
+    digest.finalize().into()
+}
+
+#[cfg(test)]
+mod runtime_delivery_tests {
+    use super::*;
+
+    fn grant_key(byte: u8, key_id: &str) -> RuntimeGrantVerificationKeyDelivery {
+        RuntimeGrantVerificationKeyDelivery {
+            key_id: key_id.into(),
+            ed25519_public_key: [byte; 32],
+            issuer_id: uuid::Uuid::from_bytes([byte; 16]),
+            environment_id: uuid::Uuid::from_bytes([byte.wrapping_add(1); 16]),
+        }
+    }
+
+    #[test]
+    fn runtime_delivery_etag_covers_route_and_grant_trust_material() {
+        let signed_objects = [1; 32];
+        let route_key = [2; 32];
+        let base = runtime_configuration_etag(
+            signed_objects,
+            "route-key-a",
+            &route_key,
+            &[grant_key(3, "grant-key-a")],
+        );
+        assert_ne!(
+            base,
+            runtime_configuration_etag(
+                signed_objects,
+                "route-key-b",
+                &route_key,
+                &[grant_key(3, "grant-key-a")]
+            )
+        );
+        assert_ne!(
+            base,
+            runtime_configuration_etag(
+                signed_objects,
+                "route-key-a",
+                &[4; 32],
+                &[grant_key(3, "grant-key-a")]
+            )
+        );
+        assert_ne!(
+            base,
+            runtime_configuration_etag(
+                signed_objects,
+                "route-key-a",
+                &route_key,
+                &[grant_key(5, "grant-key-b")]
+            )
+        );
     }
 }
 
@@ -398,6 +599,7 @@ fn delivery(prepared: PreparedGrant, replayed: bool) -> GrantDelivery {
     GrantDelivery {
         grant_id: prepared.grant_id,
         expires_at_unix: prepared.expires_at as i64,
+        refresh_after_unix: prepared.refresh_after as i64,
         replayed,
         raw: prepared.issued.raw().to_vec(),
     }

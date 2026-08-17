@@ -114,7 +114,7 @@ function errorMessage(errors: string[]): string {
     node_id: '接入节点', overlay_router_ipv4: '隧道地址', epoch_floor: '安全代次',
     site_a_id: '站点 A', site_b_id: '站点 B', service_node_id: '服务节点', attachment_id: '接入关系',
     source_attachment_id: '源接入', destination_attachment_id: '目标接入', peer_id: '对等关系', relay_id: '中继',
-    endpoint: '公网端点', priority: '优先级', max_sessions: '会话容量', capacity_mbps: '带宽容量',
+    endpoint: '公网端点', transport_node_id: '提供公网传输的节点', priority: '优先级', max_sessions: '会话容量', capacity_mbps: '带宽容量',
     generation: '配置代次', zone: '内部域', value: '记录值', ttl_seconds: 'TTL', domains: '域名', destination_cidrs: '目标网段',
   };
   const reasonLabels: Record<string, string> = {
@@ -358,7 +358,8 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
           <div className="form-grid two"><Form.Item label="起点节点" required>{referenceSelect('attachments', spec.source_attachment_id, (value) => update('source_attachment_id', value), '选择发送端节点', segmentAttachments)}</Form.Item><Form.Item label="目标节点" required>{referenceSelect('attachments', spec.destination_attachment_id, (value) => update('destination_attachment_id', value), '选择接收端节点', segmentAttachments)}</Form.Item></div>
           <Form.Item label="连接方式" required><Radio.Group type="button" value={spec.kind} onChange={(value) => update('kind', value)} options={[{ label: '直接连接', value: 'DIRECT' }, { label: '经中继转发', value: 'RELAY' }]} /></Form.Item>
           {spec.kind === 'RELAY' && <Form.Item label="中继" required>{referenceSelect('relays', spec.relay_id, (value) => update('relay_id', value), '选择中继')}</Form.Item>}
-          <div className="form-grid endpoint-grid"><Form.Item label="可达端点" required><Input className="mono-input" value={getValue(spec, 'endpoint')} onChange={(value) => update('endpoint', value)} placeholder="203.0.113.10:8443" /><FieldHelp>填写 Candy 数据面的公网 IP 和 UDP 端口。</FieldHelp></Form.Item><Form.Item label="优先级" required><InputNumber min={1} max={65535} value={Number(spec.priority)} onChange={(value) => update('priority', value)} /><FieldHelp>数值越小越优先。</FieldHelp></Form.Item></div>
+          <Form.Item label="提供公网传输的节点" required>{referenceSelect('nodes', spec.transport_node_id, (value) => update('transport_node_id', value), '选择已发布公网端点的节点')}<FieldHelp>双向线路可以共用同一台公网节点；Cloud 会自动核对其服务授权和证书身份。</FieldHelp></Form.Item>
+          <Form.Item label="优先级" required><InputNumber min={1} max={65535} value={Number(spec.priority)} onChange={(value) => update('priority', value)} /><FieldHelp>数值越小越优先；同一节点的备用端点由 Cloud 自动展开。</FieldHelp></Form.Item>
         </>;
       }
       case 'EGRESS': {

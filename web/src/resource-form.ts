@@ -121,7 +121,7 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
     ATTACHMENT: ['segment_id', 'site_id', 'node_id'],
     PREFIX: ['site_id', 'segment_id'],
     PEER: ['segment_id', 'site_a_id', 'site_b_id'],
-    PATH_CANDIDATE: ['segment_id', 'peer_id', 'source_attachment_id', 'destination_attachment_id'],
+    PATH_CANDIDATE: ['segment_id', 'peer_id', 'source_attachment_id', 'destination_attachment_id', 'transport_node_id'],
     EGRESS: ['site_id', 'attachment_id'],
     RELAY: ['service_node_id'],
     SERVICE_POLICY: ['segment_id'],
@@ -129,7 +129,7 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
   };
   const textFields: Record<string, string[]> = {
     SITE: ['name', 'kind'], NODE: ['display_name', 'platform', 'architecture'], SEGMENT: ['name'], ATTACHMENT: ['overlay_router_ipv4'],
-    PREFIX: ['source'], PEER: ['path_policy'], PATH_CANDIDATE: ['kind', 'endpoint'],
+    PREFIX: ['source'], PEER: ['path_policy'], PATH_CANDIDATE: ['kind'],
     EGRESS: ['name'], RELAY: ['name', 'region'], DNS_INTENT: ['zone'],
   };
   required(spec, [...(uuidFields[kind] ?? []), ...(textFields[kind] ?? [])], errors);
@@ -149,10 +149,6 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
     if (!(Number(spec.capacity_mbps) > 0)) errors.push('capacity_mbps:positive');
   }
   if (kind === 'PATH_CANDIDATE') {
-    const endpoint = cleanText(spec.endpoint);
-    const endpointMatch = endpoint.match(/^(?:(\d{1,3}(?:\.\d{1,3}){3})|\[([0-9a-f:]+)\]):(\d+)$/i);
-    const validAddress = endpointMatch && (endpointMatch[1] ? validIpv4(endpointMatch[1]) : validIpv6(endpointMatch[2]));
-    if (!endpointMatch || !validAddress || Number(endpointMatch[3]) < 1 || Number(endpointMatch[3]) > 65535) errors.push('endpoint:endpoint');
     if (!Number.isInteger(Number(spec.priority)) || Number(spec.priority) < 1 || Number(spec.priority) > 65535) errors.push('priority:range');
     if (spec.source_attachment_id === spec.destination_attachment_id) errors.push('destination_attachment_id:different');
     if (spec.kind === 'RELAY' && !uuidPattern.test(cleanText(spec.relay_id))) errors.push('relay_id:uuid');

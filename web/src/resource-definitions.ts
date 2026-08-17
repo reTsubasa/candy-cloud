@@ -30,7 +30,7 @@ export function defaultSpec(kind: string): ResourceSpec {
     ATTACHMENT: { segment_id: '', site_id: '', node_id: '', overlay_router_ipv4: '', epoch_floor: 1 },
     PREFIX: { site_id: '', segment_id: '', prefix: { network: '10.0.0.0', prefix_len: 24 }, source: 'CONFIGURED' },
     PEER: { segment_id: '', site_a_id: '', site_b_id: '', path_policy: 'DIRECT_PREFERRED' },
-    PATH_CANDIDATE: { segment_id: '', peer_id: '', source_attachment_id: '', destination_attachment_id: '', kind: 'DIRECT', relay_id: null, endpoint: '', priority: 100 },
+    PATH_CANDIDATE: { segment_id: '', peer_id: '', source_attachment_id: '', destination_attachment_id: '', kind: 'DIRECT', relay_id: null, transport_node_id: '', priority: 100 },
     EGRESS: { name: '', site_id: '', attachment_id: '', max_sessions: 10000, max_bits_per_second: 1000000000 },
     SERVICE_POLICY: { segment_id: '', generation: 1, rules: [] },
     DNS_INTENT: { segment_id: '', site_id: '', zone: '', records: [] },

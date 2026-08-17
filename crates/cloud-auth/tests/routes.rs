@@ -16,7 +16,8 @@ use cloud_auth::{
         GrantIssueCommand, GrantServiceError, RuntimeConfigurationApplyState,
         RuntimeConfigurationDelivery, RuntimeConfigurationService,
         RuntimeConfigurationServiceError, RuntimeConfigurationStatusCommand,
-        RuntimeProfileDelivery, ServiceFuture, TenantAuthService,
+        RuntimeProfileDelivery, RuntimeTransportEndpointDelivery, RuntimeTransportIdentityCommand,
+        RuntimeTransportIdentityDelivery, ServiceFuture, TenantAuthService,
     },
 };
 use http_body_util::BodyExt;
@@ -51,6 +52,7 @@ impl TenantAuthService for RecordingService {
             Ok(GrantIssuanceReceipt {
                 grant_id: Uuid::new_v4(),
                 expires_at_unix: 1_800_000_000,
+                refresh_after_unix: 1_799_978_400,
                 replayed: false,
                 access_grant: vec![1, 2, 3],
             })
@@ -76,6 +78,8 @@ struct RecordingEnrollmentService {
 struct RecordingRuntimeConfigurationService {
     delivery: Mutex<Option<RuntimeConfigurationDelivery>>,
     statuses: Mutex<Vec<RuntimeConfigurationStatusCommand>>,
+    transport_publications: Mutex<Vec<RuntimeTransportIdentityCommand>>,
+    transport_withdrawals: Mutex<Vec<AuthenticatedDevice>>,
     status_result: Mutex<Result<(), RuntimeConfigurationServiceError>>,
 }
 
@@ -84,6 +88,8 @@ impl RecordingRuntimeConfigurationService {
         Self {
             delivery: Mutex::new(delivery),
             statuses: Mutex::new(Vec::new()),
+            transport_publications: Mutex::new(Vec::new()),
+            transport_withdrawals: Mutex::new(Vec::new()),
             status_result: Mutex::new(Ok(())),
         }
     }
@@ -129,6 +135,40 @@ impl RuntimeConfigurationService for RecordingRuntimeConfigurationService {
         Box::pin(async move {
             self.statuses.lock().unwrap().push(command);
             *self.status_result.lock().unwrap()
+        })
+    }
+
+    fn publish_transport_identity(
+        &self,
+        command: RuntimeTransportIdentityCommand,
+    ) -> ServiceFuture<'_, Result<RuntimeTransportIdentityDelivery, RuntimeConfigurationServiceError>>
+    {
+        Box::pin(async move {
+            let node_id = command.actor.device_id();
+            let endpoints = command
+                .endpoints
+                .iter()
+                .map(|endpoint| RuntimeTransportEndpointDelivery {
+                    endpoint: endpoint.endpoint.to_string(),
+                    server_name: format!("device-{node_id}.sdwan.candy.internal"),
+                })
+                .collect();
+            self.transport_publications.lock().unwrap().push(command);
+            Ok(RuntimeTransportIdentityDelivery {
+                node_id,
+                endpoints,
+                replayed: false,
+            })
+        })
+    }
+
+    fn withdraw_transport_identity(
+        &self,
+        actor: AuthenticatedDevice,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async move {
+            self.transport_withdrawals.lock().unwrap().push(actor);
+            Ok(())
         })
     }
 }
@@ -373,7 +413,135 @@ fn runtime_delivery() -> RuntimeConfigurationDelivery {
         signed_projection_envelope: vec![3, 4, 5, 0xfe],
         route_signing_key_id: "route-signing-1".into(),
         route_signing_public_key: [9; 32],
+        peer_projection_catalog: vec![cloud_auth::routes::RuntimePeerProjectionDelivery {
+            projection_id: Uuid::from_bytes([10; 16]),
+            projection_generation: 4,
+            projection_content_hash: [11; 32],
+            signed_projection_envelope: vec![6, 7, 8],
+        }],
+        grant_verification_keys: vec![cloud_auth::routes::RuntimeGrantVerificationKeyDelivery {
+            key_id: "grant-key-1".into(),
+            ed25519_public_key: [12; 32],
+            issuer_id: Uuid::from_bytes([13; 16]),
+            environment_id: Uuid::from_bytes([14; 16]),
+        }],
     }
+}
+
+#[tokio::test]
+async fn runtime_transport_identity_accepts_dual_stack_and_explicit_withdrawal() {
+    let service = Arc::new(RecordingRuntimeConfigurationService::with_delivery(None));
+    let app = runtime_configuration_app(service.clone());
+    let actor = device_actor(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+    let body = serde_json::json!({
+        "schema_version": 1,
+        "request_id": "transport-20260817-01",
+        "endpoints": [
+            {
+                "endpoint": "203.0.113.9:4433",
+                "server_cert_sha256": "11".repeat(32),
+                "transport_preset": "current"
+            },
+            {
+                "endpoint": "[2001:db8::9]:4433",
+                "server_cert_sha256": "22".repeat(32),
+                "transport_preset": "bbr_v1"
+            }
+        ]
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/runtime/transport-identity")
+                .header("content-type", "application/json")
+                .extension(actor.clone())
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(response_body["node_id"], actor.device_id().to_string());
+    assert_eq!(response_body["endpoints"].as_array().unwrap().len(), 2);
+    let publications = service.transport_publications.lock().unwrap();
+    assert_eq!(publications.len(), 1);
+    assert_eq!(publications[0].actor, actor);
+    assert_eq!(
+        publications[0].endpoints[0].endpoint.to_string(),
+        "203.0.113.9:4433"
+    );
+    assert_eq!(
+        publications[0].endpoints[1].endpoint.to_string(),
+        "[2001:db8::9]:4433"
+    );
+    drop(publications);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/v1/runtime/transport-identity")
+                .extension(actor.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        service.transport_withdrawals.lock().unwrap().as_slice(),
+        &[actor]
+    );
+}
+
+#[tokio::test]
+async fn runtime_transport_identity_rejects_duplicate_endpoints_before_storage() {
+    let service = Arc::new(RecordingRuntimeConfigurationService::with_delivery(None));
+    let app = runtime_configuration_app(service.clone());
+    let body = serde_json::json!({
+        "schema_version": 1,
+        "request_id": "transport-duplicate",
+        "endpoints": [
+            {
+                "endpoint": "203.0.113.10:4433",
+                "server_cert_sha256": "11".repeat(32),
+                "transport_preset": "current"
+            },
+            {
+                "endpoint": "203.0.113.10:4433",
+                "server_cert_sha256": "22".repeat(32),
+                "transport_preset": "aggressive"
+            }
+        ]
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/runtime/transport-identity")
+                .header("content-type", "application/json")
+                .extension(device_actor(
+                    Uuid::new_v4(),
+                    Uuid::new_v4(),
+                    Uuid::new_v4(),
+                    Uuid::new_v4(),
+                ))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(service.transport_publications.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -414,6 +582,15 @@ async fn runtime_configuration_returns_coherent_signed_bundle_and_honors_etag() 
     assert_eq!(body["site_projection"], "AwQF_g");
     assert_eq!(body["route_signing_key_id"], "route-signing-1");
     assert_eq!(body["route_signing_public_key"], "09".repeat(32));
+    assert_eq!(
+        body["peer_projection_catalog"][0]["projection_id"],
+        Uuid::from_bytes([10; 16]).to_string()
+    );
+    assert_eq!(
+        body["peer_projection_catalog"][0]["site_projection"],
+        "BgcI"
+    );
+    assert_eq!(body["grant_verification_keys"][0]["key_id"], "grant-key-1");
 
     let unchanged = app
         .oneshot(

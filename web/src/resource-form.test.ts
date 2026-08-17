@@ -38,12 +38,12 @@ describe('resource form contract mapping', () => {
     ] })).toContain('rules.1.priority:unique');
   });
 
-  it('rejects malformed path endpoints and DNS address values', () => {
+  it('requires a transport node and rejects malformed DNS address values', () => {
     const uuid = '019ff9c1-ac24-7303-a6c3-905768fe5901';
     expect(validateResourceEditor('PATH_CANDIDATE', {
       segment_id: uuid, peer_id: uuid, source_attachment_id: uuid,
-      destination_attachment_id: uuid, kind: 'DIRECT', endpoint: '300.1.1.1:70000', priority: 1,
-    })).toContain('endpoint:endpoint');
+      destination_attachment_id: uuid, kind: 'DIRECT', transport_node_id: '', priority: 1,
+    })).toContain('transport_node_id:required');
     expect(validateResourceEditor('DNS_INTENT', {
       segment_id: uuid, site_id: uuid, zone: 'corp.test',
       records: [{ name: 'host.corp.test', type: 'AAAA', value: '2001:::10', ttl_seconds: 60 }],

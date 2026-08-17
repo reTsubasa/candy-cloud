@@ -461,6 +461,29 @@ paths:
         "403": { $ref: "#/components/responses/ManagementForbidden" }
         "404": { $ref: "#/components/responses/ManagementNotFound" }
         "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/tenants/{tenant_id}/runtime-activation-readiness:
+    get:
+      tags: [SD-WAN management]
+      operationId: getRuntimeActivationReadiness
+      summary: Check whether a Segment can produce usable Runtime data-plane configuration
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - name: segment_id
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/Uuid" }
+      responses:
+        "200":
+          description: Current authorization, transport identity, and publication readiness.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeActivationReadiness" }
+        "400": { $ref: "#/components/responses/ManagementBadRequest" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "404": { $ref: "#/components/responses/ManagementNotFound" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
   /v1/tenants/{tenant_id}/{collection}/{id}:
     parameters:
       - $ref: "#/components/parameters/TenantId"
@@ -688,6 +711,40 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/RuntimeProfile" }
         "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
+  /v1/runtime/transport-identity:
+    put:
+      tags: [Runtime synchronization]
+      x-candy-status: runtime-sync
+      operationId: publishRuntimeTransportIdentity
+      summary: Publish the authenticated device's active Candy QUIC/UDP endpoints
+      description: |-
+        Device-mTLS authenticated. Cloud derives the server_name from the
+        enrolled device identity and atomically replaces the endpoint set.
+        The V1 schema accepts 1..8 endpoints; retries reuse request_id.
+      security: [{ deviceMtls: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RuntimeTransportIdentityRequest" }
+      responses:
+        "200":
+          description: Effective endpoint set.
+          content: { application/json: { schema: { $ref: "#/components/schemas/RuntimeTransportIdentityResponse" } } }
+        "400": { $ref: "#/components/responses/DeviceBadRequest" }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "409": { $ref: "#/components/responses/DeviceConflict" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
+    delete:
+      tags: [Runtime synchronization]
+      operationId: withdrawRuntimeTransportIdentity
+      summary: Explicitly withdraw all active transport endpoints
+      security: [{ deviceMtls: [] }]
+      responses:
+        "204": { description: Endpoints disabled; no SD-WAN configuration is removed automatically. }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "409": { $ref: "#/components/responses/DeviceConflict" }
         "503": { $ref: "#/components/responses/DeviceUnavailable" }
   /v1/runtime/configuration:
     get:
@@ -1153,7 +1210,7 @@ components:
     PathCandidateSpec:
       type: object
       additionalProperties: false
-      required: [segment_id, peer_id, source_attachment_id, destination_attachment_id, kind, relay_id, endpoint, priority]
+      required: [segment_id, peer_id, source_attachment_id, destination_attachment_id, kind, relay_id, transport_node_id, priority]
       properties:
         segment_id: { $ref: "#/components/schemas/Uuid" }
         peer_id: { $ref: "#/components/schemas/Uuid" }
@@ -1162,7 +1219,7 @@ components:
         kind: { type: string, enum: [DIRECT, RELAY] }
         relay_id:
           oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }]
-        endpoint: { type: string, minLength: 3, maxLength: 255 }
+        transport_node_id: { $ref: "#/components/schemas/Uuid" }
         priority: { type: integer, minimum: 1, maximum: 65535 }
     EgressSpec:
       type: object
@@ -1458,7 +1515,7 @@ components:
     RuntimeConfiguration:
       type: object
       additionalProperties: false
-      required: [schema_version, projection_publication_id, projection_id, segment_id, attachment_id, segment_generation, projection_generation, projection_content_hash, route_signing_key_id, route_signing_public_key, segment_snapshot, site_projection]
+      required: [schema_version, projection_publication_id, projection_id, segment_id, attachment_id, segment_generation, projection_generation, projection_content_hash, route_signing_key_id, route_signing_public_key, grant_verification_keys, segment_snapshot, site_projection, peer_projection_catalog]
       properties:
         schema_version: { type: integer, const: 1 }
         projection_publication_id: { $ref: "#/components/schemas/Uuid" }
@@ -1470,8 +1527,85 @@ components:
         projection_content_hash: { $ref: "#/components/schemas/Sha256Hex" }
         route_signing_key_id: { type: string, minLength: 1, maxLength: 64 }
         route_signing_public_key: { $ref: "#/components/schemas/Sha256Hex" }
+        grant_verification_keys:
+          type: array
+          minItems: 1
+          maxItems: 4
+          items: { $ref: "#/components/schemas/GrantVerificationKey" }
         segment_snapshot: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]+$' }
         site_projection: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]+$' }
+        peer_projection_catalog:
+          type: array
+          maxItems: 4096
+          items: { $ref: "#/components/schemas/PeerProjectionCatalogEntry" }
+    GrantVerificationKey:
+      type: object
+      additionalProperties: false
+      required: [key_id, ed25519_public_key, issuer_id, environment_id]
+      properties:
+        key_id: { type: string, minLength: 1, maxLength: 64 }
+        ed25519_public_key: { $ref: "#/components/schemas/Sha256Hex" }
+        issuer_id: { $ref: "#/components/schemas/Uuid" }
+        environment_id: { $ref: "#/components/schemas/Uuid" }
+    PeerProjectionCatalogEntry:
+      type: object
+      additionalProperties: false
+      required: [projection_id, projection_generation, projection_content_hash, site_projection]
+      properties:
+        projection_id: { $ref: "#/components/schemas/Uuid" }
+        projection_generation: { $ref: "#/components/schemas/PositiveInteger" }
+        projection_content_hash: { $ref: "#/components/schemas/Sha256Hex" }
+        site_projection: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]+$' }
+    RuntimeTransportIdentityRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, request_id, endpoints]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        request_id: { type: string, minLength: 1, maxLength: 120, pattern: '^[A-Za-z0-9_.-]+$' }
+        endpoints:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items:
+            type: object
+            additionalProperties: false
+            required: [endpoint, server_cert_sha256, transport_preset]
+            properties:
+              endpoint: { type: string, minLength: 3, maxLength: 255 }
+              server_cert_sha256: { $ref: "#/components/schemas/Sha256Hex" }
+              transport_preset: { type: string, enum: [current, bbr_v1, aggressive] }
+    RuntimeTransportIdentityResponse:
+      type: object
+      additionalProperties: false
+      required: [node_id, endpoints, replayed]
+      properties:
+        node_id: { $ref: "#/components/schemas/Uuid" }
+        replayed: { type: boolean }
+        endpoints:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [endpoint, server_name]
+            properties:
+              endpoint: { type: string }
+              server_name: { type: string }
+    RuntimeActivationReadiness:
+      type: object
+      additionalProperties: false
+      required: [schema_version, segment_id, ready, candidate_count, ready_candidate_count, missing_transport_count, reason_codes]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        segment_id: { $ref: "#/components/schemas/Uuid" }
+        ready: { type: boolean }
+        candidate_count: { type: integer, minimum: 0, maximum: 4096 }
+        ready_candidate_count: { type: integer, minimum: 0, maximum: 4096 }
+        missing_transport_count: { type: integer, minimum: 0, maximum: 4096 }
+        reason_codes:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [node_offline, service_not_enabled, config_pending] }
     RuntimeConfigurationStatus:
       type: object
       additionalProperties: false
