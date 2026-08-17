@@ -77,10 +77,8 @@ async fn control_snapshot_materializes_empty_route_contract_idempotently() {
     cloud_db::migrate(&pool).await.unwrap();
     let organization_id = Uuid::new_v4();
     let tenant_id = Uuid::new_v4();
-    let pool_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let device_key_id = Uuid::new_v4();
-    let service_node_id = Uuid::new_v4();
     let control_node_id = Uuid::new_v4();
     let site_id = Uuid::new_v4();
     let segment_id = Uuid::new_v4();
@@ -95,13 +93,6 @@ async fn control_snapshot_materializes_empty_route_contract_idempotently() {
         .bind(tenant_id)
         .bind(organization_id)
         .bind(format!("materialize-tenant-{tenant_id}"))
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO node_pools (id, tenant_id, service_class, name, audience) VALUES (?, ?, 'PRIVATE', ?, 'private')")
-        .bind(pool_id)
-        .bind(tenant_id)
-        .bind(format!("materialize-pool-{pool_id}"))
         .execute(&pool)
         .await
         .unwrap();
@@ -121,17 +112,6 @@ async fn control_snapshot_materializes_empty_route_contract_idempotently() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO nodes (id, tenant_id, device_id, device_key_id, node_pool_id, node_id, status) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')")
-        .bind(service_node_id)
-        .bind(tenant_id)
-        .bind(device_id)
-        .bind(device_key_id)
-        .bind(pool_id)
-        .bind(format!("materialize-node-{service_node_id}"))
-        .execute(&pool)
-        .await
-        .unwrap();
-
     let mut resources = vec![
         control_resource(
             tenant_id,
@@ -196,6 +176,13 @@ async fn control_snapshot_materializes_empty_route_contract_idempotently() {
             .unwrap(),
         (0, [0; 32])
     );
+    let materialized_nodes: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE tenant_id = ?")
+            .bind(tenant_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(materialized_nodes, 1);
     let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segment_attachments WHERE tenant_id = ? AND segment_id = ? AND state = 'ACTIVE'")
         .bind(tenant_id)
         .bind(segment_id)
