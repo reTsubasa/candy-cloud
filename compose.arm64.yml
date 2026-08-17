@@ -1,0 +1,243 @@
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-candy_cloud}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+      MYSQL_MIGRATOR_PASSWORD: ${MYSQL_MIGRATOR_PASSWORD:?set MYSQL_MIGRATOR_PASSWORD}
+      MYSQL_API_PASSWORD: ${MYSQL_API_PASSWORD:?set MYSQL_API_PASSWORD}
+      MYSQL_IDENTITY_PASSWORD: ${MYSQL_IDENTITY_PASSWORD:?set MYSQL_IDENTITY_PASSWORD}
+      MYSQL_AUTH_PASSWORD: ${MYSQL_AUTH_PASSWORD:?set MYSQL_AUTH_PASSWORD}
+      MYSQL_WORKER_PASSWORD: ${MYSQL_WORKER_PASSWORD:?set MYSQL_WORKER_PASSWORD}
+    volumes:
+      - candy-cloud-mysql-data:/var/lib/mysql
+      - ./docker/mysql/init-users.sh:/docker-entrypoint-initdb.d/01-users.sh:ro
+    networks: [candy-cloud-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  migrate:
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: docker/rust-service.Dockerfile
+      target: runtime
+      args: { PACKAGE: cloud-db, BINARY: cloud-db-migrate, RUST_TARGET: x86_64-unknown-linux-gnu }
+    environment:
+      DATABASE_URL: mysql://cloud_migrator:${MYSQL_MIGRATOR_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
+    depends_on:
+      mysql: { condition: service_healthy }
+    networks: [candy-cloud-internal]
+  cloud-api:
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: docker/rust-service.Dockerfile
+      target: runtime
+      args: { PACKAGE: cloud-api, BINARY: cloud-api, RUST_TARGET: x86_64-unknown-linux-gnu }
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql://cloud_api:${MYSQL_API_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
+      CLOUD_API_BIND: 0.0.0.0:8080
+      CLOUD_API_AUTH_PUBLIC_KEY_FILE: /run/secrets/cloud_api_auth_public_key
+      CLOUD_API_AUTH_ISSUER: ${CLOUD_API_AUTH_ISSUER:?set CLOUD_API_AUTH_ISSUER}
+      CLOUD_API_AUTH_AUDIENCE: ${CLOUD_API_AUTH_AUDIENCE:?set CLOUD_API_AUTH_AUDIENCE}
+    secrets:
+      - cloud_api_auth_public_key
+    depends_on:
+      mysql: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    networks: [candy-cloud-internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  cloud-identity:
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: docker/rust-service.Dockerfile
+      target: runtime
+      args: { PACKAGE: cloud-identity, BINARY: cloud-identity, RUST_TARGET: x86_64-unknown-linux-gnu }
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql://cloud_identity:${MYSQL_IDENTITY_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
+      CLOUD_IDENTITY_BIND: 0.0.0.0:8082
+      CLOUD_IDENTITY_SIGNING_KEY_FILE: /run/secrets/cloud_identity_signing_key
+      CLOUD_IDENTITY_VERIFICATION_KEY_FILE: /run/secrets/cloud_identity_verification_key
+      CLOUD_IDENTITY_SIGNING_KEY_ID: ${CLOUD_IDENTITY_SIGNING_KEY_ID:-management-1}
+      CLOUD_IDENTITY_ISSUER: ${CLOUD_API_AUTH_ISSUER:?set CLOUD_API_AUTH_ISSUER}
+      CLOUD_IDENTITY_AUDIENCE: ${CLOUD_API_AUTH_AUDIENCE:?set CLOUD_API_AUTH_AUDIENCE}
+      CLOUD_IDENTITY_ACCESS_TTL_SECONDS: ${CLOUD_IDENTITY_ACCESS_TTL_SECONDS:-900}
+      CLOUD_IDENTITY_REFRESH_TTL_SECONDS: ${CLOUD_IDENTITY_REFRESH_TTL_SECONDS:-2592000}
+      CLOUD_IDENTITY_VERIFICATION_TTL_SECONDS: ${CLOUD_IDENTITY_VERIFICATION_TTL_SECONDS:-86400}
+      CLOUD_IDENTITY_RESET_TTL_SECONDS: ${CLOUD_IDENTITY_RESET_TTL_SECONDS:-900}
+      CLOUD_IDENTITY_EMAIL_WEBHOOK_URL: ${CLOUD_IDENTITY_EMAIL_WEBHOOK_URL:-}
+      CLOUD_IDENTITY_EMAIL_WEBHOOK_AUTHORIZATION: ${CLOUD_IDENTITY_EMAIL_WEBHOOK_AUTHORIZATION:-}
+      CLOUD_IDENTITY_ENVIRONMENT: ${CLOUD_ENVIRONMENT:-production}
+      CLOUD_DEV_DEMO_ENABLED: ${CLOUD_DEV_DEMO_ENABLED:-0}
+      CLOUD_DEV_DEMO_EMAIL: ${CLOUD_DEV_DEMO_EMAIL:-demo-owner@candy.local}
+      CLOUD_DEV_DEMO_PASSWORD: ${CLOUD_DEV_DEMO_PASSWORD:-}
+    secrets:
+      - source: cloud_identity_signing_key
+        target: cloud_identity_signing_key
+        mode: 0400
+      - source: cloud_identity_verification_key
+        target: cloud_identity_verification_key
+        mode: 0400
+    depends_on:
+      mysql: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    networks:
+      - candy-cloud-egress
+      - candy-cloud-internal
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8082/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  cloud-auth:
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: docker/rust-service.Dockerfile
+      target: runtime-core
+      args:
+        PACKAGE: cloud-auth
+        BINARY: cloud-auth
+        RUST_TARGET: x86_64-unknown-linux-gnu
+        CORE_MODULE_BUNDLE_SHA256: ${CORE_MODULE_BUNDLE_SHA256:?set CORE_MODULE_BUNDLE_SHA256}
+        CORE_MODULE_VERSION: ${CORE_MODULE_VERSION:?set CORE_MODULE_VERSION}
+        CORE_MODULE_SHA256: ${CORE_MODULE_SHA256:?set CORE_MODULE_SHA256}
+        CORE_MODULE_TARGET: ${CORE_MODULE_TARGET:-x86_64-unknown-linux-gnu}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql://cloud_auth:${MYSQL_AUTH_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
+      CLOUD_AUTH_BIND: 0.0.0.0:8081
+      CLOUD_SIGNING_KEY_FILE: /run/secrets/cloud_signing_key
+      CLOUD_SIGNING_KEY_ID: ${CLOUD_SIGNING_KEY_ID:?set CLOUD_SIGNING_KEY_ID}
+      CLOUD_ISSUER_ID: ${CLOUD_ISSUER_ID:?set CLOUD_ISSUER_ID}
+      CLOUD_ENVIRONMENT_ID: ${CLOUD_ENVIRONMENT_ID:?set CLOUD_ENVIRONMENT_ID}
+      CLOUD_DEVICE_CA_CERT_FILE: /run/secrets/cloud_device_ca_certificate
+      CLOUD_DEVICE_CA_KEY_FILE: /run/secrets/cloud_device_ca_key
+      CLOUD_DEVICE_CA_KEY_ID: ${CLOUD_DEVICE_CA_KEY_ID:-device-ca-1}
+      CLOUD_ENVIRONMENT: ${CLOUD_ENVIRONMENT:-production}
+      CANDY_ROUTE_SIGNING_KEY_ID: ${CANDY_ROUTE_SIGNING_KEY_ID:?set CANDY_ROUTE_SIGNING_KEY_ID}
+      CANDY_ROUTE_SIGNING_PUBLIC_KEY_HEX: ${CANDY_ROUTE_SIGNING_PUBLIC_KEY_HEX:?set CANDY_ROUTE_SIGNING_PUBLIC_KEY_HEX}
+    secrets:
+      - source: cloud_signing_key
+        target: cloud_signing_key
+        mode: 0400
+      - source: cloud_device_ca_certificate
+        target: cloud_device_ca_certificate
+        mode: 0444
+      - source: cloud_device_ca_key
+        target: cloud_device_ca_key
+        mode: 0400
+    depends_on:
+      mysql: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    networks: [candy-cloud-internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  cloud-worker:
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: docker/rust-service.Dockerfile
+      target: runtime-core
+      args:
+        PACKAGE: cloud-worker
+        BINARY: cloud-worker
+        RUST_TARGET: x86_64-unknown-linux-gnu
+        CORE_MODULE_BUNDLE_SHA256: ${CORE_MODULE_BUNDLE_SHA256:?set CORE_MODULE_BUNDLE_SHA256}
+        CORE_MODULE_VERSION: ${CORE_MODULE_VERSION:?set CORE_MODULE_VERSION}
+        CORE_MODULE_SHA256: ${CORE_MODULE_SHA256:?set CORE_MODULE_SHA256}
+        CORE_MODULE_TARGET: ${CORE_MODULE_TARGET:-x86_64-unknown-linux-gnu}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql://cloud_worker:${MYSQL_WORKER_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
+      CANDY_ROUTE_SIGNING_KEY_ID: ${CANDY_ROUTE_SIGNING_KEY_ID:?set CANDY_ROUTE_SIGNING_KEY_ID}
+      CANDY_ROUTE_SIGNING_KEY_HEX: ${CANDY_ROUTE_SIGNING_KEY_HEX:?set CANDY_ROUTE_SIGNING_KEY_HEX}
+    depends_on:
+      mysql: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    networks: [candy-cloud-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+  cloud-web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    restart: unless-stopped
+    volumes:
+      - candy-cloud-web-assets:/srv
+    networks: [candy-cloud-internal]
+    healthcheck:
+      test: ["CMD", "test", "-f", "/srv/index.html"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+  reverse-proxy:
+    image: caddy:2.9-alpine
+    restart: unless-stopped
+    ports: ["${CLOUD_HTTPS_PORT:-443}:443"]
+    volumes:
+      - ./docker/reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - candy-cloud-web-assets:/srv/web:ro
+    depends_on:
+      cloud-api: { condition: service_healthy }
+      cloud-identity: { condition: service_healthy }
+      cloud-auth: { condition: service_healthy }
+      cloud-web: { condition: service_healthy }
+    secrets:
+      - source: cloud_tls_certificate
+        target: cloud_tls_certificate
+        mode: 0444
+      - source: cloud_tls_key
+        target: cloud_tls_key
+        mode: 0400
+      - source: cloud_device_ca_certificate
+        target: cloud_device_ca_certificate
+        mode: 0444
+    networks:
+      - candy-cloud-edge
+      - candy-cloud-internal
+
+volumes:
+  candy-cloud-mysql-data:
+  candy-cloud-web-assets:
+
+networks:
+  candy-cloud-edge:
+  candy-cloud-egress:
+  candy-cloud-internal:
+    internal: true
+
+secrets:
+  cloud_signing_key:
+    file: ${CLOUD_SIGNING_KEY_FILE:-./secrets/cloud-signing.key}
+  cloud_device_ca_certificate:
+    file: ${CLOUD_DEVICE_CA_CERT_FILE:-./secrets/device-ca.pem}
+  cloud_device_ca_key:
+    file: ${CLOUD_DEVICE_CA_KEY_FILE:-./secrets/device-ca.key}
+  cloud_api_auth_public_key:
+    file: ${CLOUD_API_AUTH_PUBLIC_KEY_FILE:?set CLOUD_API_AUTH_PUBLIC_KEY_FILE}
+  cloud_identity_signing_key:
+    file: ${CLOUD_IDENTITY_SIGNING_KEY_FILE:?set CLOUD_IDENTITY_SIGNING_KEY_FILE}
+  cloud_identity_verification_key:
+    file: ${CLOUD_IDENTITY_VERIFICATION_KEY_FILE:?set CLOUD_IDENTITY_VERIFICATION_KEY_FILE}
+  cloud_tls_certificate:
+    file: ${CLOUD_TLS_CERTIFICATE_FILE:?set CLOUD_TLS_CERTIFICATE_FILE}
+  cloud_tls_key:
+    file: ${CLOUD_TLS_KEY_FILE:?set CLOUD_TLS_KEY_FILE}
