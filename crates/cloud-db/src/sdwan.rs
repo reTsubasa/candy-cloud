@@ -834,7 +834,7 @@ impl SdwanRepository {
             .iter()
             .find_map(|resource| {
                 (resource.metadata.id == segment_id)
-                    .then(|| match &resource.resource {
+                    .then_some(match &resource.resource {
                         ResourceSpecV1::Segment(value) => Some((resource.metadata.state, value)),
                         _ => None,
                     })
@@ -894,7 +894,7 @@ impl SdwanRepository {
             };
             let Some(node) = resources.iter().find_map(|candidate| {
                 (candidate.metadata.id == attachment.node_id)
-                    .then(|| match &candidate.resource {
+                    .then_some(match &candidate.resource {
                         ResourceSpecV1::Node(value) => Some(value),
                         _ => None,
                     })
