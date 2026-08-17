@@ -161,3 +161,30 @@ async fn permanent_failure_is_terminal_without_marking_success() {
         matches!(&state.failures[0].1, JobFailure::Permanent { code } if code == "PREFIX_OVERLAP")
     );
 }
+
+#[tokio::test]
+async fn publisher_error_text_is_normalized_before_persistence() {
+    let queue = queue_with_job();
+    let publisher = FakePublisher(Err(PublicationFailure::Permanent {
+        code: "route input: active Attachment has no signed path candidates / unsafe detail".into(),
+    }));
+    let worker = GenerationWorker::new(
+        queue.clone(),
+        publisher,
+        "worker-a".into(),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+
+    assert_eq!(
+        worker.run_once(Utc::now()).await.unwrap(),
+        RunOutcome::PermanentFailure
+    );
+    let state = queue.0.lock().unwrap();
+    assert!(matches!(
+        &state.failures[0].1,
+        JobFailure::Permanent { code }
+            if code == "ROUTE_INPUT_ACTIVE_ATTACHMENT_HAS_NO_SIGNED_PATH_CANDIDATES_UNSAFE_DETAIL"
+                && code.len() <= 80
+    ));
+}

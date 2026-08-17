@@ -35,6 +35,26 @@ pub struct ControlRoutePublisher {
     pub signer: RouteSigner,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum InputReadinessError {
+    #[error("active attachment has no path candidates")]
+    PathCandidates,
+    #[error("path candidate has no active transport identity")]
+    TransportIdentity,
+    #[error("attachment pair has no peer policy")]
+    PeerPolicy,
+}
+
+impl InputReadinessError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::PathCandidates => "ROUTE_INPUT_WAITING_FOR_PATHS",
+            Self::TransportIdentity => "ROUTE_INPUT_WAITING_FOR_TRANSPORT",
+            Self::PeerPolicy => "ROUTE_INPUT_WAITING_FOR_PEER_POLICY",
+        }
+    }
+}
+
 impl ControlRoutePublisher {
     pub fn new(
         routes: SdwanRepository,
@@ -170,7 +190,7 @@ impl ControlRoutePublisher {
             let transports = snapshot
                 .transport_bindings
                 .get(&resource.metadata.id)
-                .context("path candidate has no active Candy QUIC/UDP transport identity")?;
+                .ok_or(InputReadinessError::TransportIdentity)?;
             let kind = match value.kind {
                 PathCandidateKindV1::Direct => PeerPathKindV1::Direct,
                 PathCandidateKindV1::Relay => PeerPathKindV1::Relay,
@@ -257,7 +277,7 @@ impl ControlRoutePublisher {
                     let b = SiteId(peer.site_b_id.into_bytes());
                     (a == site_a && b == site_b) || (a == site_b && b == site_a)
                 })
-                .context("Attachment pair has no Peer policy")?;
+                .ok_or(InputReadinessError::PeerPolicy)?;
             Ok(match peer.1.path_policy {
                 PeerPathPolicyV1::DirectOnly => PathSelectionPolicyV1::DirectOnly,
                 PeerPathPolicyV1::DirectPreferred => PathSelectionPolicyV1::DirectPreferred,
@@ -285,7 +305,7 @@ impl ControlRoutePublisher {
                 }
             }
             if peer_paths.is_empty() {
-                bail!("active Attachment has no signed path candidates")
+                return Err(InputReadinessError::PathCandidates.into());
             }
             peer_paths.sort_unstable_by_key(|candidate| {
                 (
@@ -430,10 +450,7 @@ fn validate_direct_dialers(
             }
         }
     }
-    if direct_peers
-        .values()
-        .any(|(_, has_dialer)| !has_dialer)
-    {
+    if direct_peers.values().any(|(_, has_dialer)| !has_dialer) {
         bail!("direct peer must use one transport Node with exactly one outbound side");
     }
     Ok(())
@@ -497,18 +514,41 @@ impl SegmentGenerationPublisher for ControlRoutePublisher {
 }
 
 fn classify_publish_error(error: SdwanError) -> PublicationFailure {
+    let code = match &error {
+        SdwanError::InvalidScope => "ROUTE_DB_INVALID_SCOPE",
+        SdwanError::ScopeMismatch => "ROUTE_DB_SCOPE_MISMATCH",
+        SdwanError::InvalidPrefix => "ROUTE_DB_INVALID_PREFIX",
+        SdwanError::OverlappingPrefix => "ROUTE_DB_OVERLAPPING_PREFIX",
+        SdwanError::DuplicateRouterAddress => "ROUTE_DB_DUPLICATE_ROUTER_ADDRESS",
+        SdwanError::PrincipalMismatch => "ROUTE_DB_PRINCIPAL_MISMATCH",
+        SdwanError::UnsignedObject => "ROUTE_DB_UNSIGNED_OBJECT",
+        SdwanError::GenerationGap => "ROUTE_DB_GENERATION_GAP",
+        SdwanError::MissingProjection => "ROUTE_DB_MISSING_PROJECTION",
+        SdwanError::DuplicateProjection => "ROUTE_DB_DUPLICATE_PROJECTION",
+        SdwanError::DivergentReplay => "ROUTE_DB_DIVERGENT_REPLAY",
+        SdwanError::InvalidContentHash => "ROUTE_DB_INVALID_CONTENT_HASH",
+        SdwanError::SegmentNotFound => "ROUTE_DB_SEGMENT_NOT_FOUND",
+        SdwanError::Database(_) => "ROUTE_DB_DATABASE",
+    };
     match error {
         SdwanError::Database(_) => PublicationFailure::Retryable {
-            code: format!("ROUTE_DB_{error}"),
+            code: code.into(),
             retry_after: std::time::Duration::from_secs(5),
         },
-        _ => PublicationFailure::Permanent {
-            code: format!("ROUTE_DB_{error}"),
-        },
+        _ => PublicationFailure::Permanent { code: code.into() },
     }
 }
 
 fn classify_input_error(error: anyhow::Error) -> PublicationFailure {
+    if let Some(readiness) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<InputReadinessError>())
+    {
+        return PublicationFailure::Retryable {
+            code: readiness.code().into(),
+            retry_after: std::time::Duration::from_secs(5),
+        };
+    }
     let retryable = error.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<SdwanError>(),
@@ -517,12 +557,12 @@ fn classify_input_error(error: anyhow::Error) -> PublicationFailure {
     });
     if retryable {
         PublicationFailure::Retryable {
-            code: format!("ROUTE_INPUT_{error}"),
+            code: "ROUTE_INPUT_DATABASE".into(),
             retry_after: std::time::Duration::from_secs(5),
         }
     } else {
         PublicationFailure::Permanent {
-            code: format!("ROUTE_INPUT_{error}"),
+            code: "ROUTE_INPUT_INVALID_TOPOLOGY".into(),
         }
     }
 }
@@ -597,7 +637,9 @@ mod tests {
             direct_path(peer, attachment_a, attachment_b, node_b),
             direct_path(peer, attachment_b, attachment_a, node_a),
         ];
-        assert!(validate_direct_dialers(&duplicate_full_duplex, &attachment_nodes, &nodes).is_err());
+        assert!(
+            validate_direct_dialers(&duplicate_full_duplex, &attachment_nodes, &nodes).is_err()
+        );
     }
 
     #[test]
@@ -620,5 +662,25 @@ mod tests {
             &nodes,
         )
         .is_err());
+    }
+
+    #[test]
+    fn incomplete_control_topology_is_retryable_with_a_persistable_code() {
+        let failure = classify_input_error(InputReadinessError::PathCandidates.into());
+        assert!(matches!(
+            failure,
+            PublicationFailure::Retryable { code, retry_after }
+                if code == "ROUTE_INPUT_WAITING_FOR_PATHS"
+                    && retry_after == std::time::Duration::from_secs(5)
+        ));
+    }
+
+    #[test]
+    fn database_publication_failures_use_a_stable_error_code() {
+        let failure = classify_publish_error(SdwanError::Database("private detail".into()));
+        assert!(matches!(
+            failure,
+            PublicationFailure::Retryable { code, .. } if code == "ROUTE_DB_DATABASE"
+        ));
     }
 }

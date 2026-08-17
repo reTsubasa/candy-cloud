@@ -172,6 +172,36 @@ pub struct GenerationWorker<Q, P> {
     lease_ttl: Duration,
 }
 
+fn normalize_failure_code(code: &str) -> String {
+    const MAX_LEN: usize = 80;
+    let mut normalized = String::with_capacity(code.len().min(MAX_LEN));
+    let mut previous_separator = false;
+    for byte in code.bytes() {
+        let value = if byte.is_ascii_alphanumeric() {
+            previous_separator = false;
+            byte.to_ascii_uppercase()
+        } else {
+            if previous_separator {
+                continue;
+            }
+            previous_separator = true;
+            b'_'
+        };
+        if normalized.len() == MAX_LEN {
+            break;
+        }
+        normalized.push(char::from(value));
+    }
+    while normalized.ends_with('_') {
+        normalized.pop();
+    }
+    if normalized.is_empty() {
+        "PUBLICATION_FAILURE".into()
+    } else {
+        normalized
+    }
+}
+
 impl<Q, P> GenerationWorker<Q, P>
 where
     Q: GenerationJobQueue,
@@ -218,13 +248,26 @@ where
                     + chrono::Duration::from_std(retry_after)
                         .map_err(|_| WorkerLoopError::InvalidRetryDelay)?;
                 self.queue
-                    .fail(&job, Utc::now(), JobFailure::Retry { code, retry_at })
+                    .fail(
+                        &job,
+                        Utc::now(),
+                        JobFailure::Retry {
+                            code: normalize_failure_code(&code),
+                            retry_at,
+                        },
+                    )
                     .await?;
                 Ok(RunOutcome::RetryScheduled)
             }
             Err(PublicationFailure::Permanent { code }) => {
                 self.queue
-                    .fail(&job, Utc::now(), JobFailure::Permanent { code })
+                    .fail(
+                        &job,
+                        Utc::now(),
+                        JobFailure::Permanent {
+                            code: normalize_failure_code(&code),
+                        },
+                    )
                     .await?;
                 Ok(RunOutcome::PermanentFailure)
             }
