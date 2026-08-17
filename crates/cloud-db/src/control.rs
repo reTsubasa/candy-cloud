@@ -364,6 +364,12 @@ impl ControlRepository {
             .into_iter()
             .map(|row| decode_resource(row.try_get("document_json")?))
             .collect::<Result<Vec<_>, _>>()?;
+        transaction.commit().await?;
+        crate::sdwan::SdwanRepository::new(self.pool.clone())
+            .ensure_control_topology(tenant_id, segment_id, &resources)
+            .await
+            .map_err(|error| ControlStoreError::Database(error.to_string()))?;
+        let mut transaction = self.pool.begin().await?;
         let transport_bindings =
             load_transport_bindings(&mut transaction, tenant_id, &resources).await?;
         transaction.commit().await?;
