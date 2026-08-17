@@ -52,6 +52,8 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 project_name="candy-cloud-smoke-$$"
+export CANDY_CLOUD_MYSQL_VOLUME="${project_name}_candy-cloud-mysql-data"
+export CANDY_CLOUD_WEB_VOLUME="${project_name}_candy-cloud-web-assets"
 compose() { docker compose --project-name "$project_name" --env-file .env.example "$@"; }
 cleanup() {
   status=$?

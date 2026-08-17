@@ -13,6 +13,9 @@ for required in \
 	'.architecture == "arm64"' \
 	'docker image inspect "$ref"' \
 	'compose.arm64.release.yml' \
+	'core_version=$(jq -r' \
+	'CANDY_CLOUD_REVISION: $revision' \
+	'CANDY_CORE_VERSION: $core_version' \
 	'chown 65532:65532' \
 	'chmod 0400' \
 	'compose run --rm migrate' \

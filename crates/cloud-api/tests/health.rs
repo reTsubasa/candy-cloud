@@ -37,3 +37,23 @@ async fn readiness_fails_closed_without_database_configuration() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+#[tokio::test]
+async fn version_is_available_without_management_authentication() {
+    let response = cloud_api::app()
+        .oneshot(
+            Request::builder()
+                .uri("/version")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let version: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(version["schema_version"], 1);
+    assert_eq!(version["cloud_version"], env!("CARGO_PKG_VERSION"));
+    assert!(version["cloud_revision"].is_string());
+    assert!(version["core_version"].is_string());
+}

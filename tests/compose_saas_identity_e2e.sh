@@ -21,6 +21,8 @@ secrets="$work/secrets"
 mkdir -m 0700 "$secrets"
 project="candy-cloud-saas-e2e-$$"
 export COMPOSE_PARALLEL_LIMIT=${COMPOSE_PARALLEL_LIMIT:-2}
+export CANDY_CLOUD_MYSQL_VOLUME="${project}_candy-cloud-mysql-data"
+export CANDY_CLOUD_WEB_VOLUME="${project}_candy-cloud-web-assets"
 available_port() {
   python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
 }

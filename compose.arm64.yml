@@ -42,6 +42,8 @@ services:
     environment:
       DATABASE_URL: mysql://cloud_api:${MYSQL_API_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-candy_cloud}
       CLOUD_API_BIND: 0.0.0.0:8080
+      CANDY_CLOUD_REVISION: ${CANDY_CLOUD_REVISION:-development}
+      CANDY_CORE_VERSION: ${CORE_MODULE_VERSION:?set CORE_MODULE_VERSION}
       CLOUD_API_AUTH_PUBLIC_KEY_FILE: /run/secrets/cloud_api_auth_public_key
       CLOUD_API_AUTH_ISSUER: ${CLOUD_API_AUTH_ISSUER:?set CLOUD_API_AUTH_ISSUER}
       CLOUD_API_AUTH_AUDIENCE: ${CLOUD_API_AUTH_AUDIENCE:?set CLOUD_API_AUTH_AUDIENCE}
@@ -216,7 +218,9 @@ services:
 
 volumes:
   candy-cloud-mysql-data:
+    name: ${CANDY_CLOUD_MYSQL_VOLUME:-candy-cloud_mysql-data}
   candy-cloud-web-assets:
+    name: ${CANDY_CLOUD_WEB_VOLUME:-candy-cloud_web-assets}
 
 networks:
   candy-cloud-edge:

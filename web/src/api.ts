@@ -16,6 +16,7 @@ import type {
   EnrollmentActivationSecret,
   RuntimeActivationReadiness,
   RuntimeConfigurationStatusResponse,
+  CloudVersionInfo,
 } from './types';
 
 export class CloudApiError extends Error {
@@ -26,6 +27,18 @@ export class CloudApiError extends Error {
   ) {
     super(message);
   }
+}
+
+export async function fetchCloudVersion(): Promise<CloudVersionInfo> {
+  const response = await fetch('/api/version', {
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) throw await responseError(response);
+  if (!(response.headers.get('content-type') ?? '').includes('application/json')) {
+    throw new CloudApiError('无法读取产品版本信息', response.status, 'INVALID_RESPONSE_FORMAT');
+  }
+  return response.json() as Promise<CloudVersionInfo>;
 }
 
 async function identityRequest<T>(path: string, init: RequestInit): Promise<T> {

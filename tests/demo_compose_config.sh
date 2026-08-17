@@ -24,6 +24,7 @@ MYSQL_AUTH_PASSWORD=test \
 MYSQL_WORKER_PASSWORD=test \
 CANDY_ROUTE_SIGNING_KEY_ID=test-route \
 CANDY_ROUTE_SIGNING_KEY_HEX=0000000000000000000000000000000000000000000000000000000000000001 \
+CANDY_ROUTE_SIGNING_PUBLIC_KEY_HEX=8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c \
 CORE_MODULE_VERSION=0.3.10 \
 CORE_MODULE_BUNDLE_SHA256=b41806ff17359a9ec8151deb61b206403ec01b14aaffd8f7d456111ab0cc042d \
 CORE_MODULE_SHA256=54c1e6a1f61ef0b28208d5dec13ce7b1351922478987b5eac3ac9a06f183c478 \
@@ -50,6 +51,7 @@ MYSQL_AUTH_PASSWORD=test \
 MYSQL_WORKER_PASSWORD=test \
 CANDY_ROUTE_SIGNING_KEY_ID=test-route \
 CANDY_ROUTE_SIGNING_KEY_HEX=0000000000000000000000000000000000000000000000000000000000000001 \
+CANDY_ROUTE_SIGNING_PUBLIC_KEY_HEX=8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c \
 CORE_MODULE_VERSION=0.3.10 \
 CORE_MODULE_BUNDLE_SHA256=b41806ff17359a9ec8151deb61b206403ec01b14aaffd8f7d456111ab0cc042d \
 CORE_MODULE_SHA256=54c1e6a1f61ef0b28208d5dec13ce7b1351922478987b5eac3ac9a06f183c478 \
@@ -78,5 +80,8 @@ grep -F 'published: "8088"' "$work/rendered.yml" >/dev/null
 grep -F 'published: "8443"' "$work/rendered-tls.yml" >/dev/null
 grep -F 'published: "8088"' "$work/rendered-tls.yml" >/dev/null
 grep -F 'target: /etc/caddy/Caddyfile' "$work/rendered-tls.yml" >/dev/null
+grep -F 'name: candy-cloud_mysql-data' "$work/rendered.yml" >/dev/null
+grep -F 'name: candy-cloud_web-assets' "$work/rendered.yml" >/dev/null
+grep -F 'CANDY_CORE_VERSION: 0.3.10' "$work/rendered.yml" >/dev/null
 
 echo 'demo_compose_config: ok'

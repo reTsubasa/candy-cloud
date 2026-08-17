@@ -11,11 +11,12 @@ import {
   verifyAccountEmail,
 } from '../api';
 import { isSessionExpired, saveIdentitySession } from '../session';
-import type { Session } from '../types';
+import type { CloudVersionInfo, Session } from '../types';
 
 type Props = {
   onConnect: (session: Session) => void;
   loading?: boolean;
+  productVersion?: CloudVersionInfo | null;
 };
 type Mode = 'login' | 'register' | 'forgot' | 'reset' | 'resend' | 'invited';
 
@@ -23,7 +24,7 @@ function queryToken(name: string): string | null {
   return new URLSearchParams(window.location.search).get(name);
 }
 
-export function SessionGate({ onConnect, loading = false }: Props) {
+export function SessionGate({ onConnect, loading = false, productVersion }: Props) {
   const [mode, setMode] = useState<Mode>(() => queryToken('reset_password') ? 'reset' : queryToken('accept_invitation') ? 'invited' : 'login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -139,7 +140,7 @@ export function SessionGate({ onConnect, loading = false }: Props) {
         </Space>
         <Space className="session-footnote" size={6}><span className="secure-dot" /><Typography.Text type="secondary">凭据仅保留在 sessionStorage</Typography.Text></Space>
       </section>
-      <aside className="session-context" aria-label="Candy Cloud 控制面能力"><div className="session-context-head"><Tag color="arcoblue">CLOUD 0.1</Tag><Typography.Title heading={2}>站点、路径与出口，统一编排。</Typography.Title><Typography.Paragraph>Cloud 只管理控制意图与签名投影，不进入客户数据面转发路径。</Typography.Paragraph></div><div className="session-capabilities"><div><IconBranch /><strong>多站点互联</strong><span>全双工 TUN 与站点网段管理</span></div><div><IconThunderbolt /><strong>路径与出口</strong><span>直连、Relay 与远端 Candy 出口</span></div><div><IconSafe /><strong>签名同步</strong><span>mTLS 身份、ETag 与原子应用</span></div></div><div className="session-core-line"><IconCloud /><span>Candy Core 0.3.10 · Wire 0.3</span></div></aside>
+      <aside className="session-context" aria-label="Candy Cloud 控制面能力"><div className="session-context-head"><Tag color="arcoblue">CLOUD {productVersion?.cloud_version ?? '—'}</Tag><Typography.Title heading={2}>站点、路径与出口，统一编排。</Typography.Title><Typography.Paragraph>Cloud 只管理控制意图与签名投影，不进入客户数据面转发路径。</Typography.Paragraph></div><div className="session-capabilities"><div><IconBranch /><strong>多站点互联</strong><span>全双工 TUN 与站点网段管理</span></div><div><IconThunderbolt /><strong>路径与出口</strong><span>直连、Relay 与远端 Candy 出口</span></div><div><IconSafe /><strong>签名同步</strong><span>mTLS 身份、ETag 与原子应用</span></div></div><div className="session-core-line"><IconCloud /><span>Candy Core {productVersion?.core_version ?? '—'} · Wire 0.3</span></div></aside>
     </main>
   );
 }

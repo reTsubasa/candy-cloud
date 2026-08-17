@@ -83,6 +83,7 @@ fn app_with_state(state: Arc<ManagementState>) -> Router {
 
 fn health_routes() -> Router<Arc<ManagementState>> {
     Router::new()
+        .route("/version", get(health::version))
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
         .route("/health/degraded", get(health::degraded))

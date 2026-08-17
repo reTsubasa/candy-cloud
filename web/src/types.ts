@@ -79,6 +79,13 @@ export type EndpointHealth = {
   checkedAt: number | null;
 };
 
+export type CloudVersionInfo = {
+  schema_version: number;
+  cloud_version: string;
+  cloud_revision: string;
+  core_version: string;
+};
+
 export type ResourceMetadata = {
   schema_version: number;
   id: string;

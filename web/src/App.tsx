@@ -18,9 +18,9 @@ import {
   IconUser,
   IconWifi,
 } from '@arco-design/web-react/icon';
-import { acceptOrganizationInvitation, listAccountMemberships, logoutAccount, refreshStoredSession, switchAccountContext } from './api';
+import { acceptOrganizationInvitation, fetchCloudVersion, listAccountMemberships, logoutAccount, refreshStoredSession, switchAccountContext } from './api';
 import { clearSession, isSessionExpiringSoon, loadRefreshToken, loadSession, saveIdentitySession } from './session';
-import type { IdentityMembership, ResourceDefinition, Session } from './types';
+import type { CloudVersionInfo, IdentityMembership, ResourceDefinition, Session } from './types';
 import { resourceDefinitions, pathDefinition } from './resource-definitions';
 import { SessionGate } from './components/SessionGate';
 import { Overview } from './components/Overview';
@@ -59,9 +59,16 @@ export default function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [createRequest, setCreateRequest] = useState<{ key: string; nonce: number }>({ key: '', nonce: 0 });
   const [memberships, setMemberships] = useState<IdentityMembership[]>([]);
+  const [productVersion, setProductVersion] = useState<CloudVersionInfo | null>(null);
 
   const selectedDefinition = useMemo(() => pageDefinition(selected), [selected]);
   const connect = useCallback((next: Session) => { setSession(next); }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchCloudVersion().then((version) => { if (!cancelled) setProductVersion(version); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -109,7 +116,7 @@ export default function App() {
   }, [session]);
 
   if (restoring || !session) {
-    return <SessionGate loading={restoring} onConnect={connect} />;
+    return <SessionGate loading={restoring} onConnect={connect} productVersion={productVersion} />;
   }
 
   const clearLocalSession = () => {
@@ -197,7 +204,7 @@ export default function App() {
           {selected === 'access' && <OrganizationAccess session={session} onSessionInvalidated={clearLocalSession} />}
         </Layout.Content>
         <footer className="workspace-footer">
-          <Space size={6}><span className="secure-dot" /><Typography.Text type="secondary">Cloud API · same-origin /api</Typography.Text></Space>
+          <Space size={6}><span className="secure-dot" /><Typography.Text type="secondary">Candy Cloud {productVersion?.cloud_version ?? '—'}{productVersion?.cloud_revision && productVersion.cloud_revision !== 'development' ? ` · ${productVersion.cloud_revision.slice(0, 12)}` : ''} · Core {productVersion?.core_version ?? '—'}</Typography.Text></Space>
         </footer>
       </Layout>
     </Layout>

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createNodeJoinCode, createResource, fetchHealth, fetchRuntimeConfigurationStatuses, listAccountSessions, listResources, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
+import { createNodeJoinCode, createResource, fetchCloudVersion, fetchHealth, fetchRuntimeConfigurationStatuses, listAccountSessions, listResources, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
 import { saveIdentitySession } from './session';
 
 describe('same-origin Cloud API client', () => {
@@ -46,6 +46,13 @@ describe('same-origin Cloud API client', () => {
     const state = await fetchHealth('ready');
     expect(state.status).toBe(503);
     expect(state.text).toBe('database schema unavailable');
+  });
+
+  it('reads public product versions from the Cloud API', async () => {
+    const body = { schema_version: 1, cloud_version: '0.1.0', cloud_revision: 'abc123', core_version: '0.3.11' };
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await expect(fetchCloudVersion()).resolves.toEqual(body);
+    expect(fetchMock).toHaveBeenCalledWith('/api/version', expect.objectContaining({ credentials: 'same-origin' }));
   });
 
   it('turns a non-JSON management response into a user-facing service error', async () => {
