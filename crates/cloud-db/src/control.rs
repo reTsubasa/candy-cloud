@@ -1620,6 +1620,19 @@ impl GenerationJobRepository {
         Ok(Some(job))
     }
 
+    /// Requeue jobs that were permanently stopped by the pre-materialization
+    /// publisher. The route publisher now creates the normalized contract
+    /// transactionally, so this exact historical error is recoverable after an
+    /// upgrade. Other permanent failures remain terminal by design.
+    pub async fn recover_route_input_head_failures(&self) -> Result<u64, ControlStoreError> {
+        let result = sqlx::query(
+            "UPDATE segment_generation_jobs SET state = 'RETRY', lease_owner = NULL, lease_until = NULL, next_attempt_at = CURRENT_TIMESTAMP(6), last_error_code = 'ROUTE_RETRY_TOPOLOGY_MATERIALIZATION' WHERE state = 'PERMANENT_FAILURE' AND last_error_code = 'ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD'",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn renew(
         &self,
         job: &GenerationJob,

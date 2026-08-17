@@ -22,6 +22,15 @@ async fn main() -> anyhow::Result<()> {
     let owner_id = std::env::var("CLOUD_WORKER_ID")
         .unwrap_or_else(|_| format!("cloud-worker-{}", uuid::Uuid::now_v7()));
     let repository = cloud_db::control::GenerationJobRepository::new(pool.clone());
+    let recovered = repository.recover_route_input_head_failures().await?;
+    if recovered > 0 {
+        tracing::warn!(
+            event = "route_jobs_recovered",
+            job_count = recovered,
+            reason = "topology_materialization_available",
+            "requeued route jobs that are recoverable after the Cloud upgrade"
+        );
+    }
     let key_id = std::env::var("CANDY_ROUTE_SIGNING_KEY_ID")
         .context("CANDY_ROUTE_SIGNING_KEY_ID is required")?;
     let key_hex = std::env::var("CANDY_ROUTE_SIGNING_KEY_HEX")
