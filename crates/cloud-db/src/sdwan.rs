@@ -859,13 +859,49 @@ impl SdwanRepository {
             }
         }
 
-        let hub_pool_id: Uuid = sqlx::query_scalar(
-            "SELECT node_pool_id FROM nodes WHERE tenant_id = ? AND status IN ('ACTIVE','PENDING') ORDER BY created_at, id LIMIT 1",
+        let hub_pool_id: Uuid = if let Some(pool_id) = sqlx::query_scalar(
+            "SELECT id FROM node_pools WHERE tenant_id = ? AND status = 'ACTIVE' ORDER BY created_at, id LIMIT 1",
         )
         .bind(tenant_id)
         .fetch_optional(&mut *transaction)
         .await?
-        .ok_or(SdwanError::PrincipalMismatch)?;
+        {
+            pool_id
+        } else {
+            let pool_id = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO node_pools (id, tenant_id, service_class, name, audience, status) VALUES (?, ?, 'PRIVATE', ?, 'tenant-private', 'ACTIVE')",
+            )
+            .bind(pool_id)
+            .bind(tenant_id)
+            .bind(format!("cloud-private-{tenant_id}"))
+            .execute(&mut *transaction)
+            .await?;
+            pool_id
+        };
+
+        for resource in resources {
+            let ResourceSpecV1::Node(node) = &resource.resource else {
+                continue;
+            };
+            let state = match resource.metadata.state {
+                ResourceState::Active => "ACTIVE",
+                ResourceState::Disabled => "DRAINING",
+                ResourceState::Deleted => "REVOKED",
+            };
+            sqlx::query(
+                "INSERT INTO nodes (id, tenant_id, node_pool_id, node_id, device_id, device_key_id, status) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE tenant_id = VALUES(tenant_id), node_pool_id = VALUES(node_pool_id), node_id = VALUES(node_id), device_id = VALUES(device_id), device_key_id = VALUES(device_key_id), status = VALUES(status)",
+            )
+            .bind(resource.metadata.id)
+            .bind(tenant_id)
+            .bind(hub_pool_id)
+            .bind(resource.metadata.id.to_string())
+            .bind(node.device_id)
+            .bind(node.device_key_id)
+            .bind(state)
+            .execute(&mut *transaction)
+            .await?;
+        }
 
         let state = route_state(segment.0);
         sqlx::query(
