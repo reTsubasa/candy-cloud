@@ -484,6 +484,23 @@ paths:
         "403": { $ref: "#/components/responses/ManagementForbidden" }
         "404": { $ref: "#/components/responses/ManagementNotFound" }
         "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/tenants/{tenant_id}/runtime-configuration-status:
+    get:
+      tags: [SD-WAN management]
+      operationId: listRuntimeConfigurationStatus
+      summary: List the latest persisted Runtime activation result for each device
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: Bounded tenant-scoped Runtime activation status inventory.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeConfigurationStatusInventory" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
   /v1/tenants/{tenant_id}/{collection}/{id}:
     parameters:
       - $ref: "#/components/parameters/TenantId"
@@ -907,7 +924,7 @@ components:
       schema: { type: string, pattern: '^"[1-9][0-9]*"$' }
       example: '"7"'
     ConfigurationETag:
-      description: Strong SHA-256 ETag of the exact signed envelope bytes.
+      description: Strong SHA-256 ETag covering all signed envelopes and route/Grant verification trust material.
       schema: { type: string, pattern: '^"sha256-[0-9a-f]{64}"$' }
       example: '"sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"'
   schemas:
@@ -1530,7 +1547,7 @@ components:
         grant_verification_keys:
           type: array
           minItems: 1
-          maxItems: 4
+          maxItems: 8
           items: { $ref: "#/components/schemas/GrantVerificationKey" }
         segment_snapshot: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]+$' }
         site_projection: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]+$' }
@@ -1615,6 +1632,28 @@ components:
         projection_content_hash: { $ref: "#/components/schemas/Sha256Hex" }
         state: { type: string, enum: [active, rejected] }
         error_code: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }
+    RuntimeConfigurationStatusInventory:
+      type: object
+      additionalProperties: false
+      required: [schema_version, items]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        items:
+          type: array
+          maxItems: 4096
+          items: { $ref: "#/components/schemas/RuntimeConfigurationStatusItem" }
+    RuntimeConfigurationStatusItem:
+      type: object
+      additionalProperties: false
+      required: [device_id, device_key_id, projection_publication_id, state, error_code, reported_at, current]
+      properties:
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        device_key_id: { $ref: "#/components/schemas/Uuid" }
+        projection_publication_id: { $ref: "#/components/schemas/Uuid" }
+        state: { type: string, enum: [active, rejected] }
+        error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }, { type: "null" }] }
+        reported_at: { type: string, format: date-time }
+        current: { type: boolean, description: True only when this report names the device's current Cloud projection. }
     DeviceProblem:
       type: object
       additionalProperties: false

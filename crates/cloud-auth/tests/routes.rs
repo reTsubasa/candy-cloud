@@ -472,18 +472,19 @@ async fn runtime_transport_identity_accepts_dual_stack_and_explicit_withdrawal()
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(response_body["node_id"], actor.device_id().to_string());
     assert_eq!(response_body["endpoints"].as_array().unwrap().len(), 2);
-    let publications = service.transport_publications.lock().unwrap();
-    assert_eq!(publications.len(), 1);
-    assert_eq!(publications[0].actor, actor);
-    assert_eq!(
-        publications[0].endpoints[0].endpoint.to_string(),
-        "203.0.113.9:4433"
-    );
-    assert_eq!(
-        publications[0].endpoints[1].endpoint.to_string(),
-        "[2001:db8::9]:4433"
-    );
-    drop(publications);
+    {
+        let publications = service.transport_publications.lock().unwrap();
+        assert_eq!(publications.len(), 1);
+        assert_eq!(publications[0].actor, actor);
+        assert_eq!(
+            publications[0].endpoints[0].endpoint.to_string(),
+            "203.0.113.9:4433"
+        );
+        assert_eq!(
+            publications[0].endpoints[1].endpoint.to_string(),
+            "[2001:db8::9]:4433"
+        );
+    }
 
     let response = app
         .oneshot(

@@ -15,6 +15,7 @@ import type {
   EnrollmentActivation,
   EnrollmentActivationSecret,
   RuntimeActivationReadiness,
+  RuntimeConfigurationStatusResponse,
 } from './types';
 
 export class CloudApiError extends Error {
@@ -265,6 +266,13 @@ export function fetchRuntimeActivationReadiness(
     `/v1/tenants/${encodeURIComponent(tenantId)}/runtime-activation-readiness?segment_id=${encodeURIComponent(segmentId)}`,
     token,
   );
+}
+
+export function fetchRuntimeConfigurationStatuses(
+  token: string,
+  tenantId: string,
+): Promise<RuntimeConfigurationStatusResponse> {
+  return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/runtime-configuration-status`, token);
 }
 
 export function getResource(token: string, tenantId: string, collection: string, id: string): Promise<ControlResource> {

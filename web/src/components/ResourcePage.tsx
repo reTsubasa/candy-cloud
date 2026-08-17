@@ -14,8 +14,8 @@ import {
   Typography,
 } from '@arco-design/web-react';
 import { IconDelete, IconEdit, IconPlus, IconRefresh, IconSafe, IconSearch } from '@arco-design/web-react/icon';
-import { deleteResource, listResources } from '../api';
-import type { ControlResource, ResourceDefinition, Session } from '../types';
+import { deleteResource, fetchRuntimeConfigurationStatuses, listResources } from '../api';
+import type { ControlResource, ResourceDefinition, RuntimeConfigurationStatus, Session } from '../types';
 import { ResourceEditor } from './ResourceEditor';
 
 type Props = {
@@ -106,6 +106,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ControlResource | null>(null);
   const [relatedNames, setRelatedNames] = useState<Record<string, string>>({});
+  const [runtimeStatuses, setRuntimeStatuses] = useState<Record<string, RuntimeConfigurationStatus>>({});
   const tenantId = session.claims.tenant_id;
 
   const load = useCallback(async () => {
@@ -117,15 +118,23 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
     setLoading(true);
     setError(null);
     try {
-      const response = await listResources(session.token, tenantId, definition.collection);
+      const [response, statuses] = await Promise.all([
+        listResources(session.token, tenantId, definition.collection),
+        definition.kind === 'NODE'
+          ? fetchRuntimeConfigurationStatuses(session.token, tenantId)
+          : Promise.resolve({ schema_version: 1, items: [] }),
+      ]);
       setItems(response.items);
       setNextCursor(response.next_cursor);
+      setRuntimeStatuses(Object.fromEntries(
+        statuses.items.map((status) => [`${status.device_id}:${status.device_key_id}`, status]),
+      ));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '资源加载失败');
     } finally {
       setLoading(false);
     }
-  }, [definition.collection, session.token, tenantId]);
+  }, [definition.collection, definition.kind, session.token, tenantId]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
@@ -170,6 +179,21 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
     },
     { title: '范围 / 类型', render: (_: unknown, record: ControlResource) => <Typography.Text>{resourceScope(record)}</Typography.Text> },
     { title: '状态', width: 104, render: (_: unknown, record: ControlResource) => <Tag color={stateColor(record.metadata.state)}>{label(record.metadata.state)}</Tag> },
+    ...(definition.kind === 'NODE' ? [{
+      title: 'SD-WAN',
+      width: 136,
+      render: (_: unknown, record: ControlResource) => {
+        const deviceId = String(record.resource.spec.device_id ?? '');
+        const deviceKeyId = String(record.resource.spec.device_key_id ?? '');
+        const status = runtimeStatuses[`${deviceId}:${deviceKeyId}`];
+        if (!status || !status.current) return <Tag color="gray">等待激活</Tag>;
+        return (
+          <Tooltip content={status.state === 'rejected' ? `激活失败：${status.error_code ?? 'unknown'}` : `配置已于 ${new Date(status.reported_at).toLocaleString()} 生效`}>
+            <Tag color={status.state === 'active' ? 'green' : 'red'}>{status.state === 'active' ? '已启用' : '激活失败'}</Tag>
+          </Tooltip>
+        );
+      },
+    }] : []),
     {
       title: '',
       width: 92,

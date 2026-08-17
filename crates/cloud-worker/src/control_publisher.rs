@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -146,6 +146,16 @@ impl ControlRoutePublisher {
                 )
             })
             .collect();
+        let attachment_nodes = attachments
+            .iter()
+            .map(|(resource, attachment)| (resource.metadata.id, attachment.node_id))
+            .collect::<HashMap<_, _>>();
+        let known_nodes = nodes.keys().copied().collect::<HashSet<_>>();
+        let path_values = paths
+            .iter()
+            .map(|(_, path)| path.clone())
+            .collect::<Vec<_>>();
+        validate_direct_dialers(&path_values, &attachment_nodes, &known_nodes)?;
         let mut path_map: HashMap<Uuid, Vec<PeerPathCandidateV1>> = HashMap::new();
         for (resource, value) in &paths {
             let (_, peer_attachment) = attachment_ids
@@ -200,7 +210,7 @@ impl ControlRoutePublisher {
                     node_key_id: NodeKeyId(transport.service_node_key_id.into_bytes()),
                 };
                 let relay_node =
-                    (value.kind == PathCandidateKindV1::Relay).then(|| RelayNodeIdentityV1 {
+                    (value.kind == PathCandidateKindV1::Relay).then_some(RelayNodeIdentityV1 {
                         node_id: transport_node.node_id,
                         node_key_id: transport_node.node_key_id,
                     });
@@ -382,6 +392,53 @@ impl ControlRoutePublisher {
     }
 }
 
+fn validate_direct_dialers(
+    paths: &[cloud_control::PathCandidateV1],
+    attachment_nodes: &HashMap<Uuid, Uuid>,
+    nodes: &HashSet<Uuid>,
+) -> Result<()> {
+    let mut direct_peers = HashMap::<Uuid, (Uuid, bool)>::new();
+    for path in paths {
+        if path.kind != PathCandidateKindV1::Direct {
+            continue;
+        }
+        let source_node = attachment_nodes
+            .get(&path.source_attachment_id)
+            .context("direct path source Attachment is missing")?;
+        let destination_node = attachment_nodes
+            .get(&path.destination_attachment_id)
+            .context("direct path destination Attachment is missing")?;
+        if path.transport_node_id != *source_node && path.transport_node_id != *destination_node {
+            bail!("direct path transport Node is not one of its endpoint Nodes");
+        }
+        if !nodes.contains(&path.transport_node_id) {
+            bail!("direct path transport Node is missing");
+        }
+        match direct_peers.entry(path.peer_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert((
+                    path.transport_node_id,
+                    path.transport_node_id != *source_node,
+                ));
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let (transport_node_id, has_dialer) = entry.get_mut();
+                if *transport_node_id != path.transport_node_id {
+                    bail!("direct peer has conflicting transport Nodes");
+                }
+                *has_dialer |= path.transport_node_id != *source_node;
+            }
+        }
+    }
+    if direct_peers
+        .values()
+        .any(|(_, has_dialer)| !has_dialer)
+    {
+        bail!("direct peer must use one transport Node with exactly one outbound side");
+    }
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl SegmentGenerationPublisher for ControlRoutePublisher {
     fn ready(&self) -> bool {
@@ -490,4 +547,78 @@ fn stable_candidate_id(path_resource_id: Uuid, endpoint_id: Uuid) -> [u8; 16] {
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn direct_path(
+        peer_id: Uuid,
+        source_attachment_id: Uuid,
+        destination_attachment_id: Uuid,
+        transport_node_id: Uuid,
+    ) -> cloud_control::PathCandidateV1 {
+        cloud_control::PathCandidateV1 {
+            segment_id: Uuid::from_bytes([1; 16]),
+            peer_id,
+            source_attachment_id,
+            destination_attachment_id,
+            kind: PathCandidateKindV1::Direct,
+            relay_id: None,
+            transport_node_id,
+            priority: 100,
+        }
+    }
+
+    #[test]
+    fn direct_peer_requires_at_least_one_outbound_dialer() {
+        let peer = Uuid::from_bytes([2; 16]);
+        let attachment_a = Uuid::from_bytes([3; 16]);
+        let attachment_b = Uuid::from_bytes([4; 16]);
+        let node_a = Uuid::from_bytes([5; 16]);
+        let node_b = Uuid::from_bytes([6; 16]);
+        let attachment_nodes = HashMap::from([(attachment_a, node_a), (attachment_b, node_b)]);
+        let nodes = HashSet::from([node_a, node_b]);
+
+        let listener_only = vec![
+            direct_path(peer, attachment_a, attachment_b, node_a),
+            direct_path(peer, attachment_b, attachment_a, node_b),
+        ];
+        assert!(validate_direct_dialers(&listener_only, &attachment_nodes, &nodes).is_err());
+
+        let full_duplex = vec![
+            direct_path(peer, attachment_a, attachment_b, node_b),
+            direct_path(peer, attachment_b, attachment_a, node_b),
+        ];
+        assert!(validate_direct_dialers(&full_duplex, &attachment_nodes, &nodes).is_ok());
+
+        let duplicate_full_duplex = vec![
+            direct_path(peer, attachment_a, attachment_b, node_b),
+            direct_path(peer, attachment_b, attachment_a, node_a),
+        ];
+        assert!(validate_direct_dialers(&duplicate_full_duplex, &attachment_nodes, &nodes).is_err());
+    }
+
+    #[test]
+    fn direct_peer_rejects_unrelated_transport_node() {
+        let attachment_a = Uuid::from_bytes([3; 16]);
+        let attachment_b = Uuid::from_bytes([4; 16]);
+        let node_a = Uuid::from_bytes([5; 16]);
+        let node_b = Uuid::from_bytes([6; 16]);
+        let unrelated = Uuid::from_bytes([7; 16]);
+        let attachment_nodes = HashMap::from([(attachment_a, node_a), (attachment_b, node_b)]);
+        let nodes = HashSet::from([node_a, node_b, unrelated]);
+        assert!(validate_direct_dialers(
+            &[direct_path(
+                Uuid::from_bytes([2; 16]),
+                attachment_a,
+                attachment_b,
+                unrelated,
+            )],
+            &attachment_nodes,
+            &nodes,
+        )
+        .is_err());
+    }
 }

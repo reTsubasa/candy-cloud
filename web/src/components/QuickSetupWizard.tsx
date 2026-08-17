@@ -283,7 +283,7 @@ export function QuickSetupWizard({ visible, session, onClose, onChanged }: Props
         peer_id: selection.peer,
         source_attachment_id: forwardExists ? selection.attachmentB : selection.attachmentA,
         destination_attachment_id: forwardExists ? selection.attachmentA : selection.attachmentB,
-        kind: 'DIRECT', relay_id: null, transport_node_id: forwardExists ? selection.nodeA : selection.nodeB, priority: 100,
+        kind: 'DIRECT', relay_id: null, transport_node_id: selection.nodeB, priority: 100,
       }, label: `保存${forwardExists ? '返程' : '去程'}线路` };
     }
     if (current === 7) return { definition: definitionByKey.egress, initialSpec: { name: '', site_id: selection.siteB, attachment_id: selection.attachmentB, max_sessions: 10000, capacity_mbps: 1000 }, label: '发布出口' };

@@ -109,6 +109,7 @@ def main() -> None:
         "/v1/tenants/{tenant_id}/enrollment/activations": {"get:", "post:"},
         "/v1/tenants/{tenant_id}/enrollment/activations/{activation_id}": {"delete:"},
         "/v1/tenants/{tenant_id}/runtime-activation-readiness": {"get:"},
+        "/v1/tenants/{tenant_id}/runtime-configuration-status": {"get:"},
         "/v1/enrollment/challenges": {"post:"},
         "/v1/enrollment/complete": {"post:"},
         "/v1/access-grants": {"post:"},
@@ -138,6 +139,7 @@ def main() -> None:
         "/v1/tenants/{tenant_id}/enrollment/activations",
         "/v1/tenants/{tenant_id}/enrollment/activations/{activation_id}",
         "/v1/tenants/{tenant_id}/runtime-activation-readiness",
+        "/v1/tenants/{tenant_id}/runtime-configuration-status",
     ]:
         require(blocks[path], "managementBearer", f"activation path {path}")
     require(blocks["/v1/tenants/{tenant_id}/enrollment/activations"], "ActivationCreateResponse", "activation create contract")
@@ -146,6 +148,11 @@ def main() -> None:
         blocks["/v1/tenants/{tenant_id}/runtime-activation-readiness"],
         "RuntimeActivationReadiness",
         "runtime activation readiness contract",
+    )
+    require(
+        blocks["/v1/tenants/{tenant_id}/runtime-configuration-status"],
+        "RuntimeConfigurationStatusInventory",
+        "runtime configuration status inventory contract",
     )
 
     for path in ["/v1/auth/login", "/v1/auth/refresh"]:

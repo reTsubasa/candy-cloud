@@ -206,6 +206,56 @@ pub struct RuntimeActivationReadinessResponse {
     pub reason_codes: Vec<&'static str>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RuntimeConfigurationStatusResponse {
+    pub schema_version: u16,
+    pub items: Vec<RuntimeConfigurationStatusItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeConfigurationStatusItem {
+    pub device_id: Uuid,
+    pub device_key_id: Uuid,
+    pub projection_publication_id: Uuid,
+    pub state: String,
+    pub error_code: Option<String>,
+    pub reported_at: chrono::DateTime<Utc>,
+    pub current: bool,
+}
+
+pub async fn runtime_configuration_statuses(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path(tenant_id): Path<Uuid>,
+) -> Result<Json<RuntimeConfigurationStatusResponse>, ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::ReadConfiguration)?;
+    let repository = state.repository.as_ref().ok_or(ApiError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        code: "CONTROL_PLANE_UNAVAILABLE",
+        message: "control plane storage is not configured",
+    })?;
+    let items = repository
+        .runtime_configuration_statuses(tenant_id)
+        .await
+        .map_err(ApiError::from_store)?
+        .into_iter()
+        .map(|record| RuntimeConfigurationStatusItem {
+            device_id: record.device_id,
+            device_key_id: record.device_key_id,
+            projection_publication_id: record.projection_publication_id,
+            state: record.apply_state.to_ascii_lowercase(),
+            error_code: record.error_code,
+            reported_at: record.reported_at,
+            current: record.current,
+        })
+        .collect();
+    Ok(Json(RuntimeConfigurationStatusResponse {
+        schema_version: CONTROL_SCHEMA_V1,
+        items,
+    }))
+}
+
 pub async fn runtime_activation_readiness(
     State(state): State<Arc<ManagementState>>,
     principal: Option<Extension<AuthenticatedPrincipal>>,

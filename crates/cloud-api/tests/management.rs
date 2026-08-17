@@ -46,10 +46,23 @@ async fn management_routes_reject_cross_tenant_before_touching_storage() {
             role: Role::TenantAdmin,
         },
     };
-    let response = app_with_principal(lazy_repository(), principal)
+    let response = app_with_principal(lazy_repository(), principal.clone())
         .oneshot(
             Request::builder()
                 .uri(format!("/v1/tenants/{requested_tenant}/sites"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = app_with_principal(lazy_repository(), principal)
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/tenants/{requested_tenant}/runtime-configuration-status"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )

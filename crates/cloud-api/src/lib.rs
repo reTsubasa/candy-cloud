@@ -103,6 +103,10 @@ fn management_routes() -> Router<Arc<ManagementState>> {
             get(management::runtime_activation_readiness),
         )
         .route(
+            "/v1/tenants/{tenant_id}/runtime-configuration-status",
+            get(management::runtime_configuration_statuses),
+        )
+        .route(
             "/v1/tenants/{tenant_id}/{collection}",
             get(management::list).post(management::create),
         )

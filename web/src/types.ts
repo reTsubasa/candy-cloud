@@ -119,6 +119,21 @@ export type RuntimeActivationReadiness = {
   reason_codes: ('node_offline' | 'service_not_enabled' | 'config_pending')[];
 };
 
+export type RuntimeConfigurationStatus = {
+  device_id: string;
+  device_key_id: string;
+  projection_publication_id: string;
+  state: 'active' | 'rejected';
+  error_code: string | null;
+  reported_at: string;
+  current: boolean;
+};
+
+export type RuntimeConfigurationStatusResponse = {
+  schema_version: number;
+  items: RuntimeConfigurationStatus[];
+};
+
 export type EnrollmentActivation = {
   id: string;
   tenant_id: string;

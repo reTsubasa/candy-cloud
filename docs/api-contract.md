@@ -271,6 +271,13 @@ only when identity and all version fields match the exact current projection.
 Status replacement is idempotent for identical state; a report for an older or
 different projection returns `409`.
 
+Operators read the latest persisted result per device from
+`GET /api/v1/tenants/{tenant_id}/runtime-configuration-status`. The management
+response is tenant-scoped and contains no signed configuration or Grant bytes.
+Its `current` field is true only when the report still names the current Cloud
+projection. The node inventory renders `active`, `rejected`, or `pending` when
+no current successful or rejected report has been stored yet.
+
 Status-report timeout never rolls back a successful local apply. Runtime
 retries the same report with bounded exponential backoff and jitter. A rejected
 candidate is retained only as bounded diagnostic evidence; Runtime continues
@@ -302,6 +309,14 @@ succeeds. Partial projection delivery is never authoritative.
 Route-signing and Grant-signing keys are distinct. Consumers verify and compile
 the matching snapshot/projection before replacing last-known-good state.
 Recovery fetches a complete publication, never a partial delta.
+
+For a direct peer, the transport Node must be one of the two endpoint Nodes.
+Cloud rejects a publication in which every direct candidate is passive at its
+source. The guided two-site workflow uses one stable listener identity for both
+directional projections: one side actively dials and the other accepts that
+same full-duplex Candy QUIC/UDP connection. This prevents a two-public-node
+deployment from becoming listener-only and avoids creating two redundant
+connections for a single direct path.
 
 ## Error and retry matrix
 
