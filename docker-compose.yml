@@ -126,6 +126,8 @@ services:
       CLOUD_DEVICE_CA_KEY_FILE: /run/secrets/cloud_device_ca_key
       CLOUD_DEVICE_CA_KEY_ID: ${CLOUD_DEVICE_CA_KEY_ID:-device-ca-1}
       CLOUD_ENVIRONMENT: ${CLOUD_ENVIRONMENT:-production}
+      CANDY_ROUTE_SIGNING_KEY_ID: ${CANDY_ROUTE_SIGNING_KEY_ID:?set CANDY_ROUTE_SIGNING_KEY_ID}
+      CANDY_ROUTE_SIGNING_PUBLIC_KEY_HEX: ${CANDY_ROUTE_SIGNING_PUBLIC_KEY_HEX:?set CANDY_ROUTE_SIGNING_PUBLIC_KEY_HEX}
     secrets:
       - source: cloud_signing_key
         target: cloud_signing_key

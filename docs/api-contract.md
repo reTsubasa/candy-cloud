@@ -170,6 +170,7 @@ The Runtime delivery endpoints are implemented as part of the V1 contract:
 
 ```text
 GET  /auth/v1/runtime/capabilities
+GET  /auth/v1/runtime/profile
 GET  /auth/v1/runtime/configuration
 PUT  /auth/v1/runtime/configuration/status
 ```
@@ -179,13 +180,19 @@ upgrade. The response publishes API and wire version, the complete Core
 `site_projection_v1` object name, media type, conditional-request support,
 status enum, and the bounded 15/30/300-second polling range with 20% jitter.
 
-### Fetch
+### Profile and fetch
 
-The GET response body is the exact Core-signed site projection bytes with media
-type:
+The Profile response gives Runtime and LuCI the authenticated organization,
+tenant and device names. Site, Segment and attachment fields are nullable until
+Cloud has completed the network assignment. These display fields never grant
+data-plane authority.
+
+The configuration response is a bounded JSON package containing the exact
+Core-signed Segment snapshot and site projection from one generation, the route
+verification key, and immutable publication identity. Its media type is:
 
 ```text
-application/vnd.candy.site-projection-envelope.v1+octet-stream
+application/vnd.candy.runtime-configuration.v1+json
 ```
 
 Response headers bind the body to one immutable version:
@@ -202,7 +209,8 @@ X-Candy-Projection-Content-Hash: <64 lowercase hex>
 X-Candy-Refresh-After: 30
 ```
 
-The ETag is the SHA-256 of the exact signed envelope bytes and is a strong ETag.
+The ETag is the domain-separated SHA-256 of both length-delimited signed
+envelopes and is a strong ETag.
 Runtime sends the last verified candidate in `If-None-Match`; a match returns
 `304` with no body. Runtime must reject missing or malformed identity headers,
 hash mismatch, an invalid Core signature, an unsupported object version, a

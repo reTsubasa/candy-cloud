@@ -15,8 +15,8 @@ use cloud_auth::{
         AuthenticatedTenant, EnrollmentHttpService, EnrollmentReceipt, GrantIssuanceReceipt,
         GrantIssueCommand, GrantServiceError, RuntimeConfigurationApplyState,
         RuntimeConfigurationDelivery, RuntimeConfigurationService,
-        RuntimeConfigurationServiceError, RuntimeConfigurationStatusCommand, ServiceFuture,
-        TenantAuthService,
+        RuntimeConfigurationServiceError, RuntimeConfigurationStatusCommand,
+        RuntimeProfileDelivery, ServiceFuture, TenantAuthService,
     },
 };
 use http_body_util::BodyExt;
@@ -98,6 +98,28 @@ impl RuntimeConfigurationService for RecordingRuntimeConfigurationService {
         Result<Option<RuntimeConfigurationDelivery>, RuntimeConfigurationServiceError>,
     > {
         Box::pin(async move { Ok(self.delivery.lock().unwrap().clone()) })
+    }
+
+    fn profile(
+        &self,
+        actor: AuthenticatedDevice,
+    ) -> ServiceFuture<'_, Result<RuntimeProfileDelivery, RuntimeConfigurationServiceError>> {
+        Box::pin(async move {
+            Ok(RuntimeProfileDelivery {
+                organization_id: actor.organization_id(),
+                organization_name: "Candy Demo".into(),
+                tenant_id: actor.tenant_id(),
+                tenant_name: "Default".into(),
+                device_id: actor.device_id(),
+                device_key_id: actor.device_key_id(),
+                device_name: "OpenWrt".into(),
+                site_id: None,
+                site_name: None,
+                segment_id: None,
+                segment_name: None,
+                attachment_id: None,
+            })
+        })
     }
 
     fn record_status(
@@ -347,12 +369,15 @@ fn runtime_delivery() -> RuntimeConfigurationDelivery {
         projection_generation: 6,
         projection_content_hash: [7; 32],
         envelope_sha256: [8; 32],
-        signed_envelope: vec![0, 1, 2, 0xff],
+        signed_segment_envelope: vec![0, 1, 2, 0xff],
+        signed_projection_envelope: vec![3, 4, 5, 0xfe],
+        route_signing_key_id: "route-signing-1".into(),
+        route_signing_public_key: [9; 32],
     }
 }
 
 #[tokio::test]
-async fn runtime_configuration_returns_raw_signed_envelope_and_honors_etag() {
+async fn runtime_configuration_returns_coherent_signed_bundle_and_honors_etag() {
     let delivery = runtime_delivery();
     let service = Arc::new(RecordingRuntimeConfigurationService::with_delivery(Some(
         delivery.clone(),
@@ -379,13 +404,16 @@ async fn runtime_configuration_returns_raw_signed_envelope_and_honors_etag() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.headers()["content-type"],
-        "application/vnd.candy.site-projection-envelope.v1+octet-stream"
+        "application/vnd.candy.runtime-configuration.v1+json"
     );
     let etag = response.headers()["etag"].clone();
-    assert_eq!(
-        response.into_body().collect().await.unwrap().to_bytes(),
-        delivery.signed_envelope
-    );
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["segment_snapshot"], "AAEC_w");
+    assert_eq!(body["site_projection"], "AwQF_g");
+    assert_eq!(body["route_signing_key_id"], "route-signing-1");
+    assert_eq!(body["route_signing_public_key"], "09".repeat(32));
 
     let unchanged = app
         .oneshot(

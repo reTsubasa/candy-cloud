@@ -36,6 +36,8 @@ pub struct CloudAuthConfig {
     pub core_module_path: PathBuf,
     pub core_module_sha256: [u8; 32],
     pub core_module_owner_uid: u32,
+    pub route_signing_key_id: String,
+    pub route_signing_public_key: [u8; 32],
 }
 
 impl CloudAuthConfig {
@@ -56,6 +58,8 @@ impl CloudAuthConfig {
             core_module_owner_uid: required_env("CLOUD_CORE_MODULE_OWNER_UID")?
                 .parse()
                 .context("parse CLOUD_CORE_MODULE_OWNER_UID")?,
+            route_signing_key_id: required_env("CANDY_ROUTE_SIGNING_KEY_ID")?,
+            route_signing_public_key: parse_sha256_env("CANDY_ROUTE_SIGNING_PUBLIC_KEY_HEX")?,
         })
     }
 }
@@ -113,6 +117,8 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
     let runtime_configuration = device_authenticated_runtime_app(
         Arc::new(DatabaseRuntimeConfigurationService::new(
             cloud_db::sdwan::SdwanRepository::new(pool.clone()),
+            config.route_signing_key_id.clone(),
+            config.route_signing_public_key,
         )),
         device_authenticator,
     );

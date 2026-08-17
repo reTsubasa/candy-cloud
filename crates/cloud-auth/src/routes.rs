@@ -204,7 +204,26 @@ pub struct RuntimeConfigurationDelivery {
     pub projection_generation: u64,
     pub projection_content_hash: [u8; 32],
     pub envelope_sha256: [u8; 32],
-    pub signed_envelope: Vec<u8>,
+    pub signed_segment_envelope: Vec<u8>,
+    pub signed_projection_envelope: Vec<u8>,
+    pub route_signing_key_id: String,
+    pub route_signing_public_key: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuntimeProfileDelivery {
+    pub organization_id: Uuid,
+    pub organization_name: String,
+    pub tenant_id: Uuid,
+    pub tenant_name: String,
+    pub device_id: Uuid,
+    pub device_key_id: Uuid,
+    pub device_name: String,
+    pub site_id: Option<Uuid>,
+    pub site_name: Option<String>,
+    pub segment_id: Option<Uuid>,
+    pub segment_name: Option<String>,
+    pub attachment_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,6 +249,11 @@ pub enum RuntimeConfigurationServiceError {
 }
 
 pub trait RuntimeConfigurationService: Send + Sync + 'static {
+    fn profile(
+        &self,
+        actor: AuthenticatedDevice,
+    ) -> ServiceFuture<'_, Result<RuntimeProfileDelivery, RuntimeConfigurationServiceError>>;
+
     fn current(
         &self,
         actor: AuthenticatedDevice,
@@ -317,6 +341,7 @@ where
 {
     Router::new()
         .route("/v1/runtime/capabilities", get(runtime_capabilities))
+        .route("/v1/runtime/profile", get(runtime_profile::<S>))
         .route(
             "/v1/runtime/configuration",
             get(current_runtime_configuration::<S>),
@@ -326,6 +351,20 @@ where
             put(record_runtime_configuration_status::<S>),
         )
         .with_state(service)
+}
+
+async fn runtime_profile<S>(
+    actor: AuthenticatedDevice,
+    State(service): State<Arc<S>>,
+) -> Result<Json<RuntimeProfileDelivery>, ApiError>
+where
+    S: RuntimeConfigurationService,
+{
+    service
+        .profile(actor)
+        .await
+        .map(Json)
+        .map_err(ApiError::RuntimeConfiguration)
 }
 
 pub fn device_authenticated_runtime_app<S>(
@@ -571,14 +610,14 @@ where
 }
 
 const RUNTIME_CONFIGURATION_MEDIA_TYPE: &str =
-    "application/vnd.candy.site-projection-envelope.v1+octet-stream";
+    "application/vnd.candy.runtime-configuration.v1+json";
 const RUNTIME_REFRESH_SECONDS: u64 = 30;
 
 async fn runtime_capabilities(_actor: AuthenticatedDevice) -> Json<RuntimeCapabilitiesResponse> {
     Json(RuntimeCapabilitiesResponse {
         api_version: "v1",
         wire_protocol: "0.3",
-        configuration_object: "site_projection_v1",
+        configuration_object: "runtime_configuration_v1",
         configuration_media_type: RUNTIME_CONFIGURATION_MEDIA_TYPE,
         conditional_requests: ["etag", "if-none-match"],
         status_values: ["active", "rejected"],
@@ -624,9 +663,24 @@ where
         insert_configuration_response_headers(&mut response, &delivery, &etag)?;
         return Ok(response);
     }
+    let body = serde_json::to_vec(&RuntimeConfigurationHttpResponse {
+        schema_version: 1,
+        projection_publication_id: delivery.projection_publication_id,
+        projection_id: delivery.projection_id,
+        segment_id: delivery.segment_id,
+        attachment_id: delivery.attachment_id,
+        segment_generation: delivery.segment_generation,
+        projection_generation: delivery.projection_generation,
+        projection_content_hash: hex(&delivery.projection_content_hash),
+        route_signing_key_id: delivery.route_signing_key_id.clone(),
+        route_signing_public_key: hex(&delivery.route_signing_public_key),
+        segment_snapshot: encode_base64(delivery.signed_segment_envelope.clone()),
+        site_projection: encode_base64(delivery.signed_projection_envelope.clone()),
+    })
+    .map_err(|_| ApiError::InvalidRuntimeConfigurationStatus)?;
     let mut response = Response::new(Body::empty());
     insert_configuration_response_headers(&mut response, &delivery, &etag)?;
-    *response.body_mut() = Body::from(delivery.signed_envelope);
+    *response.body_mut() = Body::from(body);
     Ok(response)
 }
 
@@ -895,6 +949,22 @@ struct RuntimeCapabilitiesResponse {
     conditional_requests: [&'static str; 2],
     status_values: [&'static str; 2],
     refresh: RuntimeRefreshCapabilities,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeConfigurationHttpResponse {
+    schema_version: u8,
+    projection_publication_id: Uuid,
+    projection_id: Uuid,
+    segment_id: Uuid,
+    attachment_id: Uuid,
+    segment_generation: u64,
+    projection_generation: u64,
+    projection_content_hash: String,
+    route_signing_key_id: String,
+    route_signing_public_key: String,
+    segment_snapshot: String,
+    site_projection: String,
 }
 
 #[derive(Debug, Serialize)]

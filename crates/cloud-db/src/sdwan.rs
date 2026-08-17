@@ -20,6 +20,22 @@ pub struct RuntimeConfigurationLookup {
     pub device_key_id: Uuid,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeDeviceProfile {
+    pub organization_id: Uuid,
+    pub organization_name: String,
+    pub tenant_id: Uuid,
+    pub tenant_name: String,
+    pub device_id: Uuid,
+    pub device_key_id: Uuid,
+    pub device_name: String,
+    pub site_id: Option<Uuid>,
+    pub site_name: Option<String>,
+    pub segment_id: Option<Uuid>,
+    pub segment_name: Option<String>,
+    pub attachment_id: Option<Uuid>,
+}
+
 impl RuntimeConfigurationLookup {
     fn validate(&self) -> Result<(), RuntimeConfigurationError> {
         if self.tenant_id.is_nil() || self.device_id.is_nil() || self.device_key_id.is_nil() {
@@ -43,12 +59,19 @@ pub struct RuntimeConfigurationRecord {
     pub segment_content_hash: [u8; 32],
     pub projection_generation: u64,
     pub projection_content_hash: [u8; 32],
-    pub signed_envelope: Vec<u8>,
+    pub signed_segment_envelope: Vec<u8>,
+    pub signed_projection_envelope: Vec<u8>,
 }
 
 impl RuntimeConfigurationRecord {
     pub fn envelope_sha256(&self) -> [u8; 32] {
-        Sha256::digest(&self.signed_envelope).into()
+        let mut digest = Sha256::new();
+        digest.update(b"candy/runtime-configuration-v1\0");
+        digest.update((self.signed_segment_envelope.len() as u64).to_be_bytes());
+        digest.update(&self.signed_segment_envelope);
+        digest.update((self.signed_projection_envelope.len() as u64).to_be_bytes());
+        digest.update(&self.signed_projection_envelope);
+        digest.finalize().into()
     }
 
     fn validate(
@@ -64,8 +87,10 @@ impl RuntimeConfigurationRecord {
             || self.projection_generation == 0
             || self.segment_content_hash == [0; 32]
             || self.projection_content_hash == [0; 32]
-            || self.signed_envelope.is_empty()
-            || self.signed_envelope.len() > MAX_SIGNED_ENVELOPE_LEN
+            || self.signed_segment_envelope.is_empty()
+            || self.signed_segment_envelope.len() > MAX_SIGNED_ENVELOPE_LEN
+            || self.signed_projection_envelope.is_empty()
+            || self.signed_projection_envelope.len() > MAX_SIGNED_ENVELOPE_LEN
             || self.tenant_id != lookup.tenant_id
             || self.device_id != lookup.device_id
             || self.device_key_id != lookup.device_key_id
@@ -595,6 +620,43 @@ impl SdwanRepository {
         }
     }
 
+    pub async fn runtime_device_profile(
+        &self,
+        lookup: &RuntimeConfigurationLookup,
+    ) -> Result<RuntimeDeviceProfile, RuntimeConfigurationError> {
+        lookup.validate()?;
+        let rows = sqlx::query(
+            "SELECT org.id AS organization_id, org.name AS organization_name, t.id AS tenant_id, t.name AS tenant_name, d.id AS device_id, dk.id AS device_key_id, d.display_name AS device_name, a.id AS attachment_id, a.site_id, s.name AS site_name, a.segment_id, seg.name AS segment_name FROM tenants t JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' JOIN devices d ON d.tenant_id = t.id AND d.id = ? AND d.status = 'ACTIVE' JOIN device_keys dk ON dk.tenant_id = t.id AND dk.device_id = d.id AND dk.id = ? AND dk.status = 'ACTIVE' LEFT JOIN segment_attachments a ON a.tenant_id = t.id AND a.device_id = d.id AND a.device_key_id = dk.id AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY') LEFT JOIN sites s ON s.tenant_id = t.id AND s.id = a.site_id AND s.state = 'ACTIVE' LEFT JOIN segments seg ON seg.tenant_id = t.id AND seg.id = a.segment_id AND seg.state = 'ACTIVE' WHERE t.id = ? AND t.status = 'ACTIVE' ORDER BY a.id",
+        )
+        .bind(lookup.device_id)
+        .bind(lookup.device_key_id)
+        .bind(lookup.tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        if rows.len() != 1 {
+            return Err(if rows.is_empty() {
+                RuntimeConfigurationError::InvalidScope
+            } else {
+                RuntimeConfigurationError::AmbiguousConfiguration
+            });
+        }
+        let row = &rows[0];
+        Ok(RuntimeDeviceProfile {
+            organization_id: row.try_get("organization_id")?,
+            organization_name: row.try_get("organization_name")?,
+            tenant_id: row.try_get("tenant_id")?,
+            tenant_name: row.try_get("tenant_name")?,
+            device_id: row.try_get("device_id")?,
+            device_key_id: row.try_get("device_key_id")?,
+            device_name: row.try_get("device_name")?,
+            site_id: row.try_get("site_id")?,
+            site_name: row.try_get("site_name")?,
+            segment_id: row.try_get("segment_id")?,
+            segment_name: row.try_get("segment_name")?,
+            attachment_id: row.try_get("attachment_id")?,
+        })
+    }
+
     pub async fn record_runtime_configuration_status(
         &self,
         status: &RuntimeConfigurationStatusWrite,
@@ -858,7 +920,7 @@ async fn load_current_runtime_configuration(
     }
 
     let projection_query = format!(
-        "SELECT p.id AS projection_publication_id, p.projection_id, p.tenant_id, p.segment_id, p.site_id, p.attachment_id, p.device_id, p.device_key_id, p.segment_generation, p.segment_content_hash, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope FROM segment_attachments a JOIN tenants t ON t.id = a.tenant_id AND t.status = 'ACTIVE' JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = seg.current_generation AND p.segment_content_hash = seg.current_content_hash JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY'){suffix}"
+        "SELECT p.id AS projection_publication_id, p.projection_id, p.tenant_id, p.segment_id, p.site_id, p.attachment_id, p.device_id, p.device_key_id, p.segment_generation, p.segment_content_hash, p.projection_generation, p.content_hash AS projection_content_hash, publication.signed_envelope AS signed_segment_envelope, p.signed_envelope AS signed_projection_envelope FROM segment_attachments a JOIN tenants t ON t.id = a.tenant_id AND t.status = 'ACTIVE' JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = seg.current_generation AND p.segment_content_hash = seg.current_content_hash JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY'){suffix}"
     );
     let rows = sqlx::query(&projection_query)
         .bind(lookup.tenant_id)
@@ -890,7 +952,8 @@ async fn load_current_runtime_configuration(
             &row.try_get::<Vec<u8>, _>("projection_content_hash")?,
         )
         .map_err(|_| RuntimeConfigurationError::InvalidRecord)?,
-        signed_envelope: row.try_get("signed_envelope")?,
+        signed_segment_envelope: row.try_get("signed_segment_envelope")?,
+        signed_projection_envelope: row.try_get("signed_projection_envelope")?,
     };
     record.validate(lookup)?;
     Ok(RuntimeConfigurationState::Current(Box::new(record)))

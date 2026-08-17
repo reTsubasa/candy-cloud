@@ -23,7 +23,8 @@ use crate::{
         AuthenticatedTenant, EnrollmentReceipt, GrantIssuanceReceipt, GrantIssueCommand,
         GrantServiceError, RuntimeConfigurationApplyState, RuntimeConfigurationDelivery,
         RuntimeConfigurationService, RuntimeConfigurationServiceError,
-        RuntimeConfigurationStatusCommand, ServiceFuture, TenantAuthService,
+        RuntimeConfigurationStatusCommand, RuntimeProfileDelivery, ServiceFuture,
+        TenantAuthService,
     },
 };
 
@@ -118,15 +119,57 @@ impl TenantAuthService for DatabaseTenantAuthService {
 
 pub struct DatabaseRuntimeConfigurationService {
     repository: SdwanRepository,
+    route_signing_key_id: String,
+    route_signing_public_key: [u8; 32],
 }
 
 impl DatabaseRuntimeConfigurationService {
-    pub fn new(repository: SdwanRepository) -> Self {
-        Self { repository }
+    pub fn new(
+        repository: SdwanRepository,
+        route_signing_key_id: String,
+        route_signing_public_key: [u8; 32],
+    ) -> Self {
+        Self {
+            repository,
+            route_signing_key_id,
+            route_signing_public_key,
+        }
     }
 }
 
 impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
+    fn profile(
+        &self,
+        actor: crate::routes::AuthenticatedDevice,
+    ) -> ServiceFuture<'_, Result<RuntimeProfileDelivery, RuntimeConfigurationServiceError>> {
+        Box::pin(async move {
+            let lookup = RuntimeConfigurationLookup {
+                tenant_id: actor.tenant_id(),
+                device_id: actor.device_id(),
+                device_key_id: actor.device_key_id(),
+            };
+            let profile = self
+                .repository
+                .runtime_device_profile(&lookup)
+                .await
+                .map_err(|_| RuntimeConfigurationServiceError::Unavailable)?;
+            Ok(RuntimeProfileDelivery {
+                organization_id: profile.organization_id,
+                organization_name: profile.organization_name,
+                tenant_id: profile.tenant_id,
+                tenant_name: profile.tenant_name,
+                device_id: profile.device_id,
+                device_key_id: profile.device_key_id,
+                device_name: profile.device_name,
+                site_id: profile.site_id,
+                site_name: profile.site_name,
+                segment_id: profile.segment_id,
+                segment_name: profile.segment_name,
+                attachment_id: profile.attachment_id,
+            })
+        })
+    }
+
     fn current(
         &self,
         actor: crate::routes::AuthenticatedDevice,
@@ -152,7 +195,10 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                         projection_generation: record.projection_generation,
                         projection_content_hash: record.projection_content_hash,
                         envelope_sha256: record.envelope_sha256(),
-                        signed_envelope: record.signed_envelope,
+                        signed_segment_envelope: record.signed_segment_envelope,
+                        signed_projection_envelope: record.signed_projection_envelope,
+                        route_signing_key_id: self.route_signing_key_id.clone(),
+                        route_signing_public_key: self.route_signing_public_key,
                     }))
                 }
                 Err(_) => Err(RuntimeConfigurationServiceError::Unavailable),

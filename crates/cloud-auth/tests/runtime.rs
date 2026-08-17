@@ -60,6 +60,8 @@ async fn runtime_mounts_enrollment_only_after_database_and_both_key_sets_load() 
         core_module_path: directory.join("missing-core-module.so"),
         core_module_sha256: [0; 32],
         core_module_owner_uid: 0,
+        route_signing_key_id: "route-signing-test".into(),
+        route_signing_public_key: [9; 32],
     };
     let app = build_app(config).await.unwrap();
 

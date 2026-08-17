@@ -663,8 +663,8 @@ paths:
               example:
                 api_version: v1
                 wire_protocol: "0.3"
-                configuration_object: site_projection_v1
-                configuration_media_type: application/vnd.candy.site-projection-envelope.v1+octet-stream
+                configuration_object: runtime_configuration_v1
+                configuration_media_type: application/vnd.candy.runtime-configuration.v1+json
                 conditional_requests: [etag, if-none-match]
                 status_values: [active, rejected]
                 refresh:
@@ -674,11 +674,26 @@ paths:
                   jitter_percent: 20
         "401": { $ref: "#/components/responses/DeviceUnauthorized" }
         "503": { $ref: "#/components/responses/DeviceUnavailable" }
+  /v1/runtime/profile:
+    get:
+      tags: [Runtime synchronization]
+      operationId: getRuntimeProfile
+      summary: Fetch the Cloud account and network profile bound to this device
+      x-candy-status: runtime-sync
+      security: [{ deviceMtls: [] }]
+      responses:
+        "200":
+          description: Authenticated device identity plus its optional current Site and Segment attachment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeProfile" }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
   /v1/runtime/configuration:
     get:
       tags: [Runtime synchronization]
       operationId: getRuntimeConfiguration
-      summary: Fetch the current signed projection for the authenticated Runtime
+      summary: Fetch one coherent signed Runtime configuration generation
       x-candy-status: runtime-sync
       security: [{ deviceMtls: [] }]
       parameters:
@@ -690,8 +705,9 @@ paths:
       responses:
         "200":
           description: |-
-            Current opaque Core-signed Runtime projection. Runtime MUST verify and
-            compile the complete envelope before atomically replacing last-known-good state.
+            Current Core-signed Segment snapshot and device projection from one
+            coherent generation. Runtime MUST verify and compile both envelopes
+            before atomically replacing last-known-good state.
           headers:
             ETag: { $ref: "#/components/headers/ConfigurationETag" }
             X-Candy-Projection-Publication-Id:
@@ -711,11 +727,8 @@ paths:
             X-Candy-Refresh-After:
               schema: { type: integer, const: 30 }
           content:
-            application/vnd.candy.site-projection-envelope.v1+octet-stream:
-              schema:
-                type: string
-                contentEncoding: base64
-                contentMediaType: application/octet-stream
+            application/vnd.candy.runtime-configuration.v1+json:
+              schema: { $ref: "#/components/schemas/RuntimeConfiguration" }
         "304":
           description: The current projection exactly matches `If-None-Match`; no body is returned.
           headers:
@@ -1404,8 +1417,8 @@ components:
       properties:
         api_version: { type: string, const: v1 }
         wire_protocol: { type: string, const: "0.3" }
-        configuration_object: { type: string, const: site_projection_v1 }
-        configuration_media_type: { type: string, const: application/vnd.candy.site-projection-envelope.v1+octet-stream }
+        configuration_object: { type: string, const: runtime_configuration_v1 }
+        configuration_media_type: { type: string, const: application/vnd.candy.runtime-configuration.v1+json }
         conditional_requests:
           type: array
           prefixItems: [{ const: etag }, { const: if-none-match }]
@@ -1425,6 +1438,40 @@ components:
             recommended_seconds: { type: integer, const: 30 }
             maximum_seconds: { type: integer, const: 300 }
             jitter_percent: { type: integer, const: 20 }
+    RuntimeProfile:
+      type: object
+      additionalProperties: false
+      required: [organization_id, organization_name, tenant_id, tenant_name, device_id, device_key_id, device_name, site_id, site_name, segment_id, segment_name, attachment_id]
+      properties:
+        organization_id: { $ref: "#/components/schemas/Uuid" }
+        organization_name: { type: string, minLength: 1, maxLength: 200 }
+        tenant_id: { $ref: "#/components/schemas/Uuid" }
+        tenant_name: { type: string, minLength: 1, maxLength: 200 }
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        device_key_id: { $ref: "#/components/schemas/Uuid" }
+        device_name: { type: string, minLength: 1, maxLength: 200 }
+        site_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
+        site_name: { oneOf: [{ type: string, minLength: 1, maxLength: 200 }, { type: "null" }] }
+        segment_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
+        segment_name: { oneOf: [{ type: string, minLength: 1, maxLength: 200 }, { type: "null" }] }
+        attachment_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
+    RuntimeConfiguration:
+      type: object
+      additionalProperties: false
+      required: [schema_version, projection_publication_id, projection_id, segment_id, attachment_id, segment_generation, projection_generation, projection_content_hash, route_signing_key_id, route_signing_public_key, segment_snapshot, site_projection]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        projection_publication_id: { $ref: "#/components/schemas/Uuid" }
+        projection_id: { $ref: "#/components/schemas/Uuid" }
+        segment_id: { $ref: "#/components/schemas/Uuid" }
+        attachment_id: { $ref: "#/components/schemas/Uuid" }
+        segment_generation: { $ref: "#/components/schemas/PositiveInteger" }
+        projection_generation: { $ref: "#/components/schemas/PositiveInteger" }
+        projection_content_hash: { $ref: "#/components/schemas/Sha256Hex" }
+        route_signing_key_id: { type: string, minLength: 1, maxLength: 64 }
+        route_signing_public_key: { $ref: "#/components/schemas/Sha256Hex" }
+        segment_snapshot: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]+$' }
+        site_projection: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]+$' }
     RuntimeConfigurationStatus:
       type: object
       additionalProperties: false

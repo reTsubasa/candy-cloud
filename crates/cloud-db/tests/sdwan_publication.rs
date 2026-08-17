@@ -261,8 +261,12 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         write.projections[0].publication_id
     );
     assert_eq!(
-        first_runtime.signed_envelope,
+        first_runtime.signed_projection_envelope,
         write.projections[0].object.signed_envelope
+    );
+    assert_eq!(
+        first_runtime.signed_segment_envelope,
+        write.snapshot.signed_envelope
     );
     repository
         .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {

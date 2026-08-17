@@ -112,6 +112,7 @@ def main() -> None:
         "/v1/enrollment/complete": {"post:"},
         "/v1/access-grants": {"post:"},
         "/v1/runtime/capabilities": {"get:"},
+        "/v1/runtime/profile": {"get:"},
         "/v1/runtime/configuration": {"get:"},
         "/v1/runtime/configuration/status": {"put:"},
     }
@@ -160,6 +161,7 @@ def main() -> None:
     for path in [
         "/v1/access-grants",
         "/v1/runtime/capabilities",
+        "/v1/runtime/profile",
         "/v1/runtime/configuration",
         "/v1/runtime/configuration/status",
     ]:
@@ -168,8 +170,8 @@ def main() -> None:
     capabilities = blocks["/v1/runtime/capabilities"]
     for boundary in [
         "RuntimeCapabilities",
-        "site_projection_v1",
-        "application/vnd.candy.site-projection-envelope.v1+octet-stream",
+        "runtime_configuration_v1",
+        "application/vnd.candy.runtime-configuration.v1+json",
     ]:
         require(capabilities, boundary, "Runtime capabilities contract")
     for boundary in [
@@ -182,9 +184,12 @@ def main() -> None:
         "X-Candy-Projection-Content-Hash",
         '"304"',
         '"204"',
-        "application/vnd.candy.site-projection-envelope.v1+octet-stream",
+        "application/vnd.candy.runtime-configuration.v1+json",
+        "RuntimeConfiguration",
     ]:
         require(runtime_fetch, boundary, "Runtime fetch contract")
+    for boundary in ["segment_snapshot", "site_projection", "route_signing_public_key"]:
+        require(openapi, boundary, "Runtime configuration schema")
     runtime_status = blocks["/v1/runtime/configuration/status"]
     for boundary in ["RuntimeIfMatch", "projection_publication_id", "projection_content_hash", "state", "error_code"]:
         require(runtime_status, boundary, "Runtime status contract")
@@ -214,6 +219,7 @@ def main() -> None:
         route in auth_routes or route in auth_runtime
         for route in [
             "/v1/runtime/capabilities",
+            "/v1/runtime/profile",
             "/v1/runtime/configuration",
             "/v1/runtime/configuration/status",
         ]
@@ -221,9 +227,9 @@ def main() -> None:
     runtime_status_count = len(
         re.findall(r"(?m)^      x-candy-status: runtime-sync$", openapi)
     )
-    if runtime_routes_implemented and runtime_status_count != 3:
+    if runtime_routes_implemented and runtime_status_count != 4:
         fail("implemented Runtime routes must retain all OpenAPI synchronization markers")
-    if not runtime_routes_implemented and runtime_status_count != 3:
+    if not runtime_routes_implemented and runtime_status_count != 4:
         fail("Runtime routes being synchronized must retain all OpenAPI markers")
 
     require(caddy, "header_up -X-Candy-Verified-Device-Certificate-Der", "Caddy identity boundary")
