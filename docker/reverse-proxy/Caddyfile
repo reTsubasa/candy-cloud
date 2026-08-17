@@ -24,14 +24,12 @@
 
   handle_path /identity/* {
     reverse_proxy cloud-identity:8082 {
-      header_up -X-Candy-Client-IP
       header_up X-Candy-Client-IP {http.request.remote.host}
     }
   }
 
   handle_path /auth/* {
     reverse_proxy cloud-auth:8081 {
-      header_up -X-Candy-Verified-Device-Certificate-Der
       header_up X-Candy-Verified-Device-Certificate-Der {tls_client_certificate_der_base64}
     }
   }

@@ -276,9 +276,19 @@ def main() -> None:
     if not runtime_routes_implemented and runtime_status_count != 5:
         fail("Runtime routes being synchronized must retain all OpenAPI markers")
 
-    require(caddy, "header_up -X-Candy-Verified-Device-Certificate-Der", "Caddy identity boundary")
+    reject(caddy, "header_up -X-Candy-Verified-Device-Certificate-Der", "Caddy identity boundary")
     require(caddy, "handle_path /identity/*", "Caddy human identity boundary")
+    require(
+        caddy,
+        "header_up X-Candy-Client-IP {http.request.remote.host}",
+        "Caddy trusted client address forwarding",
+    )
     require(caddy, "{tls_client_certificate_der_base64}", "Caddy verified certificate forwarding")
+    require(
+        read(ROOT / "crates" / "cloud-db" / "src" / "control.rs"),
+        "SELECT DISTINCT resources.resource_kind, resources.id, CAST(resources.document_json AS CHAR) AS document_json",
+        "MySQL 8.4-compatible control snapshot ordering",
+    )
     for statement in [
         "Cloud never instructs Runtime to remove the last-known-good configuration",
         "Runtime identity is never accepted from JSON",

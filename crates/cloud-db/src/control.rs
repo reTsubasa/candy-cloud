@@ -351,7 +351,7 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidTransition);
         }
         let rows = sqlx::query(
-            "WITH RECURSIVE graph (resource_kind, resource_id) AS (SELECT resource_kind, id FROM sdwan_control_resources WHERE tenant_id = ? AND state = 'ACTIVE' AND ((resource_kind = 'SEGMENT' AND id = ?) OR segment_id = ?) UNION DISTINCT SELECT refs.target_kind, refs.target_id FROM sdwan_control_resource_references refs JOIN graph current ON refs.tenant_id = ? AND refs.source_kind = current.resource_kind AND refs.source_id = current.resource_id) SELECT DISTINCT CAST(resources.document_json AS CHAR) AS document_json FROM graph JOIN sdwan_control_resources resources ON resources.tenant_id = ? AND resources.resource_kind = graph.resource_kind AND resources.id = graph.resource_id WHERE resources.state = 'ACTIVE' ORDER BY resources.resource_kind, resources.id",
+            "WITH RECURSIVE graph (resource_kind, resource_id) AS (SELECT resource_kind, id FROM sdwan_control_resources WHERE tenant_id = ? AND state = 'ACTIVE' AND ((resource_kind = 'SEGMENT' AND id = ?) OR segment_id = ?) UNION DISTINCT SELECT refs.target_kind, refs.target_id FROM sdwan_control_resource_references refs JOIN graph current ON refs.tenant_id = ? AND refs.source_kind = current.resource_kind AND refs.source_id = current.resource_id) SELECT DISTINCT resources.resource_kind, resources.id, CAST(resources.document_json AS CHAR) AS document_json FROM graph JOIN sdwan_control_resources resources ON resources.tenant_id = ? AND resources.resource_kind = graph.resource_kind AND resources.id = graph.resource_id WHERE resources.state = 'ACTIVE' ORDER BY resources.resource_kind, resources.id",
         )
         .bind(tenant_id)
         .bind(segment_id)
