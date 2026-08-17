@@ -430,10 +430,7 @@ fn validate_direct_dialers(
             }
         }
     }
-    if direct_peers
-        .values()
-        .any(|(_, has_dialer)| !has_dialer)
-    {
+    if direct_peers.values().any(|(_, has_dialer)| !has_dialer) {
         bail!("direct peer must use one transport Node with exactly one outbound side");
     }
     Ok(())
@@ -449,6 +446,10 @@ impl SegmentGenerationPublisher for ControlRoutePublisher {
         &self,
         snapshot: &SegmentControlSnapshot,
     ) -> std::result::Result<PublishedGeneration, PublicationFailure> {
+        self.routes
+            .ensure_control_topology(snapshot.tenant_id, snapshot.segment_id, &snapshot.resources)
+            .await
+            .map_err(classify_publish_error)?;
         let publication_id = stable_uuid(
             snapshot.tenant_id,
             snapshot.segment_id,
@@ -597,7 +598,9 @@ mod tests {
             direct_path(peer, attachment_a, attachment_b, node_b),
             direct_path(peer, attachment_b, attachment_a, node_a),
         ];
-        assert!(validate_direct_dialers(&duplicate_full_duplex, &attachment_nodes, &nodes).is_err());
+        assert!(
+            validate_direct_dialers(&duplicate_full_duplex, &attachment_nodes, &nodes).is_err()
+        );
     }
 
     #[test]

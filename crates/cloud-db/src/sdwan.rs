@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use chrono::Utc;
+use cloud_control::{ControlResourceV1, ResourceSpecV1, ResourceState, SiteKindV1};
 use sha2::{Digest, Sha256};
 use sqlx::{MySql, Row, Transaction};
 use thiserror::Error;
@@ -817,6 +818,114 @@ impl SdwanRepository {
         self.current_head(tenant_id, segment_id).await
     }
 
+    /// Materialize the management control graph into the route-contract tables.
+    ///
+    /// The management API owns `sdwan_control_resources`, while the signed route
+    /// publisher and runtime readers intentionally use the older normalized route
+    /// contract. Keeping this bridge in the repository makes first publication
+    /// deterministic and avoids relying on out-of-band database repair.
+    pub async fn ensure_control_topology(
+        &self,
+        tenant_id: Uuid,
+        segment_id: Uuid,
+        resources: &[ControlResourceV1],
+    ) -> Result<(), SdwanError> {
+        let segment = resources
+            .iter()
+            .find_map(|resource| {
+                (resource.metadata.id == segment_id)
+                    .then(|| match &resource.resource {
+                        ResourceSpecV1::Segment(value) => Some((resource.metadata.state, value)),
+                        _ => None,
+                    })
+                    .flatten()
+            })
+            .ok_or(SdwanError::SegmentNotFound)?;
+        let mut transaction = self.pool.begin().await?;
+
+        for resource in resources {
+            if let ResourceSpecV1::Site(site) = &resource.resource {
+                let state = route_state(resource.metadata.state);
+                sqlx::query(
+                    "INSERT INTO sites (id, tenant_id, name, kind, state) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), kind = VALUES(kind), state = VALUES(state)",
+                )
+                .bind(resource.metadata.id)
+                .bind(tenant_id)
+                .bind(&site.name)
+                .bind(site_kind(site.kind))
+                .bind(state)
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
+
+        let hub_pool_id: Uuid = sqlx::query_scalar(
+            "SELECT node_pool_id FROM nodes WHERE tenant_id = ? AND status IN ('ACTIVE','PENDING') ORDER BY created_at, id LIMIT 1",
+        )
+        .bind(tenant_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(SdwanError::PrincipalMismatch)?;
+
+        let state = route_state(segment.0);
+        sqlx::query(
+            "INSERT INTO segments (id, tenant_id, name, hub_node_pool_id, overlay_network, overlay_prefix_len, state) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), hub_node_pool_id = VALUES(hub_node_pool_id), overlay_network = VALUES(overlay_network), overlay_prefix_len = VALUES(overlay_prefix_len), state = VALUES(state)",
+        )
+        .bind(segment_id)
+        .bind(tenant_id)
+        .bind(&segment.1.name)
+        .bind(hub_pool_id)
+        .bind(segment.1.overlay_prefix.network.octets().as_slice())
+        .bind(segment.1.overlay_prefix.prefix_len)
+        .bind(state)
+        .execute(&mut *transaction)
+        .await?;
+
+        sqlx::query(
+            "UPDATE segment_attachments SET state = 'REVOKED' WHERE tenant_id = ? AND segment_id = ? AND principal_kind = 'DEVICE' AND state IN ('ACTIVE','STANDBY')",
+        )
+        .bind(tenant_id)
+        .bind(segment_id)
+        .execute(&mut *transaction)
+        .await?;
+        for resource in resources {
+            let ResourceSpecV1::Attachment(attachment) = &resource.resource else {
+                continue;
+            };
+            let Some(node) = resources.iter().find_map(|candidate| {
+                (candidate.metadata.id == attachment.node_id)
+                    .then(|| match &candidate.resource {
+                        ResourceSpecV1::Node(value) => Some(value),
+                        _ => None,
+                    })
+                    .flatten()
+            }) else {
+                return Err(SdwanError::InvalidScope);
+            };
+            let state = match resource.metadata.state {
+                ResourceState::Active => "ACTIVE",
+                ResourceState::Disabled => "DISABLED",
+                ResourceState::Deleted => "REVOKED",
+            };
+            sqlx::query(
+                "INSERT INTO segment_attachments (id, tenant_id, segment_id, site_id, principal_kind, device_id, device_key_id, overlay_router_ipv4, state, epoch_floor) VALUES (?, ?, ?, ?, 'DEVICE', ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE site_id = VALUES(site_id), device_id = VALUES(device_id), device_key_id = VALUES(device_key_id), overlay_router_ipv4 = VALUES(overlay_router_ipv4), state = VALUES(state), epoch_floor = VALUES(epoch_floor)",
+            )
+            .bind(resource.metadata.id)
+            .bind(tenant_id)
+            .bind(attachment.segment_id)
+            .bind(attachment.site_id)
+            .bind(node.device_id)
+            .bind(node.device_key_id)
+            .bind(attachment.overlay_router_ipv4.octets().as_slice())
+            .bind(state)
+            .bind(attachment.epoch_floor)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
     pub async fn published_generation(
         &self,
         tenant_id: Uuid,
@@ -978,6 +1087,21 @@ impl SdwanRepository {
         }
         transaction.commit().await?;
         Ok(PublicationOutcome::Published)
+    }
+}
+
+fn route_state(state: ResourceState) -> &'static str {
+    match state {
+        ResourceState::Active => "ACTIVE",
+        ResourceState::Disabled => "DISABLED",
+        ResourceState::Deleted => "DELETED",
+    }
+}
+
+fn site_kind(kind: SiteKindV1) -> &'static str {
+    match kind {
+        SiteKindV1::Edge => "EDGE",
+        SiteKindV1::PrivateCloud => "PRIVATE_CLOUD",
     }
 }
 
