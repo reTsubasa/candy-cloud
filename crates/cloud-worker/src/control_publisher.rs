@@ -557,12 +557,12 @@ fn classify_input_error(error: anyhow::Error) -> PublicationFailure {
     });
     if retryable {
         PublicationFailure::Retryable {
-            code: "ROUTE_INPUT_DATABASE".into(),
+            code: format!("ROUTE_INPUT_{error}"),
             retry_after: std::time::Duration::from_secs(5),
         }
     } else {
         PublicationFailure::Permanent {
-            code: "ROUTE_INPUT_INVALID_TOPOLOGY".into(),
+            code: format!("ROUTE_INPUT_{error}"),
         }
     }
 }
