@@ -1632,7 +1632,7 @@ impl GenerationJobRepository {
     /// upgrade. Other permanent failures remain terminal by design.
     pub async fn recover_route_input_head_failures(&self) -> Result<u64, ControlStoreError> {
         let result = sqlx::query(
-            "UPDATE segment_generation_jobs SET state = 'RETRY', lease_owner = NULL, lease_until = NULL, next_attempt_at = CURRENT_TIMESTAMP(6), last_error_code = 'ROUTE_RETRY_TOPOLOGY_MATERIALIZATION' WHERE state = 'PERMANENT_FAILURE' AND last_error_code = 'ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD'",
+            "UPDATE segment_generation_jobs SET state = 'RETRY', lease_owner = NULL, lease_until = NULL, next_attempt_at = CURRENT_TIMESTAMP(6), last_error_code = 'ROUTE_RETRY_TOPOLOGY_MATERIALIZATION' WHERE state = 'PERMANENT_FAILURE' AND last_error_code IN ('ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD', 'ROUTE_DB_PRINCIPAL_MISMATCH')",
         )
         .execute(&self.pool)
         .await?;
