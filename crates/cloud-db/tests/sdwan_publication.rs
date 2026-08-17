@@ -1,9 +1,14 @@
+use cloud_control::{
+    AttachmentV1, ControlResourceV1, Ipv4PrefixV1, NodePlatformV1, NodeV1, ResourceMetadataV1,
+    ResourceSpecV1, ResourceState, SegmentV1, SiteKindV1, SiteV1, CONTROL_SCHEMA_V1,
+};
 use cloud_db::sdwan::{
     ExpansionObjectKind, ExpansionObjectPublicationWrite, PublicationOutcome,
     RuntimeConfigurationApplyState, RuntimeConfigurationError, RuntimeConfigurationLookup,
     RuntimeConfigurationState, RuntimeConfigurationStatusWrite, SdwanError, SdwanRepository,
     SegmentPublicationWrite, SignedObjectWrite, SiteProjectionPublicationWrite,
 };
+use std::net::Ipv4Addr;
 use uuid::Uuid;
 
 fn signed(byte: u8) -> SignedObjectWrite {
@@ -43,6 +48,175 @@ fn publication(tenant_id: Uuid, segment_id: Uuid) -> SegmentPublicationWrite {
         audit_event_id: Uuid::new_v4(),
         actor_id: "route-worker".into(),
     }
+}
+
+fn control_resource(
+    tenant_id: Uuid,
+    id: Uuid,
+    state: ResourceState,
+    resource: ResourceSpecV1,
+) -> ControlResourceV1 {
+    ControlResourceV1 {
+        metadata: ResourceMetadataV1 {
+            schema_version: CONTROL_SCHEMA_V1,
+            id,
+            tenant_id,
+            revision: 1,
+            state,
+        },
+        resource,
+    }
+}
+
+#[tokio::test]
+async fn control_snapshot_materializes_empty_route_contract_idempotently() {
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        return;
+    };
+    let pool = cloud_db::connect(&url).await.unwrap();
+    cloud_db::migrate(&pool).await.unwrap();
+    let organization_id = Uuid::new_v4();
+    let tenant_id = Uuid::new_v4();
+    let pool_id = Uuid::new_v4();
+    let device_id = Uuid::new_v4();
+    let device_key_id = Uuid::new_v4();
+    let service_node_id = Uuid::new_v4();
+    let control_node_id = Uuid::new_v4();
+    let site_id = Uuid::new_v4();
+    let segment_id = Uuid::new_v4();
+    let attachment_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO organizations (id, name) VALUES (?, ?)")
+        .bind(organization_id)
+        .bind(format!("materialize-org-{organization_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tenants (id, organization_id, name) VALUES (?, ?, ?)")
+        .bind(tenant_id)
+        .bind(organization_id)
+        .bind(format!("materialize-tenant-{tenant_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO node_pools (id, tenant_id, service_class, name, audience) VALUES (?, ?, 'PRIVATE', ?, 'private')")
+        .bind(pool_id)
+        .bind(tenant_id)
+        .bind(format!("materialize-pool-{pool_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO devices (id, tenant_id, device_id, display_name, status) VALUES (?, ?, ?, 'materialize-device', 'ACTIVE')")
+        .bind(device_id)
+        .bind(tenant_id)
+        .bind(Uuid::new_v4().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO device_keys (id, tenant_id, device_id, key_id, public_key, status) VALUES (?, ?, ?, ?, ?, 'ACTIVE')")
+        .bind(device_key_id)
+        .bind(tenant_id)
+        .bind(device_id)
+        .bind(format!("materialize-key-{device_key_id}"))
+        .bind([1_u8; 32].as_slice())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO nodes (id, tenant_id, device_id, device_key_id, node_pool_id, node_id, status) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')")
+        .bind(service_node_id)
+        .bind(tenant_id)
+        .bind(device_id)
+        .bind(device_key_id)
+        .bind(pool_id)
+        .bind(format!("materialize-node-{service_node_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mut resources = vec![
+        control_resource(
+            tenant_id,
+            site_id,
+            ResourceState::Active,
+            ResourceSpecV1::Site(SiteV1 {
+                name: "branch-a".into(),
+                kind: SiteKindV1::Edge,
+            }),
+        ),
+        control_resource(
+            tenant_id,
+            segment_id,
+            ResourceState::Active,
+            ResourceSpecV1::Segment(SegmentV1 {
+                name: "production".into(),
+                overlay_prefix: Ipv4PrefixV1 {
+                    network: Ipv4Addr::new(100, 64, 0, 0),
+                    prefix_len: 24,
+                },
+            }),
+        ),
+        control_resource(
+            tenant_id,
+            control_node_id,
+            ResourceState::Active,
+            ResourceSpecV1::Node(NodeV1 {
+                device_id,
+                device_key_id,
+                site_id,
+                display_name: "branch-router".into(),
+                platform: NodePlatformV1::Linux,
+                architecture: "x86_64".into(),
+            }),
+        ),
+        control_resource(
+            tenant_id,
+            attachment_id,
+            ResourceState::Active,
+            ResourceSpecV1::Attachment(AttachmentV1 {
+                segment_id,
+                site_id,
+                node_id: control_node_id,
+                overlay_router_ipv4: Ipv4Addr::new(100, 64, 0, 2),
+                epoch_floor: 1,
+            }),
+        ),
+    ];
+    let repository = SdwanRepository::new(pool.clone());
+    repository
+        .ensure_control_topology(tenant_id, segment_id, &resources)
+        .await
+        .unwrap();
+    repository
+        .ensure_control_topology(tenant_id, segment_id, &resources)
+        .await
+        .unwrap();
+    assert_eq!(
+        repository
+            .segment_head(tenant_id, segment_id)
+            .await
+            .unwrap(),
+        (0, [0; 32])
+    );
+    let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segment_attachments WHERE tenant_id = ? AND segment_id = ? AND state = 'ACTIVE'")
+        .bind(tenant_id)
+        .bind(segment_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(active, 1);
+
+    resources[3].metadata.state = ResourceState::Disabled;
+    repository
+        .ensure_control_topology(tenant_id, segment_id, &resources)
+        .await
+        .unwrap();
+    let state: String =
+        sqlx::query_scalar("SELECT state FROM segment_attachments WHERE tenant_id = ? AND id = ?")
+            .bind(tenant_id)
+            .bind(attachment_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(state, "DISABLED");
 }
 
 #[test]

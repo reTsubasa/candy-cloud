@@ -466,6 +466,10 @@ impl SegmentGenerationPublisher for ControlRoutePublisher {
         &self,
         snapshot: &SegmentControlSnapshot,
     ) -> std::result::Result<PublishedGeneration, PublicationFailure> {
+        self.routes
+            .ensure_control_topology(snapshot.tenant_id, snapshot.segment_id, &snapshot.resources)
+            .await
+            .map_err(classify_publish_error)?;
         let publication_id = stable_uuid(
             snapshot.tenant_id,
             snapshot.segment_id,
