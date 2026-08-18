@@ -314,9 +314,10 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const y = 220 - Math.min(36, Math.abs(right.x - left.x) / 12);
         const tone = link.state === 'active' ? 'ok' : 'warn';
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
+          <title>{link.activePathCount > 0 ? `数据面活跃 · ${link.activePathCount} 条路径 · ${link.kindLabel}` : '已编排，等待节点数据面遥测'}</title>
           <path d={`M ${left.x} 236 C ${left.x} ${y}, ${right.x} ${y}, ${right.x} 236`} markerEnd={`url(#topology-arrow-${tone})`} />
           <rect x={(left.x + right.x) / 2 - 52} y={y - 13} width="104" height="24" rx="12" />
-          <text x={(left.x + right.x) / 2} y={y + 4} textAnchor="middle">{link.directionCount}/2 · {link.kindLabel}</text>
+          <text x={(left.x + right.x) / 2} y={y + 4} textAnchor="middle">{link.activePathCount > 0 ? `${link.activePathCount} 条活跃` : `${link.directionCount}/2 · ${link.kindLabel}`}</text>
         </g>;
       })}
       <g className="topology-legend" transform={`translate(${center - 225} 430)`}>

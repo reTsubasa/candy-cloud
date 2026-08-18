@@ -46,7 +46,7 @@ describe('operational topology', () => {
     expect(snapshot.sites).toHaveLength(2);
     expect(snapshot.activeNodeCount).toBe(1);
     expect(snapshot.pendingNodeCount).toBe(1);
-    expect(snapshot.activeLinkCount).toBe(1);
+    expect(snapshot.activeLinkCount).toBe(0);
     expect(snapshot.routeLabels).toEqual(['192.168.1.0/24']);
     expect(snapshot.egressLabels).toEqual(['东京出口']);
     expect(snapshot.policyRuleCount).toBe(1);
@@ -67,6 +67,7 @@ describe('operational topology', () => {
       required_route_owners: 1, ready_route_owners: 1, fail_open_required: false,
       last_error_code: null, rtt_ms: 42, jitter_ms: 7, packet_loss_ppm: 12_500,
       rx_bps: 20_000_000, tx_bps: 10_000_000, reconnects: 2, path_changes: 1,
+      paths: [{ peer_attachment_id: 'attachment-b', candidate_id: null, path_kind: 'direct', transport: 'quic_udp', connection_epoch: 3, rtt_ms: 42, jitter_ms: 7, packet_loss_ppm: 12_500, rx_bps: 20_000_000, tx_bps: 10_000_000, reconnects: 2, path_changes: 1 }],
       reported_at: '2026-08-18T09:59:40Z',
     };
     const stale = { ...active, device_id: 'device-b', device_key_id: 'key-b', reported_at: '2026-08-18T09:57:00Z' };
@@ -75,6 +76,8 @@ describe('operational topology', () => {
     expect(snapshot.staleNodeCount).toBe(1);
     expect(snapshot.dataPlaneActiveNodeCount).toBe(1);
     expect(snapshot.telemetryCoverageCount).toBe(1);
+    expect(snapshot.activeLinkCount).toBe(1);
+    expect(snapshot.links[0].activePathCount).toBe(1);
     expect(snapshot.averageRttMs).toBe(42);
     expect(snapshot.averagePacketLossPpm).toBe(12_500);
     expect(snapshot.rxBps).toBe(20_000_000);

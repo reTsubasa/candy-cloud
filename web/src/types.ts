@@ -160,7 +160,23 @@ export type RuntimeTelemetry = {
   tx_bps: number | null;
   reconnects: number | null;
   path_changes: number | null;
+  paths: RuntimePathTelemetry[];
   reported_at: string;
+};
+
+export type RuntimePathTelemetry = {
+  peer_attachment_id: string;
+  candidate_id: string | null;
+  path_kind: 'direct' | 'relay';
+  transport: 'quic_udp' | string;
+  connection_epoch: number;
+  rtt_ms: number | null;
+  jitter_ms: number | null;
+  packet_loss_ppm: number | null;
+  rx_bps: number | null;
+  tx_bps: number | null;
+  reconnects: number;
+  path_changes: number;
 };
 
 export type RuntimeTelemetryResponse = {

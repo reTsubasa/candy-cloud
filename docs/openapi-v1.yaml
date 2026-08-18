@@ -1712,6 +1712,27 @@ components:
         tx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         reconnects: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         path_changes: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        paths:
+          type: array
+          maxItems: 256
+          items: { $ref: "#/components/schemas/RuntimePathTelemetry" }
+    RuntimePathTelemetry:
+      type: object
+      additionalProperties: false
+      required: [peer_attachment_id, candidate_id, path_kind, transport, connection_epoch, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes]
+      properties:
+        peer_attachment_id: { $ref: "#/components/schemas/Uuid" }
+        candidate_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
+        path_kind: { type: string, enum: [direct, relay] }
+        transport: { type: string, const: quic_udp }
+        connection_epoch: { type: integer, minimum: 1 }
+        rtt_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        jitter_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        packet_loss_ppm: { oneOf: [{ type: integer, minimum: 0, maximum: 1000000 }, { type: "null" }] }
+        rx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        tx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        reconnects: { type: integer, minimum: 0 }
+        path_changes: { type: integer, minimum: 0 }
     RuntimeTelemetryInventory:
       type: object
       additionalProperties: false
@@ -1726,7 +1747,7 @@ components:
     RuntimeTelemetryItem:
       type: object
       additionalProperties: false
-      required: [device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, reported_at]
+      required: [device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, paths, reported_at]
       properties:
         device_id: { $ref: "#/components/schemas/Uuid" }
         device_key_id: { $ref: "#/components/schemas/Uuid" }
@@ -1746,6 +1767,10 @@ components:
         tx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         reconnects: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         path_changes: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        paths:
+          type: array
+          maxItems: 256
+          items: { $ref: "#/components/schemas/RuntimePathTelemetry" }
         reported_at: { type: string, format: date-time }
     DeviceProblem:
       type: object

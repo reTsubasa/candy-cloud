@@ -1,4 +1,4 @@
-import type { ControlResource, RuntimeActivationReadiness, RuntimeConfigurationStatus, RuntimeTelemetry } from './types';
+import type { ControlResource, RuntimeActivationReadiness, RuntimeConfigurationStatus, RuntimePathTelemetry, RuntimeTelemetry } from './types';
 
 export type OperationalResourceKey = 'sites' | 'nodes' | 'segments' | 'attachments' | 'prefixes' | 'peers' | 'paths' | 'egress' | 'policies' | 'dns' | 'relays';
 export type OperationalResources = Record<OperationalResourceKey, ControlResource[]>;
@@ -49,6 +49,8 @@ export type OperationalLink = {
   directionCount: number;
   kindLabel: string;
   state: 'active' | 'pending';
+  activePathCount: number;
+  activePaths: RuntimePathTelemetry[];
 };
 
 export type OperationalTopologySnapshot = {
@@ -183,13 +185,24 @@ export function buildOperationalTopology(
     .map((peer) => {
       const paths = resources.paths.filter((path) => value(path, 'peer_id') === peer.metadata.id && value(path, 'segment_id') === segmentId);
       const kinds = new Set(paths.map((path) => value(path, 'kind')));
+      const peerAttachmentIds = new Set(
+        selectedAttachments
+          .filter((attachment) => value(attachment, 'site_id') === value(peer, 'site_a_id') || value(attachment, 'site_id') === value(peer, 'site_b_id'))
+          .map((attachment) => attachment.metadata.id),
+      );
+      const activePaths = nodes.flatMap((node) => {
+        if (!node.dataPlaneActive) return [];
+        return (node.telemetry?.paths ?? []).filter((path) => peerAttachmentIds.has(path.peer_attachment_id));
+      });
       return {
         id: peer.metadata.id,
         siteAId: value(peer, 'site_a_id'),
         siteBId: value(peer, 'site_b_id'),
         directionCount: Math.min(2, paths.length),
         kindLabel: kinds.has('RELAY') ? '中继' : '直连',
-        state: readiness?.ready && paths.length >= 2 ? 'active' : 'pending',
+        state: activePaths.length > 0 ? 'active' : 'pending',
+        activePathCount: activePaths.length,
+        activePaths,
       };
     });
   const routeLabels = selectedPrefixes.map((item) => cidr(item.resource.spec.prefix));

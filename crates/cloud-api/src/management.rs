@@ -250,7 +250,24 @@ pub struct RuntimeTelemetryItem {
     pub tx_bps: Option<u64>,
     pub reconnects: Option<u64>,
     pub path_changes: Option<u64>,
+    pub paths: Vec<RuntimePathTelemetryItem>,
     pub reported_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimePathTelemetryItem {
+    pub peer_attachment_id: Uuid,
+    pub candidate_id: Option<Uuid>,
+    pub path_kind: &'static str,
+    pub transport: String,
+    pub connection_epoch: u64,
+    pub rtt_ms: Option<u32>,
+    pub jitter_ms: Option<u32>,
+    pub packet_loss_ppm: Option<u32>,
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+    pub reconnects: u64,
+    pub path_changes: u64,
 }
 
 pub async fn runtime_telemetry(
@@ -289,6 +306,27 @@ pub async fn runtime_telemetry(
             tx_bps: record.tx_bps,
             reconnects: record.reconnects,
             path_changes: record.path_changes,
+            paths: record
+                .paths
+                .into_iter()
+                .map(|path| RuntimePathTelemetryItem {
+                    peer_attachment_id: path.peer_attachment_id,
+                    candidate_id: path.candidate_id,
+                    path_kind: match path.path_kind {
+                        cloud_db::sdwan::RuntimePathKind::Direct => "direct",
+                        cloud_db::sdwan::RuntimePathKind::Relay => "relay",
+                    },
+                    transport: path.transport,
+                    connection_epoch: path.connection_epoch,
+                    rtt_ms: path.rtt_ms,
+                    jitter_ms: path.jitter_ms,
+                    packet_loss_ppm: path.packet_loss_ppm,
+                    rx_bps: path.rx_bps,
+                    tx_bps: path.tx_bps,
+                    reconnects: path.reconnects,
+                    path_changes: path.path_changes,
+                })
+                .collect(),
             reported_at: record.reported_at,
         })
         .collect();

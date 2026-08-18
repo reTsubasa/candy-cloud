@@ -9,7 +9,8 @@ use cloud_db::{
         RuntimeConfigurationApplyState as DbRuntimeConfigurationApplyState,
         RuntimeConfigurationError, RuntimeConfigurationLookup, RuntimeConfigurationState,
         RuntimeConfigurationStatusWrite, RuntimeLifecycle as DbRuntimeLifecycle,
-        RuntimeTelemetryWrite, SdwanRepository,
+        RuntimePathKind as DbRuntimePathKind, RuntimePathTelemetryWrite, RuntimeTelemetryWrite,
+        SdwanRepository,
     },
 };
 use sha2::{Digest, Sha256};
@@ -26,9 +27,9 @@ use crate::{
         GrantServiceError, RuntimeConfigurationApplyState, RuntimeConfigurationDelivery,
         RuntimeConfigurationService, RuntimeConfigurationServiceError,
         RuntimeConfigurationStatusCommand, RuntimeGrantVerificationKeyDelivery, RuntimeLifecycle,
-        RuntimePeerProjectionDelivery, RuntimeProfileDelivery, RuntimeTelemetryCommand,
-        RuntimeTransportIdentityCommand, RuntimeTransportIdentityDelivery, RuntimeTransportPreset,
-        ServiceFuture, TenantAuthService,
+        RuntimePathKind, RuntimePeerProjectionDelivery, RuntimeProfileDelivery,
+        RuntimeTelemetryCommand, RuntimeTransportIdentityCommand, RuntimeTransportIdentityDelivery,
+        RuntimeTransportPreset, ServiceFuture, TenantAuthService,
     },
 };
 
@@ -325,6 +326,27 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                     tx_bps: command.tx_bps,
                     reconnects: command.reconnects,
                     path_changes: command.path_changes,
+                    paths: command
+                        .paths
+                        .into_iter()
+                        .map(|path| RuntimePathTelemetryWrite {
+                            peer_attachment_id: path.peer_attachment_id,
+                            candidate_id: path.candidate_id,
+                            path_kind: match path.path_kind {
+                                RuntimePathKind::Direct => DbRuntimePathKind::Direct,
+                                RuntimePathKind::Relay => DbRuntimePathKind::Relay,
+                            },
+                            transport: path.transport,
+                            connection_epoch: path.connection_epoch,
+                            rtt_ms: path.rtt_ms,
+                            jitter_ms: path.jitter_ms,
+                            packet_loss_ppm: path.packet_loss_ppm,
+                            rx_bps: path.rx_bps,
+                            tx_bps: path.tx_bps,
+                            reconnects: path.reconnects,
+                            path_changes: path.path_changes,
+                        })
+                        .collect(),
                 })
                 .await
                 .map_err(|error| match error {

@@ -74,9 +74,16 @@ fn runtime_telemetry_is_identity_scoped_bounded_latest_state() {
 }
 
 #[test]
+fn runtime_path_telemetry_is_bounded_latest_state() {
+    let migration = include_str!("../migrations/0017_runtime_path_telemetry.sql");
+    assert!(migration.contains("paths_json JSON"));
+    assert!(migration.contains("JSON_LENGTH(paths_json) <= 256"));
+}
+
+#[test]
 fn control_plane_readiness_requires_the_latest_telemetry_migration() {
     let source = include_str!("../src/control.rs");
-    assert!(source.contains("_sqlx_migrations WHERE version = 16 AND success = TRUE"));
+    assert!(source.contains("_sqlx_migrations WHERE version = 17 AND success = TRUE"));
 }
 
 #[test]

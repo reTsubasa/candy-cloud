@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use chrono::Utc;
-use cloud_control::{ControlResourceV1, ResourceSpecV1, ResourceState, SiteKindV1};
+use cloud_control::{
+    ControlResourceV1, PathCandidateKindV1, ResourceSpecV1, ResourceState, SiteKindV1,
+};
 use sha2::{Digest, Sha256};
 use sqlx::{MySql, Row, Transaction};
 use thiserror::Error;
@@ -13,6 +15,7 @@ const MAX_SIGNED_ENVELOPE_LEN: usize = 1024 * 1024;
 const MAX_ACTOR_ID_LEN: usize = 120;
 const MAX_PROJECTIONS: usize = 4096;
 const MAX_EXPANSION_OBJECTS: usize = 4096;
+const MAX_RUNTIME_PATHS: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfigurationLookup {
@@ -236,6 +239,30 @@ pub struct RuntimeTelemetryWrite {
     pub tx_bps: Option<u64>,
     pub reconnects: Option<u64>,
     pub path_changes: Option<u64>,
+    pub paths: Vec<RuntimePathTelemetryWrite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimePathTelemetryWrite {
+    pub peer_attachment_id: Uuid,
+    pub candidate_id: Option<Uuid>,
+    pub path_kind: RuntimePathKind,
+    pub transport: String,
+    pub connection_epoch: u64,
+    pub rtt_ms: Option<u32>,
+    pub jitter_ms: Option<u32>,
+    pub packet_loss_ppm: Option<u32>,
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+    pub reconnects: u64,
+    pub path_changes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePathKind {
+    Direct,
+    Relay,
 }
 
 impl RuntimeTelemetryWrite {
@@ -256,7 +283,19 @@ impl RuntimeTelemetryWrite {
             || self.packet_loss_ppm.is_some_and(|value| value > 1_000_000)
             || matches!(self.lifecycle, RuntimeLifecycle::FailOpen) != self.fail_open_required
             || !error_is_valid
+            || self.paths.len() > MAX_RUNTIME_PATHS
         {
+            return Err(RuntimeConfigurationError::InvalidScope);
+        }
+        let mut peer_attachments = HashSet::with_capacity(self.paths.len());
+        if self.paths.iter().any(|path| {
+            path.peer_attachment_id.is_nil()
+                || path.candidate_id.is_some_and(|value| value.is_nil())
+                || path.transport != "quic_udp"
+                || path.connection_epoch == 0
+                || path.packet_loss_ppm.is_some_and(|value| value > 1_000_000)
+                || !peer_attachments.insert(path.peer_attachment_id)
+        }) {
             return Err(RuntimeConfigurationError::InvalidScope);
         }
         Ok(())
@@ -875,6 +914,70 @@ impl SdwanRepository {
             transaction.rollback().await?;
             return Err(RuntimeConfigurationError::InvalidScope);
         }
+        if !telemetry.paths.is_empty() {
+            let local_attachments: Vec<(Uuid, Uuid)> = sqlx::query_as(
+                "SELECT id, segment_id FROM segment_attachments WHERE tenant_id = ? AND device_id = ? AND device_key_id = ? AND principal_kind = 'DEVICE' AND state IN ('ACTIVE','STANDBY') FOR SHARE",
+            )
+            .bind(telemetry.lookup.tenant_id)
+            .bind(telemetry.lookup.device_id)
+            .bind(telemetry.lookup.device_key_id)
+            .fetch_all(&mut *transaction)
+            .await?;
+            if local_attachments.len() != 1 {
+                transaction.rollback().await?;
+                return Err(RuntimeConfigurationError::InvalidScope);
+            }
+            let (local_attachment_id, segment_id) = local_attachments[0];
+            let peer_attachments = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM segment_attachments WHERE tenant_id = ? AND segment_id = ? AND id <> ? AND state IN ('ACTIVE','STANDBY') FOR SHARE",
+            )
+            .bind(telemetry.lookup.tenant_id)
+            .bind(segment_id)
+            .bind(local_attachment_id)
+            .fetch_all(&mut *transaction)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+            for path in &telemetry.paths {
+                if !peer_attachments.contains(&path.peer_attachment_id) {
+                    transaction.rollback().await?;
+                    return Err(RuntimeConfigurationError::InvalidScope);
+                }
+                let Some(candidate_id) = path.candidate_id else {
+                    if path.path_kind != RuntimePathKind::Direct {
+                        transaction.rollback().await?;
+                        return Err(RuntimeConfigurationError::InvalidScope);
+                    }
+                    continue;
+                };
+                let document: Option<String> = sqlx::query_scalar(
+                    "SELECT CAST(document_json AS CHAR) FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = 'PATH_CANDIDATE' AND id = ? AND segment_id = ? AND state = 'ACTIVE' FOR SHARE",
+                )
+                .bind(telemetry.lookup.tenant_id)
+                .bind(candidate_id)
+                .bind(segment_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+                let valid = document
+                    .and_then(|value| serde_json::from_str::<ControlResourceV1>(&value).ok())
+                    .is_some_and(|resource| match resource.resource {
+                        ResourceSpecV1::PathCandidate(candidate) => {
+                            candidate.source_attachment_id == local_attachment_id
+                                && candidate.destination_attachment_id == path.peer_attachment_id
+                                && matches!(
+                                    (candidate.kind, path.path_kind),
+                                    (PathCandidateKindV1::Direct, RuntimePathKind::Direct)
+                                        | (PathCandidateKindV1::Relay, RuntimePathKind::Relay)
+                                )
+                        }
+                        _ => false,
+                    });
+                if !valid {
+                    transaction.rollback().await?;
+                    return Err(RuntimeConfigurationError::InvalidScope);
+                }
+            }
+        }
         let current: Option<(Uuid, u64)> = sqlx::query_as(
             "SELECT boot_id, sequence FROM runtime_telemetry_latest WHERE tenant_id = ? AND device_id = ? AND device_key_id = ? FOR UPDATE",
         )
@@ -890,8 +993,10 @@ impl SdwanRepository {
             return Ok(());
         }
         let now = Utc::now();
+        let paths_json = serde_json::to_string(&telemetry.paths)
+            .map_err(|_| RuntimeConfigurationError::InvalidScope)?;
         sqlx::query(
-            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), reported_at = VALUES(reported_at)",
+            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, paths_json, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), paths_json = VALUES(paths_json), reported_at = VALUES(reported_at)",
         )
         .bind(telemetry.lookup.tenant_id)
         .bind(telemetry.lookup.device_id)
@@ -912,6 +1017,7 @@ impl SdwanRepository {
         .bind(telemetry.tx_bps)
         .bind(telemetry.reconnects)
         .bind(telemetry.path_changes)
+        .bind(paths_json)
         .bind(now)
         .execute(&mut *transaction)
         .await?;

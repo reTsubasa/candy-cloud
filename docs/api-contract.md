@@ -192,6 +192,11 @@ from the active Core instance. Performance fields remain null until Core emits
 measured RTT, jitter, packet loss, and rates; Cloud never derives them from
 configuration state. Management reads this bounded state through
 `GET /api/v1/tenants/{tenant_id}/runtime-telemetry`.
+Each item also contains a bounded `paths` snapshot. Cloud validates every
+reported Peer attachment against the device's current Segment and, when a
+candidate identifier is present, against the currently active signed path
+candidate. The complete path set is replaced atomically; no unbounded history
+is retained.
 
 ### Profile and fetch
 

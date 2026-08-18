@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc};
 
 use axum::{
     body::Body,
@@ -290,6 +290,29 @@ pub struct RuntimeTelemetryCommand {
     pub tx_bps: Option<u64>,
     pub reconnects: Option<u64>,
     pub path_changes: Option<u64>,
+    pub paths: Vec<RuntimePathTelemetryCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimePathTelemetryCommand {
+    pub peer_attachment_id: Uuid,
+    pub candidate_id: Option<Uuid>,
+    pub path_kind: RuntimePathKind,
+    pub transport: String,
+    pub connection_epoch: u64,
+    pub rtt_ms: Option<u32>,
+    pub jitter_ms: Option<u32>,
+    pub packet_loss_ppm: Option<u32>,
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+    pub reconnects: u64,
+    pub path_changes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimePathKind {
+    Direct,
+    Relay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -938,6 +961,7 @@ where
     S: RuntimeConfigurationService,
 {
     let error_code = request.last_error_code;
+    let mut peer_attachments = HashSet::with_capacity(request.paths.len());
     if request.schema_version != 1
         || request.boot_id.is_nil()
         || request.sequence == 0
@@ -951,6 +975,15 @@ where
             .as_deref()
             .is_some_and(|value| !valid_runtime_error_code(value))
         || matches!(request.lifecycle, RuntimeLifecycleHttp::FailOpen) != request.fail_open_required
+        || request.paths.len() > 256
+        || request.paths.iter().any(|path| {
+            path.peer_attachment_id.is_nil()
+                || path.candidate_id.is_some_and(|value| value.is_nil())
+                || path.transport != "quic_udp"
+                || path.connection_epoch == 0
+                || path.packet_loss_ppm.is_some_and(|value| value > 1_000_000)
+                || !peer_attachments.insert(path.peer_attachment_id)
+        })
     {
         return Err(ApiError::InvalidRuntimeTelemetry);
     }
@@ -980,6 +1013,27 @@ where
             tx_bps: request.tx_bps,
             reconnects: request.reconnects,
             path_changes: request.path_changes,
+            paths: request
+                .paths
+                .into_iter()
+                .map(|path| RuntimePathTelemetryCommand {
+                    peer_attachment_id: path.peer_attachment_id,
+                    candidate_id: path.candidate_id,
+                    path_kind: match path.path_kind {
+                        RuntimePathKindHttp::Direct => RuntimePathKind::Direct,
+                        RuntimePathKindHttp::Relay => RuntimePathKind::Relay,
+                    },
+                    transport: path.transport,
+                    connection_epoch: path.connection_epoch,
+                    rtt_ms: path.rtt_ms,
+                    jitter_ms: path.jitter_ms,
+                    packet_loss_ppm: path.packet_loss_ppm,
+                    rx_bps: path.rx_bps,
+                    tx_bps: path.tx_bps,
+                    reconnects: path.reconnects,
+                    path_changes: path.path_changes,
+                })
+                .collect(),
         })
         .await
         .map_err(ApiError::RuntimeConfiguration)?;
@@ -1305,6 +1359,32 @@ struct RuntimeTelemetryHttpRequest {
     tx_bps: Option<u64>,
     reconnects: Option<u64>,
     path_changes: Option<u64>,
+    #[serde(default)]
+    paths: Vec<RuntimePathTelemetryHttpRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimePathTelemetryHttpRequest {
+    peer_attachment_id: Uuid,
+    candidate_id: Option<Uuid>,
+    path_kind: RuntimePathKindHttp,
+    transport: String,
+    connection_epoch: u64,
+    rtt_ms: Option<u32>,
+    jitter_ms: Option<u32>,
+    packet_loss_ppm: Option<u32>,
+    rx_bps: Option<u64>,
+    tx_bps: Option<u64>,
+    reconnects: u64,
+    path_changes: u64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RuntimePathKindHttp {
+    Direct,
+    Relay,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]

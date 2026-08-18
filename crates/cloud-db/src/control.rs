@@ -14,6 +14,7 @@ use sqlx::{MySql, Row, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::sdwan::RuntimePathTelemetryWrite;
 use crate::DbPool;
 
 const MAX_ACTOR_LEN: usize = 120;
@@ -120,6 +121,7 @@ pub struct RuntimeTelemetryRecord {
     pub tx_bps: Option<u64>,
     pub reconnects: Option<u64>,
     pub path_changes: Option<u64>,
+    pub paths: Vec<RuntimePathTelemetryWrite>,
     pub reported_at: DateTime<Utc>,
 }
 
@@ -222,7 +224,7 @@ impl ControlRepository {
 
     pub async fn readiness_check(&self) -> Result<(), ControlStoreError> {
         let migration_ready: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version = 16 AND success = TRUE)",
+            "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version = 17 AND success = TRUE)",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -360,7 +362,7 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
+            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, CAST(paths_json AS CHAR) AS paths_json, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -374,6 +376,9 @@ impl ControlRepository {
                 ) {
                     return Err(ControlStoreError::InvalidTransition);
                 }
+                let paths_json: String = row.try_get("paths_json")?;
+                let paths = serde_json::from_str(&paths_json)
+                    .map_err(|_| ControlStoreError::InvalidTransition)?;
                 Ok(RuntimeTelemetryRecord {
                     device_id: row.try_get("device_id")?,
                     device_key_id: row.try_get("device_key_id")?,
@@ -393,6 +398,7 @@ impl ControlRepository {
                     tx_bps: row.try_get("tx_bps")?,
                     reconnects: row.try_get("reconnects")?,
                     path_changes: row.try_get("path_changes")?,
+                    paths,
                     reported_at: row.try_get("reported_at")?,
                 })
             })
