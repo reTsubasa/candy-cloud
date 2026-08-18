@@ -141,6 +141,50 @@ export type RuntimeConfigurationStatusResponse = {
   items: RuntimeConfigurationStatus[];
 };
 
+export type RuntimeTelemetry = {
+  device_id: string;
+  device_key_id: string;
+  boot_id: string;
+  sequence: number;
+  lifecycle: 'starting' | 'active' | 'degraded' | 'fail_open' | 'stopped' | 'unknown';
+  configured_peers: number;
+  active_peers: number;
+  required_route_owners: number;
+  ready_route_owners: number;
+  fail_open_required: boolean;
+  last_error_code: string | null;
+  rtt_ms: number | null;
+  jitter_ms: number | null;
+  packet_loss_ppm: number | null;
+  rx_bps: number | null;
+  tx_bps: number | null;
+  reconnects: number | null;
+  path_changes: number | null;
+  paths: RuntimePathTelemetry[];
+  reported_at: string;
+};
+
+export type RuntimePathTelemetry = {
+  peer_attachment_id: string;
+  candidate_id: string | null;
+  path_kind: 'direct' | 'relay';
+  transport: 'quic_udp' | string;
+  connection_epoch: number;
+  rtt_ms: number | null;
+  jitter_ms: number | null;
+  packet_loss_ppm: number | null;
+  rx_bps: number | null;
+  tx_bps: number | null;
+  reconnects: number;
+  path_changes: number;
+};
+
+export type RuntimeTelemetryResponse = {
+  schema_version: number;
+  stale_after_seconds: number;
+  items: RuntimeTelemetry[];
+};
+
 export type EnrollmentActivation = {
   id: string;
   tenant_id: string;

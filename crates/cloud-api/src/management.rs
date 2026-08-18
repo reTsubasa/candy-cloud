@@ -223,6 +223,120 @@ pub struct RuntimeConfigurationStatusItem {
     pub current: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RuntimeTelemetryResponse {
+    pub schema_version: u16,
+    pub stale_after_seconds: u16,
+    pub items: Vec<RuntimeTelemetryItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeTelemetryItem {
+    pub device_id: Uuid,
+    pub device_key_id: Uuid,
+    pub boot_id: Uuid,
+    pub sequence: u64,
+    pub lifecycle: String,
+    pub configured_peers: u32,
+    pub active_peers: u32,
+    pub required_route_owners: u32,
+    pub ready_route_owners: u32,
+    pub fail_open_required: bool,
+    pub last_error_code: Option<String>,
+    pub rtt_ms: Option<u32>,
+    pub jitter_ms: Option<u32>,
+    pub packet_loss_ppm: Option<u32>,
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+    pub reconnects: Option<u64>,
+    pub path_changes: Option<u64>,
+    pub paths: Vec<RuntimePathTelemetryItem>,
+    pub reported_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimePathTelemetryItem {
+    pub peer_attachment_id: Uuid,
+    pub candidate_id: Option<Uuid>,
+    pub path_kind: &'static str,
+    pub transport: String,
+    pub connection_epoch: u64,
+    pub rtt_ms: Option<u32>,
+    pub jitter_ms: Option<u32>,
+    pub packet_loss_ppm: Option<u32>,
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+    pub reconnects: u64,
+    pub path_changes: u64,
+}
+
+pub async fn runtime_telemetry(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path(tenant_id): Path<Uuid>,
+) -> Result<Json<RuntimeTelemetryResponse>, ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::ReadConfiguration)?;
+    let repository = state.repository.as_ref().ok_or(ApiError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        code: "CONTROL_PLANE_UNAVAILABLE",
+        message: "control plane storage is not configured",
+    })?;
+    let items = repository
+        .runtime_telemetry(tenant_id)
+        .await
+        .map_err(ApiError::from_store)?
+        .into_iter()
+        .map(|record| RuntimeTelemetryItem {
+            device_id: record.device_id,
+            device_key_id: record.device_key_id,
+            boot_id: record.boot_id,
+            sequence: record.sequence,
+            lifecycle: record.lifecycle,
+            configured_peers: record.configured_peers,
+            active_peers: record.active_peers,
+            required_route_owners: record.required_route_owners,
+            ready_route_owners: record.ready_route_owners,
+            fail_open_required: record.fail_open_required,
+            last_error_code: record.last_error_code,
+            rtt_ms: record.rtt_ms,
+            jitter_ms: record.jitter_ms,
+            packet_loss_ppm: record.packet_loss_ppm,
+            rx_bps: record.rx_bps,
+            tx_bps: record.tx_bps,
+            reconnects: record.reconnects,
+            path_changes: record.path_changes,
+            paths: record
+                .paths
+                .into_iter()
+                .map(|path| RuntimePathTelemetryItem {
+                    peer_attachment_id: path.peer_attachment_id,
+                    candidate_id: path.candidate_id,
+                    path_kind: match path.path_kind {
+                        cloud_db::sdwan::RuntimePathKind::Direct => "direct",
+                        cloud_db::sdwan::RuntimePathKind::Relay => "relay",
+                    },
+                    transport: path.transport,
+                    connection_epoch: path.connection_epoch,
+                    rtt_ms: path.rtt_ms,
+                    jitter_ms: path.jitter_ms,
+                    packet_loss_ppm: path.packet_loss_ppm,
+                    rx_bps: path.rx_bps,
+                    tx_bps: path.tx_bps,
+                    reconnects: path.reconnects,
+                    path_changes: path.path_changes,
+                })
+                .collect(),
+            reported_at: record.reported_at,
+        })
+        .collect();
+    Ok(Json(RuntimeTelemetryResponse {
+        schema_version: CONTROL_SCHEMA_V1,
+        stale_after_seconds: 90,
+        items,
+    }))
+}
+
 pub async fn runtime_configuration_statuses(
     State(state): State<Arc<ManagementState>>,
     principal: Option<Extension<AuthenticatedPrincipal>>,

@@ -23,7 +23,7 @@ jq -n --arg sha "$module_sha" --argjson size "$module_size" '{
   schema_version: 1,
   release_kind: "candy-core",
   module: {
-    version: "0.3.11",
+    version: "0.3.12",
     abi_version: 1,
     library: "libcandy_core_cloud.so",
     wire_protocol: "0.3",
@@ -46,14 +46,14 @@ bundle_sha=$(sha256sum "$work/module.tar.gz" | awk '{print $1}')
 
 CORE_MODULE_BUNDLE="$work/module.tar.gz" \
 CORE_MODULE_BUNDLE_SHA256="$bundle_sha" \
-CORE_MODULE_VERSION=0.3.11 \
+CORE_MODULE_VERSION=0.3.12 \
 CORE_MODULE_SHA256="$module_sha" \
 CORE_MODULE_PUBLIC_KEY="$work/test-release.pub" \
 CORE_MODULE_KEY_FINGERPRINT="$test_fingerprint" \
 CORE_MODULE_INSTALL_ROOT="$work/install" \
   "$installer" >/dev/null
-test -f "$work/install/0.3.11/libcandy_core_cloud.so"
-test "$(stat -f '%Lp' "$work/install/0.3.11/libcandy_core_cloud.so" 2>/dev/null || stat -c '%a' "$work/install/0.3.11/libcandy_core_cloud.so")" = 555
+test -f "$work/install/0.3.12/libcandy_core_cloud.so"
+test "$(stat -f '%Lp' "$work/install/0.3.12/libcandy_core_cloud.so" 2>/dev/null || stat -c '%a' "$work/install/0.3.12/libcandy_core_cloud.so")" = 555
 
 jq '.release_kind = "candy-core-cloud-module" | .module.version = "0.3.10" | .artifact.kind = "shared-module"' \
   "$stage/manifest.json" > "$stage/legacy-manifest.json"
@@ -71,7 +71,7 @@ CORE_MODULE_INSTALL_ROOT="$work/legacy-install" \
   "$installer" >/dev/null
 test -f "$work/legacy-install/0.3.10/libcandy_core_cloud.so"
 
-jq '.module.version = "0.3.10"' "$work/install/0.3.11/manifest.json" > "$stage/manifest.json"
+jq '.module.version = "0.3.10"' "$work/install/0.3.12/manifest.json" > "$stage/manifest.json"
 USIGN_PASSWORD='' usign -S -s "$work/test-release.sec" -m "$stage/manifest.json" -x "$stage/manifest.sig"
 tar -czf "$work/canonical-0.3.10.tar.gz" -C "$stage" libcandy_core_cloud.so manifest.json manifest.sig
 canonical_0310_bundle_sha=$(sha256sum "$work/canonical-0.3.10.tar.gz" | awk '{print $1}')
@@ -87,7 +87,7 @@ test -f "$work/canonical-0.3.10-install/0.3.10/libcandy_core_cloud.so"
 
 if CORE_MODULE_BUNDLE="$work/legacy-module.tar.gz" \
   CORE_MODULE_BUNDLE_SHA256="$legacy_bundle_sha" \
-  CORE_MODULE_VERSION=0.3.11 \
+  CORE_MODULE_VERSION=0.3.12 \
   CORE_MODULE_SHA256="$module_sha" \
   CORE_MODULE_PUBLIC_KEY="$work/test-release.pub" \
   CORE_MODULE_KEY_FINGERPRINT="$test_fingerprint" \
@@ -101,7 +101,7 @@ cp "$work/module.tar.gz" "$work/tampered.tar.gz"
 printf 'x' >> "$work/tampered.tar.gz"
 if CORE_MODULE_BUNDLE="$work/tampered.tar.gz" \
   CORE_MODULE_BUNDLE_SHA256="$bundle_sha" \
-  CORE_MODULE_VERSION=0.3.11 \
+  CORE_MODULE_VERSION=0.3.12 \
   CORE_MODULE_SHA256="$module_sha" \
   CORE_MODULE_PUBLIC_KEY="$work/test-release.pub" \
   CORE_MODULE_KEY_FINGERPRINT="$test_fingerprint" \
@@ -113,7 +113,7 @@ fi
 
 if CORE_MODULE_BUNDLE="$work/module.tar.gz" \
   CORE_MODULE_BUNDLE_SHA256=not-a-digest \
-  CORE_MODULE_VERSION=0.3.11 \
+  CORE_MODULE_VERSION=0.3.12 \
   CORE_MODULE_SHA256="$module_sha" \
   CORE_MODULE_PUBLIC_KEY="$work/test-release.pub" \
   CORE_MODULE_KEY_FINGERPRINT="$test_fingerprint" \
@@ -137,7 +137,7 @@ fi
 
 if CORE_MODULE_BUNDLE="$work/module.tar.gz" \
   CORE_MODULE_BUNDLE_SHA256="$bundle_sha" \
-  CORE_MODULE_VERSION=0.3.11 \
+  CORE_MODULE_VERSION=0.3.12 \
   CORE_MODULE_SHA256="$module_sha" \
   CORE_MODULE_TARGET=riscv64-unknown-linux-gnu \
   CORE_MODULE_PUBLIC_KEY="$work/test-release.pub" \
@@ -152,7 +152,7 @@ mkdir "$work/real-install-root"
 ln -s "$work/real-install-root" "$work/install-root-link"
 if CORE_MODULE_BUNDLE="$work/module.tar.gz" \
   CORE_MODULE_BUNDLE_SHA256="$bundle_sha" \
-  CORE_MODULE_VERSION=0.3.11 \
+  CORE_MODULE_VERSION=0.3.12 \
   CORE_MODULE_SHA256="$module_sha" \
   CORE_MODULE_PUBLIC_KEY="$work/test-release.pub" \
   CORE_MODULE_KEY_FINGERPRINT="$test_fingerprint" \

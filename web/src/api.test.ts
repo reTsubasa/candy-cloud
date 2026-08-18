@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createNodeJoinCode, createResource, fetchCloudVersion, fetchHealth, fetchRuntimeConfigurationStatuses, listAccountSessions, listResources, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
+import { createNodeJoinCode, createResource, fetchCloudVersion, fetchHealth, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, listAccountSessions, listAllResources, listResources, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
 import { saveIdentitySession } from './session';
 
 describe('same-origin Cloud API client', () => {
@@ -23,10 +23,30 @@ describe('same-origin Cloud API client', () => {
     expect(fetchMock.mock.calls[1][1]).toEqual(expect.objectContaining({ method: 'PUT', headers: expect.objectContaining({ 'If-Match': '7' }) }));
   });
 
+  it('loads every resource page and rejects repeated cursors', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ schema_version: 1, items: [{ metadata: { id: 'a' } }], next_cursor: 'cursor-1' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ schema_version: 1, items: [{ metadata: { id: 'b' } }], next_cursor: null }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await expect(listAllResources('token', 'tenant', 'nodes')).resolves.toHaveLength(2);
+    expect(fetchMock.mock.calls[1][1]).toEqual(expect.objectContaining({ headers: expect.objectContaining({ 'X-Page-After': 'cursor-1' }) }));
+
+    fetchMock.mockReset()
+      .mockImplementation(async () => new Response(JSON.stringify({ schema_version: 1, items: [], next_cursor: 'same' }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await expect(listAllResources('token', 'tenant', 'nodes')).rejects.toMatchObject({ code: 'INVALID_PAGE_CURSOR_LOOP' });
+  });
+
   it('reads tenant-scoped persisted Runtime activation results', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ schema_version: 1, items: [] }), { status: 200, headers: { 'content-type': 'application/json' } }));
     await fetchRuntimeConfigurationStatuses('jwt-token', 'tenant/id');
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/tenants/tenant%2Fid/runtime-configuration-status', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer jwt-token' }),
+    }));
+  });
+
+  it('reads tenant-scoped latest Runtime telemetry', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ schema_version: 1, stale_after_seconds: 90, items: [] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await fetchRuntimeTelemetry('jwt-token', 'tenant/id');
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/tenants/tenant%2Fid/runtime-telemetry', expect.objectContaining({
       headers: expect.objectContaining({ Authorization: 'Bearer jwt-token' }),
     }));
   });

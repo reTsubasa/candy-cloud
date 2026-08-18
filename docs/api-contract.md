@@ -175,12 +175,28 @@ PUT  /auth/v1/runtime/transport-identity
 DELETE /auth/v1/runtime/transport-identity
 GET  /auth/v1/runtime/configuration
 PUT  /auth/v1/runtime/configuration/status
+PUT  /auth/v1/runtime/telemetry
 ```
 
 Runtime may fetch capabilities after enrollment and after a Cloud software
 upgrade. The response publishes API and wire version, the complete Core
 `site_projection_v1` object name, media type, conditional-request support,
 status enum, and the bounded 15/30/300-second polling range with 20% jitter.
+
+Runtime also replaces one latest telemetry row for its authenticated device
+identity on every synchronization cycle. The report uses the kernel boot id
+and a monotonic sequence to reject stale same-boot updates. Cloud supplies its
+own receipt timestamp and considers reports older than 90 seconds stale.
+Lifecycle, active Peer count, route-owner readiness, and fail-open state come
+from the active Core instance. Performance fields remain null until Core emits
+measured RTT, jitter, packet loss, and rates; Cloud never derives them from
+configuration state. Management reads this bounded state through
+`GET /api/v1/tenants/{tenant_id}/runtime-telemetry`.
+Each item also contains a bounded `paths` snapshot. Cloud validates every
+reported Peer attachment against the device's current Segment and, when a
+candidate identifier is present, against the currently active signed path
+candidate. The complete path set is replaced atomically; no unbounded history
+is retained.
 
 ### Profile and fetch
 

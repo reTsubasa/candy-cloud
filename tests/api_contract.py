@@ -110,6 +110,7 @@ def main() -> None:
         "/v1/tenants/{tenant_id}/enrollment/activations/{activation_id}": {"delete:"},
         "/v1/tenants/{tenant_id}/runtime-activation-readiness": {"get:"},
         "/v1/tenants/{tenant_id}/runtime-configuration-status": {"get:"},
+        "/v1/tenants/{tenant_id}/runtime-telemetry": {"get:"},
         "/v1/enrollment/challenges": {"post:"},
         "/v1/enrollment/complete": {"post:"},
         "/v1/access-grants": {"post:"},
@@ -118,6 +119,7 @@ def main() -> None:
         "/v1/runtime/transport-identity": {"put:", "delete:"},
         "/v1/runtime/configuration": {"get:"},
         "/v1/runtime/configuration/status": {"put:"},
+        "/v1/runtime/telemetry": {"put:"},
     }
     blocks = path_blocks(openapi)
     for path, methods in expected_paths.items():
@@ -140,6 +142,7 @@ def main() -> None:
         "/v1/tenants/{tenant_id}/enrollment/activations/{activation_id}",
         "/v1/tenants/{tenant_id}/runtime-activation-readiness",
         "/v1/tenants/{tenant_id}/runtime-configuration-status",
+        "/v1/tenants/{tenant_id}/runtime-telemetry",
     ]:
         require(blocks[path], "managementBearer", f"activation path {path}")
     require(blocks["/v1/tenants/{tenant_id}/enrollment/activations"], "ActivationCreateResponse", "activation create contract")
@@ -153,6 +156,11 @@ def main() -> None:
         blocks["/v1/tenants/{tenant_id}/runtime-configuration-status"],
         "RuntimeConfigurationStatusInventory",
         "runtime configuration status inventory contract",
+    )
+    require(
+        blocks["/v1/tenants/{tenant_id}/runtime-telemetry"],
+        "RuntimeTelemetryInventory",
+        "runtime telemetry inventory contract",
     )
 
     for path in ["/v1/auth/login", "/v1/auth/refresh"]:
@@ -180,6 +188,7 @@ def main() -> None:
         "/v1/runtime/transport-identity",
         "/v1/runtime/configuration",
         "/v1/runtime/configuration/status",
+        "/v1/runtime/telemetry",
     ]:
         require(blocks[path], "deviceMtls", f"device path {path}")
     runtime_fetch = blocks["/v1/runtime/configuration"]
@@ -266,14 +275,15 @@ def main() -> None:
             "/v1/runtime/transport-identity",
             "/v1/runtime/configuration",
             "/v1/runtime/configuration/status",
+            "/v1/runtime/telemetry",
         ]
     )
     runtime_status_count = len(
         re.findall(r"(?m)^      x-candy-status: runtime-sync$", openapi)
     )
-    if runtime_routes_implemented and runtime_status_count != 5:
+    if runtime_routes_implemented and runtime_status_count != 6:
         fail("implemented Runtime routes must retain all OpenAPI synchronization markers")
-    if not runtime_routes_implemented and runtime_status_count != 5:
+    if not runtime_routes_implemented and runtime_status_count != 6:
         fail("Runtime routes being synchronized must retain all OpenAPI markers")
 
     reject(caddy, "header_up -X-Candy-Verified-Device-Certificate-Der", "Caddy identity boundary")
