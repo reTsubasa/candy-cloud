@@ -6,7 +6,6 @@ FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS build
 ARG BUILDARCH
 ARG TARGETARCH
 ARG RUST_TARGET=aarch64-unknown-linux-gnu
-ARG BINARY
 RUN case "${BUILDARCH}:${TARGETARCH}:${RUST_TARGET}" in \
       amd64:amd64:x86_64-unknown-linux-gnu|arm64:arm64:aarch64-unknown-linux-gnu) ;; \
       amd64:arm64:aarch64-unknown-linux-gnu) \
@@ -21,7 +20,10 @@ RUN case "${BUILDARCH}:${TARGETARCH}:${RUST_TARGET}" in \
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
 WORKDIR /workspace
-COPY . ./candy-cloud/
+RUN mkdir candy-cloud
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./candy-cloud/
+COPY .cargo/ ./candy-cloud/.cargo/
+COPY crates/ ./candy-cloud/crates/
 WORKDIR /workspace/candy-cloud
 # Keep every Rust service on one immutable build layer. The selected binary is
 # copied into each small runtime image below, so Compose does not rebuild the
