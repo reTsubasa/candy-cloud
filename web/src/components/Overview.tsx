@@ -313,8 +313,12 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const right = source.x < target.x ? target : source;
         const y = 220 - Math.min(36, Math.abs(right.x - left.x) / 12);
         const tone = link.state === 'active' ? 'ok' : 'warn';
+        const activePath = link.activePaths[0];
+        const pathDetail = activePath
+          ? ` · RTT ${activePath.rtt_ms == null ? '--' : `${activePath.rtt_ms} ms`} · 丢包 ${activePath.packet_loss_ppm == null ? '--' : `${(activePath.packet_loss_ppm / 10_000).toFixed(2)}%`}`
+          : '';
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
-          <title>{link.activePathCount > 0 ? `数据面活跃 · ${link.activePathCount} 条路径 · ${link.kindLabel}` : '已编排，等待节点数据面遥测'}</title>
+          <title>{link.activePathCount > 0 ? `数据面活跃 · ${link.activePathCount} 条路径 · ${link.kindLabel}${pathDetail}` : '已编排，等待节点数据面遥测'}</title>
           <path d={`M ${left.x} 236 C ${left.x} ${y}, ${right.x} ${y}, ${right.x} 236`} markerEnd={`url(#topology-arrow-${tone})`} />
           <rect x={(left.x + right.x) / 2 - 52} y={y - 13} width="104" height="24" rx="12" />
           <text x={(left.x + right.x) / 2} y={y + 4} textAnchor="middle">{link.activePathCount > 0 ? `${link.activePathCount} 条活跃` : `${link.directionCount}/2 · ${link.kindLabel}`}</text>
