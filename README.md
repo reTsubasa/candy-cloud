@@ -125,26 +125,10 @@ procd, LuCI, and focused productization checks without copying the Core
 protocol implementation.
 
 The project is pinned to the signed Candy Core Cloud ABI profile `0.3.12` from Core
-revision `d2f3d90` and wire line `0.3`. Cloud
-never checks out or compiles the private Core repository. The
-service images load the signed, versioned `libcandy_core_cloud.so` module from
-the formal `core-v<version>` release. The primary Cloud deployment target is
-Linux x86-64 with glibc. Native ARM64 service images are also published as
-immutable prerelease assets named `cloud-arm64-<source-revision>`; production
-ARM64 hosts load these images directly and never run amd64 images through
-QEMU. Given a prepared directory containing `compose.arm64.yml`, `deploy.env`,
-and `secrets/`, install one release with:
-
-```bash
-sudo scripts/deploy-arm64-release.sh \
-  --tag cloud-arm64-<source-revision> \
-  --deployment-dir /opt/candy-cloud
-```
-
-The script verifies the checksum and manifest, checks all six images are
-ARM64, applies least-privilege secret ownership for the container UID, runs
-migrations, starts Compose, and waits for every application health check. The
-installer can read the immutable legacy `0.3.10` manifest only for an explicit
-compatibility installation, but normal image builds never use that retired
-release path. Cloud ABI profiles do not form a separate Core product line. IPv6 remains outside this delivery;
-Mesh precedes dynamic routing in the expansion sequence.
+revision `d2f3d90` and wire line `0.3`. Cloud never checks out or compiles the
+private Core repository. Service images load the signed, versioned
+`libcandy_core_cloud.so` module from the formal `core-v<version>` release. Cloud
+is released as native Linux x86-64 images only because it is a control-plane
+service; QEMU and ARM images are not part of the supported production release.
+Cloud ABI profiles do not form a separate Core product line. IPv6 remains
+outside this delivery; Mesh precedes dynamic routing in the expansion sequence.
