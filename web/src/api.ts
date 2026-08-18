@@ -319,11 +319,18 @@ export function fetchRuntimeConfigurationStatuses(
   return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/runtime-configuration-status`, token);
 }
 
-export function fetchRuntimeTelemetry(
+export async function fetchRuntimeTelemetry(
   token: string,
   tenantId: string,
 ): Promise<RuntimeTelemetryResponse> {
-  return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/runtime-telemetry`, token);
+  const response = await requestJson<RuntimeTelemetryResponse>(
+    `/v1/tenants/${encodeURIComponent(tenantId)}/runtime-telemetry`,
+    token,
+  );
+  return {
+    ...response,
+    items: response.items.map((item) => ({ ...item, paths: item.paths ?? [] })),
+  };
 }
 
 export function getResource(token: string, tenantId: string, collection: string, id: string): Promise<ControlResource> {
