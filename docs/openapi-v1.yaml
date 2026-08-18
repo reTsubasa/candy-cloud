@@ -501,6 +501,23 @@ paths:
         "401": { $ref: "#/components/responses/ManagementUnauthorized" }
         "403": { $ref: "#/components/responses/ManagementForbidden" }
         "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/tenants/{tenant_id}/runtime-telemetry:
+    get:
+      tags: [SD-WAN management]
+      operationId: listRuntimeTelemetry
+      summary: List the latest bounded Runtime telemetry state for each device
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: Latest tenant-scoped Runtime telemetry and its freshness contract.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeTelemetryInventory" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
   /v1/tenants/{tenant_id}/{collection}/{id}:
     parameters:
       - $ref: "#/components/parameters/TenantId"
@@ -852,6 +869,25 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DeviceProblem" }
               example: { code: configuration_changed }
+        "422": { $ref: "#/components/responses/UnprocessableJson" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
+  /v1/runtime/telemetry:
+    put:
+      tags: [Runtime synchronization]
+      operationId: reportRuntimeTelemetry
+      summary: Replace the authenticated device's latest bounded operational telemetry
+      x-candy-status: runtime-sync
+      security: [{ deviceMtls: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RuntimeTelemetry" }
+      responses:
+        "204": { description: Latest telemetry accepted or idempotently ignored. }
+        "400": { $ref: "#/components/responses/DeviceBadRequest" }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "409": { description: The authenticated device identity is no longer active. }
         "422": { $ref: "#/components/responses/UnprocessableJson" }
         "503": { $ref: "#/components/responses/DeviceUnavailable" }
 components:
@@ -1654,6 +1690,63 @@ components:
         error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }, { type: "null" }] }
         reported_at: { type: string, format: date-time }
         current: { type: boolean, description: True only when this report names the device's current Cloud projection. }
+    RuntimeTelemetry:
+      type: object
+      additionalProperties: false
+      required: [schema_version, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        boot_id: { $ref: "#/components/schemas/Uuid" }
+        sequence: { type: integer, minimum: 1 }
+        lifecycle: { type: string, enum: [starting, active, degraded, fail_open, stopped, unknown] }
+        configured_peers: { type: integer, minimum: 0 }
+        active_peers: { type: integer, minimum: 0 }
+        required_route_owners: { type: integer, minimum: 0 }
+        ready_route_owners: { type: integer, minimum: 0 }
+        fail_open_required: { type: boolean }
+        last_error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }, { type: "null" }] }
+        rtt_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        jitter_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        packet_loss_ppm: { oneOf: [{ type: integer, minimum: 0, maximum: 1000000 }, { type: "null" }] }
+        rx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        tx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        reconnects: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        path_changes: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+    RuntimeTelemetryInventory:
+      type: object
+      additionalProperties: false
+      required: [schema_version, stale_after_seconds, items]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        stale_after_seconds: { type: integer, const: 90 }
+        items:
+          type: array
+          maxItems: 4096
+          items: { $ref: "#/components/schemas/RuntimeTelemetryItem" }
+    RuntimeTelemetryItem:
+      type: object
+      additionalProperties: false
+      required: [device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, reported_at]
+      properties:
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        device_key_id: { $ref: "#/components/schemas/Uuid" }
+        boot_id: { $ref: "#/components/schemas/Uuid" }
+        sequence: { type: integer, minimum: 1 }
+        lifecycle: { type: string, enum: [starting, active, degraded, fail_open, stopped, unknown] }
+        configured_peers: { type: integer, minimum: 0 }
+        active_peers: { type: integer, minimum: 0 }
+        required_route_owners: { type: integer, minimum: 0 }
+        ready_route_owners: { type: integer, minimum: 0 }
+        fail_open_required: { type: boolean }
+        last_error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }, { type: "null" }] }
+        rtt_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        jitter_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        packet_loss_ppm: { oneOf: [{ type: integer, minimum: 0, maximum: 1000000 }, { type: "null" }] }
+        rx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        tx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        reconnects: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        path_changes: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        reported_at: { type: string, format: date-time }
     DeviceProblem:
       type: object
       additionalProperties: false

@@ -194,6 +194,75 @@ pub struct RuntimeConfigurationStatusWrite {
     pub error_code: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeLifecycle {
+    Starting,
+    Active,
+    Degraded,
+    FailOpen,
+    Stopped,
+    Unknown,
+}
+
+impl RuntimeLifecycle {
+    fn database_value(self) -> &'static str {
+        match self {
+            Self::Starting => "STARTING",
+            Self::Active => "ACTIVE",
+            Self::Degraded => "DEGRADED",
+            Self::FailOpen => "FAIL_OPEN",
+            Self::Stopped => "STOPPED",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTelemetryWrite {
+    pub lookup: RuntimeConfigurationLookup,
+    pub boot_id: Uuid,
+    pub sequence: u64,
+    pub lifecycle: RuntimeLifecycle,
+    pub configured_peers: u32,
+    pub active_peers: u32,
+    pub required_route_owners: u32,
+    pub ready_route_owners: u32,
+    pub fail_open_required: bool,
+    pub last_error_code: Option<String>,
+    pub rtt_ms: Option<u32>,
+    pub jitter_ms: Option<u32>,
+    pub packet_loss_ppm: Option<u32>,
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+    pub reconnects: Option<u64>,
+    pub path_changes: Option<u64>,
+}
+
+impl RuntimeTelemetryWrite {
+    fn validate(&self) -> Result<(), RuntimeConfigurationError> {
+        self.lookup.validate()?;
+        let error_is_valid = self.last_error_code.as_deref().is_none_or(|value| {
+            !value.is_empty()
+                && value.len() <= 80
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        });
+        if self.boot_id.is_nil()
+            || self.sequence == 0
+            || self.active_peers > self.configured_peers
+            || self.ready_route_owners > self.required_route_owners
+            || self.ready_route_owners > self.active_peers
+            || self.packet_loss_ppm.is_some_and(|value| value > 1_000_000)
+            || matches!(self.lifecycle, RuntimeLifecycle::FailOpen) != self.fail_open_required
+            || !error_is_valid
+        {
+            return Err(RuntimeConfigurationError::InvalidScope);
+        }
+        Ok(())
+    }
+}
+
 impl RuntimeConfigurationStatusWrite {
     fn validate(&self) -> Result<(), RuntimeConfigurationError> {
         self.lookup.validate()?;
@@ -784,6 +853,76 @@ impl SdwanRepository {
             transaction.rollback().await?;
             return Err(RuntimeConfigurationError::StaleConfiguration);
         }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn record_runtime_telemetry(
+        &self,
+        telemetry: &RuntimeTelemetryWrite,
+    ) -> Result<(), RuntimeConfigurationError> {
+        telemetry.validate()?;
+        let mut transaction = self.pool.begin().await?;
+        let identity_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM devices d JOIN device_keys k ON k.tenant_id = d.tenant_id AND k.device_id = d.id WHERE d.tenant_id = ? AND d.id = ? AND d.status = 'ACTIVE' AND k.id = ? AND k.status = 'ACTIVE')",
+        )
+        .bind(telemetry.lookup.tenant_id)
+        .bind(telemetry.lookup.device_id)
+        .bind(telemetry.lookup.device_key_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if !identity_exists {
+            transaction.rollback().await?;
+            return Err(RuntimeConfigurationError::InvalidScope);
+        }
+        let current: Option<(Uuid, u64)> = sqlx::query_as(
+            "SELECT boot_id, sequence FROM runtime_telemetry_latest WHERE tenant_id = ? AND device_id = ? AND device_key_id = ? FOR UPDATE",
+        )
+        .bind(telemetry.lookup.tenant_id)
+        .bind(telemetry.lookup.device_id)
+        .bind(telemetry.lookup.device_key_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if current.is_some_and(|(boot_id, sequence)| {
+            boot_id == telemetry.boot_id && sequence >= telemetry.sequence
+        }) {
+            transaction.commit().await?;
+            return Ok(());
+        }
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), reported_at = VALUES(reported_at)",
+        )
+        .bind(telemetry.lookup.tenant_id)
+        .bind(telemetry.lookup.device_id)
+        .bind(telemetry.lookup.device_key_id)
+        .bind(telemetry.boot_id)
+        .bind(telemetry.sequence)
+        .bind(telemetry.lifecycle.database_value())
+        .bind(telemetry.configured_peers)
+        .bind(telemetry.active_peers)
+        .bind(telemetry.required_route_owners)
+        .bind(telemetry.ready_route_owners)
+        .bind(telemetry.fail_open_required)
+        .bind(telemetry.last_error_code.as_deref())
+        .bind(telemetry.rtt_ms)
+        .bind(telemetry.jitter_ms)
+        .bind(telemetry.packet_loss_ppm)
+        .bind(telemetry.rx_bps)
+        .bind(telemetry.tx_bps)
+        .bind(telemetry.reconnects)
+        .bind(telemetry.path_changes)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE devices SET last_seen_at = ? WHERE tenant_id = ? AND id = ? AND status = 'ACTIVE'",
+        )
+        .bind(now)
+        .bind(telemetry.lookup.tenant_id)
+        .bind(telemetry.lookup.device_id)
+        .execute(&mut *transaction)
+        .await?;
         transaction.commit().await?;
         Ok(())
     }

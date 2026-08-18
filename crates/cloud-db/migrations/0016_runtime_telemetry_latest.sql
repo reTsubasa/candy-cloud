@@ -1,0 +1,37 @@
+CREATE TABLE runtime_telemetry_latest (
+    tenant_id BINARY(16) NOT NULL,
+    device_id BINARY(16) NOT NULL,
+    device_key_id BINARY(16) NOT NULL,
+    boot_id BINARY(16) NOT NULL,
+    sequence BIGINT UNSIGNED NOT NULL,
+    lifecycle ENUM('STARTING','ACTIVE','DEGRADED','FAIL_OPEN','STOPPED','UNKNOWN') NOT NULL,
+    configured_peers INT UNSIGNED NOT NULL,
+    active_peers INT UNSIGNED NOT NULL,
+    required_route_owners INT UNSIGNED NOT NULL,
+    ready_route_owners INT UNSIGNED NOT NULL,
+    fail_open_required BOOLEAN NOT NULL,
+    last_error_code VARCHAR(80) NULL,
+    rtt_ms INT UNSIGNED NULL,
+    jitter_ms INT UNSIGNED NULL,
+    packet_loss_ppm INT UNSIGNED NULL,
+    rx_bps BIGINT UNSIGNED NULL,
+    tx_bps BIGINT UNSIGNED NULL,
+    reconnects BIGINT UNSIGNED NULL,
+    path_changes BIGINT UNSIGNED NULL,
+    reported_at TIMESTAMP(6) NOT NULL,
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (tenant_id, device_id, device_key_id),
+    KEY idx_runtime_telemetry_freshness (tenant_id, reported_at),
+    CONSTRAINT fk_runtime_telemetry_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+    CONSTRAINT fk_runtime_telemetry_device FOREIGN KEY (device_id) REFERENCES devices(id),
+    CONSTRAINT fk_runtime_telemetry_device_key FOREIGN KEY (device_key_id) REFERENCES device_keys(id),
+    CHECK (sequence > 0),
+    CHECK (active_peers <= configured_peers),
+    CHECK (ready_route_owners <= required_route_owners),
+    CHECK (ready_route_owners <= active_peers),
+    CHECK (packet_loss_ppm IS NULL OR packet_loss_ppm <= 1000000),
+    CHECK (
+        (lifecycle = 'FAIL_OPEN' AND fail_open_required = TRUE)
+        OR lifecycle <> 'FAIL_OPEN'
+    )
+) ENGINE=InnoDB;

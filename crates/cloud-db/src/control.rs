@@ -101,6 +101,29 @@ pub struct RuntimeConfigurationStatusRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTelemetryRecord {
+    pub device_id: Uuid,
+    pub device_key_id: Uuid,
+    pub boot_id: Uuid,
+    pub sequence: u64,
+    pub lifecycle: String,
+    pub configured_peers: u32,
+    pub active_peers: u32,
+    pub required_route_owners: u32,
+    pub ready_route_owners: u32,
+    pub fail_open_required: bool,
+    pub last_error_code: Option<String>,
+    pub rtt_ms: Option<u32>,
+    pub jitter_ms: Option<u32>,
+    pub packet_loss_ppm: Option<u32>,
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+    pub reconnects: Option<u64>,
+    pub path_changes: Option<u64>,
+    pub reported_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationOutcome {
     Applied(ControlResourceV1),
     Replayed(ControlResourceV1),
@@ -199,7 +222,7 @@ impl ControlRepository {
 
     pub async fn readiness_check(&self) -> Result<(), ControlStoreError> {
         let migration_ready: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version = 8 AND success = TRUE)",
+            "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version = 16 AND success = TRUE)",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -324,6 +347,53 @@ impl ControlRepository {
                     error_code: row.try_get("error_code")?,
                     reported_at: row.try_get("reported_at")?,
                     current: row.try_get("current_configuration")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn runtime_telemetry(
+        &self,
+        tenant_id: Uuid,
+    ) -> Result<Vec<RuntimeTelemetryRecord>, ControlStoreError> {
+        if tenant_id.is_nil() {
+            return Err(ControlStoreError::InvalidRequest);
+        }
+        let rows = sqlx::query(
+            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let lifecycle: String = row.try_get("lifecycle")?;
+                if !matches!(
+                    lifecycle.as_str(),
+                    "STARTING" | "ACTIVE" | "DEGRADED" | "FAIL_OPEN" | "STOPPED" | "UNKNOWN"
+                ) {
+                    return Err(ControlStoreError::InvalidTransition);
+                }
+                Ok(RuntimeTelemetryRecord {
+                    device_id: row.try_get("device_id")?,
+                    device_key_id: row.try_get("device_key_id")?,
+                    boot_id: row.try_get("boot_id")?,
+                    sequence: row.try_get("sequence")?,
+                    lifecycle: lifecycle.to_ascii_lowercase(),
+                    configured_peers: row.try_get("configured_peers")?,
+                    active_peers: row.try_get("active_peers")?,
+                    required_route_owners: row.try_get("required_route_owners")?,
+                    ready_route_owners: row.try_get("ready_route_owners")?,
+                    fail_open_required: row.try_get("fail_open_required")?,
+                    last_error_code: row.try_get("last_error_code")?,
+                    rtt_ms: row.try_get("rtt_ms")?,
+                    jitter_ms: row.try_get("jitter_ms")?,
+                    packet_loss_ppm: row.try_get("packet_loss_ppm")?,
+                    rx_bps: row.try_get("rx_bps")?,
+                    tx_bps: row.try_get("tx_bps")?,
+                    reconnects: row.try_get("reconnects")?,
+                    path_changes: row.try_get("path_changes")?,
+                    reported_at: row.try_get("reported_at")?,
                 })
             })
             .collect()

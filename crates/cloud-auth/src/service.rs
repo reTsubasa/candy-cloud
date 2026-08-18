@@ -8,7 +8,8 @@ use cloud_db::{
     sdwan::{
         RuntimeConfigurationApplyState as DbRuntimeConfigurationApplyState,
         RuntimeConfigurationError, RuntimeConfigurationLookup, RuntimeConfigurationState,
-        RuntimeConfigurationStatusWrite, SdwanRepository,
+        RuntimeConfigurationStatusWrite, RuntimeLifecycle as DbRuntimeLifecycle,
+        RuntimeTelemetryWrite, SdwanRepository,
     },
 };
 use sha2::{Digest, Sha256};
@@ -24,9 +25,10 @@ use crate::{
         AuthenticatedTenant, EnrollmentReceipt, GrantIssuanceReceipt, GrantIssueCommand,
         GrantServiceError, RuntimeConfigurationApplyState, RuntimeConfigurationDelivery,
         RuntimeConfigurationService, RuntimeConfigurationServiceError,
-        RuntimeConfigurationStatusCommand, RuntimeGrantVerificationKeyDelivery,
-        RuntimePeerProjectionDelivery, RuntimeProfileDelivery, RuntimeTransportIdentityCommand,
-        RuntimeTransportIdentityDelivery, RuntimeTransportPreset, ServiceFuture, TenantAuthService,
+        RuntimeConfigurationStatusCommand, RuntimeGrantVerificationKeyDelivery, RuntimeLifecycle,
+        RuntimePeerProjectionDelivery, RuntimeProfileDelivery, RuntimeTelemetryCommand,
+        RuntimeTransportIdentityCommand, RuntimeTransportIdentityDelivery, RuntimeTransportPreset,
+        ServiceFuture, TenantAuthService,
     },
 };
 
@@ -281,6 +283,52 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                 .await
                 .map_err(|error| match error {
                     RuntimeConfigurationError::StaleConfiguration => {
+                        RuntimeConfigurationServiceError::Conflict
+                    }
+                    _ => RuntimeConfigurationServiceError::Unavailable,
+                })
+        })
+    }
+
+    fn record_telemetry(
+        &self,
+        command: RuntimeTelemetryCommand,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async move {
+            self.repository
+                .record_runtime_telemetry(&RuntimeTelemetryWrite {
+                    lookup: RuntimeConfigurationLookup {
+                        tenant_id: command.actor.tenant_id(),
+                        device_id: command.actor.device_id(),
+                        device_key_id: command.actor.device_key_id(),
+                    },
+                    boot_id: command.boot_id,
+                    sequence: command.sequence,
+                    lifecycle: match command.lifecycle {
+                        RuntimeLifecycle::Starting => DbRuntimeLifecycle::Starting,
+                        RuntimeLifecycle::Active => DbRuntimeLifecycle::Active,
+                        RuntimeLifecycle::Degraded => DbRuntimeLifecycle::Degraded,
+                        RuntimeLifecycle::FailOpen => DbRuntimeLifecycle::FailOpen,
+                        RuntimeLifecycle::Stopped => DbRuntimeLifecycle::Stopped,
+                        RuntimeLifecycle::Unknown => DbRuntimeLifecycle::Unknown,
+                    },
+                    configured_peers: command.configured_peers,
+                    active_peers: command.active_peers,
+                    required_route_owners: command.required_route_owners,
+                    ready_route_owners: command.ready_route_owners,
+                    fail_open_required: command.fail_open_required,
+                    last_error_code: command.last_error_code,
+                    rtt_ms: command.rtt_ms,
+                    jitter_ms: command.jitter_ms,
+                    packet_loss_ppm: command.packet_loss_ppm,
+                    rx_bps: command.rx_bps,
+                    tx_bps: command.tx_bps,
+                    reconnects: command.reconnects,
+                    path_changes: command.path_changes,
+                })
+                .await
+                .map_err(|error| match error {
+                    RuntimeConfigurationError::InvalidScope => {
                         RuntimeConfigurationServiceError::Conflict
                     }
                     _ => RuntimeConfigurationServiceError::Unavailable,

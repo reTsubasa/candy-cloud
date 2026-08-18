@@ -36,6 +36,7 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "segment_route_publication_members",
         "segment_expansion_publications",
         "runtime_configuration_status",
+        "runtime_telemetry_latest",
         "sdwan_control_resources",
         "sdwan_control_resource_references",
         "management_idempotency_records",
@@ -62,6 +63,20 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+}
+
+#[test]
+fn runtime_telemetry_is_identity_scoped_bounded_latest_state() {
+    let migration = include_str!("../migrations/0016_runtime_telemetry_latest.sql");
+    assert!(migration.contains("PRIMARY KEY (tenant_id, device_id, device_key_id)"));
+    assert!(migration.contains("packet_loss_ppm <= 1000000"));
+    assert!(!migration.contains("runtime_telemetry_history"));
+}
+
+#[test]
+fn control_plane_readiness_requires_the_latest_telemetry_migration() {
+    let source = include_str!("../src/control.rs");
+    assert!(source.contains("_sqlx_migrations WHERE version = 16 AND success = TRUE"));
 }
 
 #[test]

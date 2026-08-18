@@ -108,6 +108,10 @@ fn management_routes() -> Router<Arc<ManagementState>> {
             get(management::runtime_configuration_statuses),
         )
         .route(
+            "/v1/tenants/{tenant_id}/runtime-telemetry",
+            get(management::runtime_telemetry),
+        )
+        .route(
             "/v1/tenants/{tenant_id}/{collection}",
             get(management::list).post(management::create),
         )

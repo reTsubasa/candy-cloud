@@ -262,6 +262,37 @@ pub struct RuntimeConfigurationStatusCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeLifecycle {
+    Starting,
+    Active,
+    Degraded,
+    FailOpen,
+    Stopped,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTelemetryCommand {
+    pub actor: AuthenticatedDevice,
+    pub boot_id: Uuid,
+    pub sequence: u64,
+    pub lifecycle: RuntimeLifecycle,
+    pub configured_peers: u32,
+    pub active_peers: u32,
+    pub required_route_owners: u32,
+    pub ready_route_owners: u32,
+    pub fail_open_required: bool,
+    pub last_error_code: Option<String>,
+    pub rtt_ms: Option<u32>,
+    pub jitter_ms: Option<u32>,
+    pub packet_loss_ppm: Option<u32>,
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+    pub reconnects: Option<u64>,
+    pub path_changes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeTransportPreset {
     Current,
     BbrV1,
@@ -318,6 +349,11 @@ pub trait RuntimeConfigurationService: Send + Sync + 'static {
     fn record_status(
         &self,
         command: RuntimeConfigurationStatusCommand,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>>;
+
+    fn record_telemetry(
+        &self,
+        command: RuntimeTelemetryCommand,
     ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>>;
 
     fn publish_transport_identity(
@@ -423,6 +459,7 @@ where
             "/v1/runtime/configuration/status",
             put(record_runtime_configuration_status::<S>),
         )
+        .route("/v1/runtime/telemetry", put(record_runtime_telemetry::<S>))
         .with_state(service)
 }
 
@@ -892,6 +929,63 @@ where
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn record_runtime_telemetry<S>(
+    actor: AuthenticatedDevice,
+    State(service): State<Arc<S>>,
+    Json(request): Json<RuntimeTelemetryHttpRequest>,
+) -> Result<StatusCode, ApiError>
+where
+    S: RuntimeConfigurationService,
+{
+    let error_code = request.last_error_code;
+    if request.schema_version != 1
+        || request.boot_id.is_nil()
+        || request.sequence == 0
+        || request.active_peers > request.configured_peers
+        || request.ready_route_owners > request.required_route_owners
+        || request.ready_route_owners > request.active_peers
+        || request
+            .packet_loss_ppm
+            .is_some_and(|value| value > 1_000_000)
+        || error_code
+            .as_deref()
+            .is_some_and(|value| !valid_runtime_error_code(value))
+        || matches!(request.lifecycle, RuntimeLifecycleHttp::FailOpen) != request.fail_open_required
+    {
+        return Err(ApiError::InvalidRuntimeTelemetry);
+    }
+    service
+        .record_telemetry(RuntimeTelemetryCommand {
+            actor,
+            boot_id: request.boot_id,
+            sequence: request.sequence,
+            lifecycle: match request.lifecycle {
+                RuntimeLifecycleHttp::Starting => RuntimeLifecycle::Starting,
+                RuntimeLifecycleHttp::Active => RuntimeLifecycle::Active,
+                RuntimeLifecycleHttp::Degraded => RuntimeLifecycle::Degraded,
+                RuntimeLifecycleHttp::FailOpen => RuntimeLifecycle::FailOpen,
+                RuntimeLifecycleHttp::Stopped => RuntimeLifecycle::Stopped,
+                RuntimeLifecycleHttp::Unknown => RuntimeLifecycle::Unknown,
+            },
+            configured_peers: request.configured_peers,
+            active_peers: request.active_peers,
+            required_route_owners: request.required_route_owners,
+            ready_route_owners: request.ready_route_owners,
+            fail_open_required: request.fail_open_required,
+            last_error_code: error_code,
+            rtt_ms: request.rtt_ms,
+            jitter_ms: request.jitter_ms,
+            packet_loss_ppm: request.packet_loss_ppm,
+            rx_bps: request.rx_bps,
+            tx_bps: request.tx_bps,
+            reconnects: request.reconnects,
+            path_changes: request.path_changes,
+        })
+        .await
+        .map_err(ApiError::RuntimeConfiguration)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 fn insert_configuration_response_headers(
     response: &mut Response,
     delivery: &RuntimeConfigurationDelivery,
@@ -1191,6 +1285,39 @@ struct RuntimeConfigurationStatusHttpRequest {
     error_code: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeTelemetryHttpRequest {
+    schema_version: u8,
+    boot_id: Uuid,
+    sequence: u64,
+    lifecycle: RuntimeLifecycleHttp,
+    configured_peers: u32,
+    active_peers: u32,
+    required_route_owners: u32,
+    ready_route_owners: u32,
+    fail_open_required: bool,
+    last_error_code: Option<String>,
+    rtt_ms: Option<u32>,
+    jitter_ms: Option<u32>,
+    packet_loss_ppm: Option<u32>,
+    rx_bps: Option<u64>,
+    tx_bps: Option<u64>,
+    reconnects: Option<u64>,
+    path_changes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RuntimeLifecycleHttp {
+    Starting,
+    Active,
+    Degraded,
+    FailOpen,
+    Stopped,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum RuntimeConfigurationApplyStateHttp {
@@ -1211,6 +1338,7 @@ pub enum ApiError {
     Enrollment(EnrollmentCoordinatorError),
     Service(GrantServiceError),
     InvalidRuntimeConfigurationStatus,
+    InvalidRuntimeTelemetry,
     RuntimeConfiguration(RuntimeConfigurationServiceError),
 }
 
@@ -1246,6 +1374,7 @@ impl IntoResponse for ApiError {
                 StatusCode::BAD_REQUEST,
                 "invalid_runtime_configuration_status",
             ),
+            Self::InvalidRuntimeTelemetry => (StatusCode::BAD_REQUEST, "invalid_runtime_telemetry"),
             Self::RuntimeConfiguration(RuntimeConfigurationServiceError::Conflict) => {
                 (StatusCode::CONFLICT, "configuration_changed")
             }

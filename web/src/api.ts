@@ -16,6 +16,7 @@ import type {
   EnrollmentActivationSecret,
   RuntimeActivationReadiness,
   RuntimeConfigurationStatusResponse,
+  RuntimeTelemetryResponse,
   CloudVersionInfo,
 } from './types';
 
@@ -270,6 +271,36 @@ export function listResources(
   });
 }
 
+export async function listAllResources(
+  token: string,
+  tenantId: string,
+  collection: string,
+  maximum = 4096,
+): Promise<ControlResource[]> {
+  const items: ControlResource[] = [];
+  const cursors = new Set<string>();
+  const maximumPages = Math.ceil(maximum / 200) + 1;
+  let pageCount = 0;
+  let after: string | null = null;
+  do {
+    pageCount += 1;
+    if (pageCount > maximumPages) {
+      throw new CloudApiError('资源分页超过运营视图的安全上限', 502, 'RESOURCE_PAGE_LIMIT_EXCEEDED');
+    }
+    const page = await listResources(token, tenantId, collection, after);
+    items.push(...page.items);
+    if (items.length > maximum) {
+      throw new CloudApiError('资源数量超过运营视图的安全上限', 422, 'RESOURCE_INVENTORY_LIMIT_EXCEEDED');
+    }
+    after = page.next_cursor;
+    if (after && cursors.has(after)) {
+      throw new CloudApiError('资源分页游标重复，无法生成完整拓扑', 502, 'INVALID_PAGE_CURSOR_LOOP');
+    }
+    if (after) cursors.add(after);
+  } while (after);
+  return items;
+}
+
 export function fetchRuntimeActivationReadiness(
   token: string,
   tenantId: string,
@@ -286,6 +317,13 @@ export function fetchRuntimeConfigurationStatuses(
   tenantId: string,
 ): Promise<RuntimeConfigurationStatusResponse> {
   return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/runtime-configuration-status`, token);
+}
+
+export function fetchRuntimeTelemetry(
+  token: string,
+  tenantId: string,
+): Promise<RuntimeTelemetryResponse> {
+  return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/runtime-telemetry`, token);
 }
 
 export function getResource(token: string, tenantId: string, collection: string, id: string): Promise<ControlResource> {

@@ -16,8 +16,9 @@ use cloud_auth::{
         GrantIssueCommand, GrantServiceError, RuntimeConfigurationApplyState,
         RuntimeConfigurationDelivery, RuntimeConfigurationService,
         RuntimeConfigurationServiceError, RuntimeConfigurationStatusCommand,
-        RuntimeProfileDelivery, RuntimeTransportEndpointDelivery, RuntimeTransportIdentityCommand,
-        RuntimeTransportIdentityDelivery, ServiceFuture, TenantAuthService,
+        RuntimeProfileDelivery, RuntimeTelemetryCommand, RuntimeTransportEndpointDelivery,
+        RuntimeTransportIdentityCommand, RuntimeTransportIdentityDelivery, ServiceFuture,
+        TenantAuthService,
     },
 };
 use http_body_util::BodyExt;
@@ -78,6 +79,7 @@ struct RecordingEnrollmentService {
 struct RecordingRuntimeConfigurationService {
     delivery: Mutex<Option<RuntimeConfigurationDelivery>>,
     statuses: Mutex<Vec<RuntimeConfigurationStatusCommand>>,
+    telemetry: Mutex<Vec<RuntimeTelemetryCommand>>,
     transport_publications: Mutex<Vec<RuntimeTransportIdentityCommand>>,
     transport_withdrawals: Mutex<Vec<AuthenticatedDevice>>,
     status_result: Mutex<Result<(), RuntimeConfigurationServiceError>>,
@@ -88,6 +90,7 @@ impl RecordingRuntimeConfigurationService {
         Self {
             delivery: Mutex::new(delivery),
             statuses: Mutex::new(Vec::new()),
+            telemetry: Mutex::new(Vec::new()),
             transport_publications: Mutex::new(Vec::new()),
             transport_withdrawals: Mutex::new(Vec::new()),
             status_result: Mutex::new(Ok(())),
@@ -135,6 +138,16 @@ impl RuntimeConfigurationService for RecordingRuntimeConfigurationService {
         Box::pin(async move {
             self.statuses.lock().unwrap().push(command);
             *self.status_result.lock().unwrap()
+        })
+    }
+
+    fn record_telemetry(
+        &self,
+        command: RuntimeTelemetryCommand,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async move {
+            self.telemetry.lock().unwrap().push(command);
+            Ok(())
         })
     }
 
@@ -664,4 +677,69 @@ async fn runtime_configuration_distinguishes_unassigned_and_records_bounded_stat
     );
     assert_eq!(command.envelope_sha256, [8; 32]);
     assert_eq!(command.projection_content_hash, [7; 32]);
+}
+
+#[tokio::test]
+async fn runtime_telemetry_uses_authenticated_identity_and_rejects_impossible_counters() {
+    let service = Arc::new(RecordingRuntimeConfigurationService::with_delivery(None));
+    let actor = device_actor(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+    let app = runtime_configuration_app(service.clone());
+    let body = serde_json::json!({
+        "schema_version": 1,
+        "boot_id": Uuid::new_v4(),
+        "sequence": 1200,
+        "lifecycle": "active",
+        "configured_peers": 2,
+        "active_peers": 2,
+        "required_route_owners": 2,
+        "ready_route_owners": 2,
+        "fail_open_required": false,
+        "last_error_code": null,
+        "rtt_ms": null,
+        "jitter_ms": null,
+        "packet_loss_ppm": null,
+        "rx_bps": null,
+        "tx_bps": null,
+        "reconnects": null,
+        "path_changes": null
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/runtime/telemetry")
+                .header("content-type", "application/json")
+                .extension(actor.clone())
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let command = service.telemetry.lock().unwrap().pop().unwrap();
+    assert_eq!(command.actor, actor);
+    assert_eq!(command.active_peers, 2);
+
+    let mut invalid = body;
+    invalid["active_peers"] = serde_json::json!(3);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/runtime/telemetry")
+                .header("content-type", "application/json")
+                .extension(actor)
+                .body(Body::from(invalid.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(service.telemetry.lock().unwrap().is_empty());
 }
