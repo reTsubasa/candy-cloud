@@ -125,7 +125,8 @@ procd, LuCI, and focused productization checks without copying the Core
 protocol implementation.
 
 The project is pinned to the signed Candy Core Cloud ABI profile `0.3.12` from Core
-revision `d2f3d90` and wire line `0.3`. Cloud never checks out or compiles the
+revision `388c72d9601d7bd681974c5aa9004be2317cb1c6` and wire line `0.3`. Cloud
+never checks out or compiles the
 private Core repository. Service images load the signed, versioned
 `libcandy_core_cloud.so` module from the formal `core-v<version>` release. Cloud
 is released as native Linux x86-64 images only because it is a control-plane

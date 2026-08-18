@@ -104,7 +104,7 @@ test "$(docker exec "$worker_id" sha256sum "$module_path" | awk '{print $1}')" =
 manifest_path=/opt/candy/cores/0.3.12/manifest.json
 manifest=$(docker exec "$worker_id" sed -e ':a' -e 'N' -e '$!ba' -e 's/[[:space:]]//g' "$manifest_path")
 printf '%s\n' "$manifest" | grep -F '"release_kind":"candy-core"' >/dev/null
-printf '%s\n' "$manifest" | grep -F '"commit":"d2f3d90"' >/dev/null
+printf '%s\n' "$manifest" | grep -F '"commit":"388c72d9601d7bd681974c5aa9004be2317cb1c6"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"target":"x86_64-unknown-linux-gnu"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"target_arch":"x86_64"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"libc":"glibc"' >/dev/null
