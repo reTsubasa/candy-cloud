@@ -26,10 +26,12 @@ jobs:
       run:
         shell: bash
     env:
-      CORE_MODULE_VERSION: 0.3.11
+      # Core is a unified signed Release. The ARM64 Cloud ABI is consumed
+      # from the same core-v<version> tag as the x86_64 data-plane artifacts.
+      CORE_MODULE_VERSION: 0.3.13
       CORE_MODULE_TARGET: aarch64-unknown-linux-gnu
-      CORE_MODULE_INPUT_TAG: cloud-core-input-v0.3.11-arm64
-      RUNTIME_RELEASE_TAG: runtime-v0.4.0-r32
+      CORE_MODULE_INPUT_TAG: core-v0.3.13
+      RUNTIME_RELEASE_TAG: runtime-v0.4.0-r37
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: docker/setup-buildx-action@v3
@@ -51,7 +53,8 @@ jobs:
         run: |
           set -eu
           mkdir -m 0700 core-input
-          gh release download "$CORE_MODULE_INPUT_TAG" --dir core-input
+          gh release download "$CORE_MODULE_INPUT_TAG" --repo reTsubasa/candy-release --dir core-input \
+            --pattern "candy-core-${CORE_MODULE_VERSION}-cloud-abi-${CORE_MODULE_TARGET}.*"
           base="candy-core-$CORE_MODULE_VERSION-cloud-abi-$CORE_MODULE_TARGET"
           bundle="core-input/$base.tar.gz"
           manifest="core-input/$base.manifest.json"
@@ -70,7 +73,7 @@ jobs:
           {
             echo "CORE_MODULE_BUNDLE_SHA256=$(sha256sum "$bundle" | awk '{print $1}')"
             echo "CORE_MODULE_SHA256=$(jq -r .artifact.sha256 "$manifest")"
-            echo "CORE_MODULE_URL=https://github.com/$GITHUB_REPOSITORY/releases/download/$CORE_MODULE_INPUT_TAG/$base.tar.gz"
+            echo "CORE_MODULE_URL=https://github.com/reTsubasa/candy-release/releases/download/$CORE_MODULE_INPUT_TAG/$base.tar.gz"
           } >> "$GITHUB_ENV"
       - name: Bind node installer to the finalized Runtime release
         env:

@@ -70,6 +70,7 @@ jq -e --arg revision "$revision" --arg repository "$repository" '
 	(.source.commit | startswith($revision)) and
 	.images == ["migrate", "cloud-api", "cloud-identity", "cloud-auth", "cloud-worker", "cloud-web"]
 ' "$manifest" >/dev/null || fail "Release manifest is invalid"
+core_version=$(jq -r '.core.version' "$manifest")
 
 docker load -i "$archive"
 for image in migrate cloud-api cloud-identity cloud-auth cloud-worker cloud-web; do
@@ -84,6 +85,9 @@ services:
     image: candy-cloud-migrate:arm64-$revision
   cloud-api:
     image: candy-cloud-cloud-api:arm64-$revision
+    environment:
+      CANDY_CLOUD_REVISION: $revision
+      CANDY_CORE_VERSION: $core_version
   cloud-identity:
     image: candy-cloud-cloud-identity:arm64-$revision
   cloud-auth:

@@ -1,9 +1,12 @@
 # Candy Cloud
 
+The authoritative product and CPU support status is maintained in
+[`docs/product-platform-matrix.md`](docs/product-platform-matrix.md).
+
 独立的 Candy Cloud 控制面，产品版本 `0.1.0`。控制面负责 AAA、租户、设备、订阅、权益和 Grant 签发，不承载客户数据面流量。
 
-- Candy Core Cloud ABI profile: `0.3.11` from revision
-  `97b25d17e1e0478f8abe31255d09f560f03093a8`
+- Candy Core Cloud ABI profile: `0.3.13` from the unified signed
+  `core-v0.3.13` Release
 - wire line: `0.3`
 - auth profile: `cloud_grant_v1`
 - runtime: Rust + Axum + Tokio + SQLx/MySQL
@@ -124,8 +127,8 @@ slice is kept under [`openwrt-sdwan/`](openwrt-sdwan/); it contains the package,
 procd, LuCI, and focused productization checks without copying the Core
 protocol implementation.
 
-The project is pinned to the signed Candy Core Cloud ABI profile `0.3.11` from Core
-revision `97b25d17e1e0478f8abe31255d09f560f03093a8` and wire line `0.3`. Cloud
+The project is pinned to the signed Candy Core Cloud ABI profile `0.3.13` from
+the unified `core-v0.3.13` Release and wire line `0.3`. Cloud
 never checks out or compiles the private Core repository. The
 service images load the signed, versioned `libcandy_core_cloud.so` module from
 the formal `core-v<version>` release. The primary Cloud deployment target is
