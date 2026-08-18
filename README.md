@@ -147,7 +147,8 @@ sudo scripts/deploy-arm64-release.sh \
 The script verifies the checksum and manifest, checks all six images are
 ARM64, applies least-privilege secret ownership for the container UID, runs
 migrations, starts Compose, and waits for every application health check. The
-installer can read the immutable legacy `0.3.10` manifest only for an explicit
-compatibility installation, but normal image builds never use that retired
-release path. Cloud ABI profiles do not form a separate Core product line. IPv6 remains outside this delivery;
+installer accepts only the signed `release_kind=candy-core` shared-library
+manifest from the central `candy-release` repository. Historical standalone
+Core-module releases are not compatibility inputs and are never consumed.
+Cloud ABI profiles do not form a separate Core product line. IPv6 remains outside this delivery;
 Mesh precedes dynamic routing in the expansion sequence.

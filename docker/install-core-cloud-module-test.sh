@@ -61,15 +61,17 @@ mv "$stage/legacy-manifest.json" "$stage/manifest.json"
 USIGN_PASSWORD='' usign -S -s "$work/test-release.sec" -m "$stage/manifest.json" -x "$stage/manifest.sig"
 tar -czf "$work/legacy-module.tar.gz" -C "$stage" libcandy_core_cloud.so manifest.json manifest.sig
 legacy_bundle_sha=$(sha256sum "$work/legacy-module.tar.gz" | awk '{print $1}')
-CORE_MODULE_BUNDLE="$work/legacy-module.tar.gz" \
-CORE_MODULE_BUNDLE_SHA256="$legacy_bundle_sha" \
-CORE_MODULE_VERSION=0.3.10 \
-CORE_MODULE_SHA256="$module_sha" \
-CORE_MODULE_PUBLIC_KEY="$work/test-release.pub" \
-CORE_MODULE_KEY_FINGERPRINT="$test_fingerprint" \
-CORE_MODULE_INSTALL_ROOT="$work/legacy-install" \
-  "$installer" >/dev/null
-test -f "$work/legacy-install/0.3.10/libcandy_core_cloud.so"
+if CORE_MODULE_BUNDLE="$work/legacy-module.tar.gz" \
+  CORE_MODULE_BUNDLE_SHA256="$legacy_bundle_sha" \
+  CORE_MODULE_VERSION=0.3.10 \
+  CORE_MODULE_SHA256="$module_sha" \
+  CORE_MODULE_PUBLIC_KEY="$work/test-release.pub" \
+  CORE_MODULE_KEY_FINGERPRINT="$test_fingerprint" \
+  CORE_MODULE_INSTALL_ROOT="$work/legacy-install" \
+  "$installer" >/dev/null 2>&1; then
+  printf '%s\n' 'retired standalone Core module contract was accepted' >&2
+  exit 1
+fi
 
 jq '.module.version = "0.3.10"' "$work/install/0.3.11/manifest.json" > "$stage/manifest.json"
 USIGN_PASSWORD='' usign -S -s "$work/test-release.sec" -m "$stage/manifest.json" -x "$stage/manifest.sig"
