@@ -139,5 +139,21 @@ workflow is retained for the aarch64 control-plane target, but is deliberately
 manual-only until the central release repository publishes a matching signed
 `core-v0.3.13` with the aarch64 Cloud ABI. It never checks out or builds Core,
 and it cannot publish a Cloud bundle containing a standalone Core artifact.
-IPv6 remains outside this delivery; Mesh precedes dynamic routing in the
-expansion sequence.
+
+After that central release exists, an immutable ARM64 bundle can be deployed
+from a prepared directory containing `compose.arm64.yml`, `deploy.env`, and
+`secrets/`:
+
+```bash
+sudo scripts/deploy-arm64-release.sh \
+  --tag cloud-arm64-<source-revision> \
+  --deployment-dir /opt/candy-cloud
+```
+
+The script verifies the checksum and manifest, checks all six images are ARM64,
+applies least-privilege secret ownership for the container UID, runs migrations,
+starts Compose, and waits for every application health check. The installer
+accepts only the signed `release_kind=candy-core` shared-library manifest from
+the central `candy-release` repository. Historical standalone Core-module
+releases are not compatibility inputs and are never consumed. IPv6 remains
+outside this delivery; Mesh precedes dynamic routing in the expansion sequence.
