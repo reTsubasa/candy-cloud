@@ -51,8 +51,11 @@ jobs:
         run: |
           set -eu
           mkdir -m 0700 core-input
-          gh release download "$CORE_MODULE_INPUT_TAG" --repo reTsubasa/candy-release --dir core-input
           base="candy-core-$CORE_MODULE_VERSION-cloud-abi-$CORE_MODULE_TARGET"
+          gh release download "$CORE_MODULE_INPUT_TAG" --repo reTsubasa/candy-release --dir core-input \
+            --pattern "$base.tar.gz" \
+            --pattern "$base.tar.gz.sha256" \
+            --pattern "$base.manifest.json"
           bundle="core-input/$base.tar.gz"
           manifest="core-input/$base.manifest.json"
           checksum="core-input/$base.tar.gz.sha256"
