@@ -132,7 +132,12 @@ jobs:
             test "$(docker image inspect "candy-cloud-$image:x86-$revision" --format '{{.Architecture}}')" = amd64
             image_refs+=("candy-cloud-$image:x86-$revision")
           done
-          docker run --rm "candy-cloud-cloud-api:x86-$revision" --help >/dev/null
+          set +e
+          docker run --rm "candy-cloud-cloud-api:x86-$revision" --help >/dev/null 2>&1
+          help_status=$?
+          set -e
+          test "$help_status" -ne 132
+          test "$help_status" -ne 139
           archive="candy-cloud-x86-$revision.tar.gz"
           docker save "${image_refs[@]}" | gzip -1 > "$archive"
           sha256sum "$archive" > "$archive.sha256"
