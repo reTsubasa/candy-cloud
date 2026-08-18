@@ -9,7 +9,7 @@ does not count as product support.
 
 | Product | Repository | Deployable unit | Responsibility |
 |---|---|---|---|
-| Candy Core | `candy-core` | Signed `candy-core` executable and Cloud ABI library | QUIC/UDP data plane, Candy BBR, FEC, protocol, DNS/routing decisions, SD-WAN tunnel engine |
+| Candy Core | private `candy-core` | Signed data-plane bundle and Cloud ABI library published by `candy-release` | QUIC/UDP data plane, Candy BBR, FEC, protocol, DNS/routing decisions, SD-WAN tunnel engine |
 | Candy Runtime | `candy-runtime` | OpenWrt APK or Linux Runtime tarball | Service lifecycle, fail-open, Core installation/rollback, Cloud enrollment and synchronization |
 | Candy Cloud | `candy-cloud` | Architecture-specific Docker image bundle | SaaS identity, API, authorization, topology orchestration, telemetry and web console |
 | Candy Release | `candy-release` | Signed stable catalog and immutable Releases | Central artifact verification, signing policy and update discovery |
@@ -23,8 +23,8 @@ does not count as product support.
 |---|---|---|---|
 | Core data plane `0.3.12` | Supported, musl | Supported, musleabihf | Not released |
 | Core Cloud ABI `0.3.12` | Supported, glibc | Not applicable | Not released |
-| OpenWrt Runtime `0.4.0-r37` | Supported, OpenWrt 25.12.4 x86/64 | Supported, IPQ40xx Cortex-A7 | Not released |
-| Linux Runtime `0.4.0-r37` | Supported, musl | Not released | Supported, glibc; Core dependency missing in `0.3.12` |
+| OpenWrt Runtime `0.4.0-r38` | Supported, OpenWrt 25.12.4 x86/64 | Supported, IPQ40xx Cortex-A7 | Not released |
+| Linux Runtime `0.4.0-r38` | Supported, musl | Not released | Supported, glibc; Core dependency missing in `0.3.12` |
 | Candy Cloud image | Supported by current x86 image Release | Not supported | Not released |
 | LuCI | Supported with x86_64 Runtime | Supported with IPQ40xx Runtime | Not released |
 | Android | Supported ABI | Supported ABI (`armeabi-v7a`) | Supported ABI (`arm64-v8a`) |

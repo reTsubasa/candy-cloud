@@ -80,6 +80,6 @@ Starting with the unified Core `0.3.10` release, the Cloud ABI is an
 `abi_profiles` artifact in the
 same immutable `core-v<version>` release as the full Runtime targets. SD-WAN and
 Cloud integration do not create a separate Core edition or version line. The
-historical `core-cloud-module-v0.3.10` release remains readable only for the
-explicit legacy manifest compatibility path; normal image builds use
-`core-v0.3.10`.
+historical standalone `core-cloud-module-v*` contract is rejected. Cloud builds
+and deployments accept only a signed `release_kind=candy-core` shared-library
+artifact from the central `candy-release/core-v<version>` Release.
