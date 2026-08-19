@@ -16,6 +16,7 @@ import {
 import { IconBranch, IconDelete, IconEdit, IconLocation, IconLock, IconPlus, IconRefresh, IconSafe, IconSearch, IconSync } from '@arco-design/web-react/icon';
 import { CloudApiError, deleteResource, fetchRuntimeConfigurationStatuses, getResource, listResourceReferences, listResources } from '../api';
 import type { ControlResource, ResourceDefinition, ResourceReference, RuntimeConfigurationStatus, Session } from '../types';
+import { attachmentTableValues } from '../resource-table';
 import { ResourceEditor } from './ResourceEditor';
 
 type Props = {
@@ -110,7 +111,7 @@ function resourceName(resource: ControlResource, relatedNames: Record<string, st
   const spec = resource.resource.spec;
   const prefix = spec.prefix as Record<string, unknown> | undefined;
   if (prefix) return `${text(prefix.network)}/${text(prefix.prefix_len)}`;
-  if (resource.resource.kind === 'ATTACHMENT') return `节点接入 · ${text(spec.overlay_router_ipv4)}`;
+  if (resource.resource.kind === 'ATTACHMENT') return attachmentTableValues(resource, relatedNames).nodeName;
   if (resource.resource.kind === 'PEER') return `${relatedNames[String(spec.site_a_id)] ?? '站点 A'} ↔ ${relatedNames[String(spec.site_b_id)] ?? '站点 B'}`;
   if (resource.resource.kind === 'SERVICE_POLICY') return '流量策略';
   return text(spec.display_name ?? spec.name ?? spec.zone ?? spec.endpoint ?? resource.metadata.id);
@@ -125,6 +126,7 @@ function resourceScope(resource: ControlResource): string {
   if (Array.isArray(spec.rules)) return `${spec.rules.length} 条流量规则`;
   if (Array.isArray(spec.records)) return `${spec.records.length} 条 DNS 记录`;
   if (spec.max_bits_per_second) return `${capacity(spec.max_bits_per_second)} · ${text(spec.max_sessions)} 会话`;
+  if (resource.resource.kind === 'ATTACHMENT') return attachmentTableValues(resource).tunnelIp;
   if (spec.overlay_router_ipv4) return `隧道地址 ${text(spec.overlay_router_ipv4)}`;
   return label(spec.region ?? spec.platform ?? spec.path_policy ?? spec.kind ?? spec.segment_id);
 }
@@ -180,10 +182,19 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    if (definition.kind !== 'PEER' || !tenantId) { setRelatedNames({}); return; }
-    void listResources(session.token, tenantId, 'sites').then((response) => {
-      setRelatedNames(Object.fromEntries(response.items.map((item) => [item.metadata.id, text(item.resource.spec.name)])));
-    }).catch(() => setRelatedNames({}));
+    if (!tenantId) { setRelatedNames({}); return; }
+    const relation = definition.kind === 'PEER'
+      ? { collection: 'sites', nameField: 'name' }
+      : definition.kind === 'ATTACHMENT'
+        ? { collection: 'nodes', nameField: 'display_name' }
+        : null;
+    if (!relation) { setRelatedNames({}); return; }
+    let cancelled = false;
+    setRelatedNames({});
+    void listResources(session.token, tenantId, relation.collection).then((response) => {
+      if (!cancelled) setRelatedNames(Object.fromEntries(response.items.map((item) => [item.metadata.id, text(item.resource.spec[relation.nameField])])));
+    }).catch(() => { if (!cancelled) setRelatedNames({}); });
+    return () => { cancelled = true; };
   }, [definition.kind, session.token, tenantId]);
   useEffect(() => {
     if (createRequest > 0 && definition.kind !== 'NODE') setEditor({ visible: true, resource: null });
@@ -251,14 +262,14 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
 
   const columns = [
     {
-      title: definition.label,
+      title: definition.kind === 'ATTACHMENT' ? '节点名称' : definition.label,
       render: (_: unknown, record: ControlResource) => (
         <div className="resource-primary">
           <Typography.Text bold>{resourceName(record, relatedNames)}</Typography.Text>
         </div>
       ),
     },
-    { title: '范围 / 类型', render: (_: unknown, record: ControlResource) => <Typography.Text>{resourceScope(record)}</Typography.Text> },
+    { title: definition.kind === 'ATTACHMENT' ? '节点隧道 IP' : '范围 / 类型', render: (_: unknown, record: ControlResource) => <Typography.Text>{resourceScope(record)}</Typography.Text> },
     { title: '状态', width: 104, render: (_: unknown, record: ControlResource) => <Tag color={stateColor(record.metadata.state)}>{label(record.metadata.state)}</Tag> },
     ...(definition.kind === 'NODE' ? [{
       title: 'SD-WAN',
