@@ -504,7 +504,7 @@ async fn publish_runtime_transport_identity<S>(
     actor: AuthenticatedDevice,
     State(service): State<Arc<S>>,
     Json(request): Json<RuntimeTransportIdentityHttpRequest>,
-) -> Result<Json<RuntimeTransportIdentityDelivery>, ApiError>
+) -> Result<StatusCode, ApiError>
 where
     S: RuntimeConfigurationService,
 {
@@ -552,8 +552,8 @@ where
             endpoints,
         })
         .await
-        .map(Json)
-        .map_err(ApiError::RuntimeConfiguration)
+        .map_err(ApiError::RuntimeConfiguration)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn runtime_profile<S>(

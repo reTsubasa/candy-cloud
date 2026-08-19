@@ -1,5 +1,5 @@
-use chrono::{DateTime, Utc};
-use sqlx::Row;
+use chrono::{DateTime, Duration, Utc};
+use sqlx::{MySql, Row, Transaction};
 use uuid::Uuid;
 
 use crate::DbPool;
@@ -8,6 +8,42 @@ const MAX_EMAIL_LEN: usize = 254;
 const MAX_NAME_LEN: usize = 200;
 const MAX_DEVICE_LABEL_LEN: usize = 200;
 const MAX_ABUSE_SCOPE_LEN: usize = 48;
+
+async fn provision_initial_sdwan_trial(
+    tx: &mut Transaction<'_, MySql>,
+    tenant_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    let pool_id = Uuid::now_v7();
+    let subscription_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO node_pools (id, tenant_id, service_class, name, audience, status) VALUES (?, ?, 'PRIVATE', ?, 'tenant-private', 'ACTIVE')",
+    )
+    .bind(pool_id)
+    .bind(tenant_id)
+    .bind(format!("cloud-private-{tenant_id}"))
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO subscriptions (id, tenant_id, plan_code, status, starts_at, ends_at) VALUES (?, ?, 'sdwan-trial', 'TRIAL', ?, ?)",
+    )
+    .bind(subscription_id)
+    .bind(tenant_id)
+    .bind(now)
+    .bind(now + Duration::days(30))
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO entitlements (id, tenant_id, subscription_id, node_pool_id, service_permission, quota_json, status) VALUES (?, ?, ?, ?, 'private.tun.connect', JSON_OBJECT(), 'ACTIVE')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(tenant_id)
+    .bind(subscription_id)
+    .bind(pool_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum IdentityRepositoryError {
@@ -323,6 +359,7 @@ impl IdentityRepository {
             .await?;
         sqlx::query("INSERT INTO organization_memberships (organization_id, user_id, role) VALUES (?, ?, 'ORGANIZATION_OWNER')")
             .bind(registration.organization_id).bind(registration.user_id).execute(&mut *tx).await?;
+        provision_initial_sdwan_trial(&mut tx, registration.tenant_id, Utc::now()).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -417,6 +454,7 @@ impl IdentityRepository {
         .bind(&registration.email)
         .execute(&mut *tx)
         .await?;
+        provision_initial_sdwan_trial(&mut tx, registration.tenant_id, now).await?;
         tx.commit().await?;
         Ok(DemoAccountBootstrap::Created)
     }

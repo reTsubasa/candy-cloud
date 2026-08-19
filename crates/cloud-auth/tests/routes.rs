@@ -480,11 +480,7 @@ async fn runtime_transport_identity_accepts_dual_stack_and_explicit_withdrawal()
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let response_body: serde_json::Value =
-        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(response_body["node_id"], actor.device_id().to_string());
-    assert_eq!(response_body["endpoints"].as_array().unwrap().len(), 2);
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
     {
         let publications = service.transport_publications.lock().unwrap();
         assert_eq!(publications.len(), 1);
