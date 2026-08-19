@@ -118,7 +118,8 @@ export function buildOperationalTopology(
 ): OperationalTopologySnapshot {
   const segmentResource = resources.segments.find((item) => item.metadata.id === selectedSegmentId);
   const segmentId = segmentResource?.metadata.id ?? '';
-  const selectedAttachments = resources.attachments.filter((item) => value(item, 'segment_id') === segmentId);
+  const segmentMatches = (item: ControlResource): boolean => !selectedSegmentId || value(item, 'segment_id') === selectedSegmentId;
+  const selectedAttachments = resources.attachments.filter(segmentMatches);
   const attachedNodeIds = new Set(selectedAttachments.map((item) => value(item, 'node_id')));
   const selectedNodes = resources.nodes.filter((item) => attachedNodeIds.has(item.metadata.id));
   const statusByIdentity = new Map(statuses.map((status) => [`${status.device_id}:${status.device_key_id}`, status]));
@@ -156,7 +157,7 @@ export function buildOperationalTopology(
       telemetry: runtime,
     };
   });
-  const selectedPrefixes = resources.prefixes.filter((item) => value(item, 'segment_id') === segmentId);
+  const selectedPrefixes = resources.prefixes.filter(segmentMatches);
   const selectedEgresses = resources.egress.filter((item) => selectedAttachments.some((attachment) => attachment.metadata.id === value(item, 'attachment_id')));
   const siteIds = new Set(selectedAttachments.map((item) => value(item, 'site_id')));
   const sites: OperationalSite[] = resources.sites
@@ -179,11 +180,29 @@ export function buildOperationalTopology(
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-  const readiness = readinessBySegment[segmentId] ?? null;
+  const readiness = selectedSegmentId
+    ? readinessBySegment[segmentId] ?? null
+    : resources.segments.length > 0 && resources.segments.every((segment) => readinessBySegment[segment.metadata.id])
+      ? resources.segments.reduce<RuntimeActivationReadiness>((summary, segment, index) => {
+        const item = readinessBySegment[segment.metadata.id];
+        if (index === 0) return { ...item, segment_id: '' };
+        return {
+          ...summary,
+          ready: summary.ready && item.ready,
+          candidate_count: summary.candidate_count + item.candidate_count,
+          ready_candidate_count: summary.ready_candidate_count + item.ready_candidate_count,
+          missing_transport_count: summary.missing_transport_count + item.missing_transport_count,
+          reason_codes: [...new Set([...summary.reason_codes, ...item.reason_codes])],
+        };
+      }, readinessBySegment[resources.segments[0].metadata.id])
+      : null;
+  const aggregateReadinessLabel = !selectedSegmentId && resources.segments.length > 0
+    ? readiness ? (readiness.ready ? '全部网络已就绪' : `${resources.segments.filter((segment) => readinessBySegment[segment.metadata.id]?.ready).length}/${resources.segments.length} 个网络已就绪`) : `${resources.segments.length} 个网络分段 · 全局视图`
+    : readinessLabel(readiness);
   const links: OperationalLink[] = resources.peers
-    .filter((peer) => value(peer, 'segment_id') === segmentId)
+    .filter(segmentMatches)
     .map((peer) => {
-      const paths = resources.paths.filter((path) => value(path, 'peer_id') === peer.metadata.id && value(path, 'segment_id') === segmentId);
+      const paths = resources.paths.filter((path) => value(path, 'peer_id') === peer.metadata.id && segmentMatches(path));
       const kinds = new Set(paths.map((path) => value(path, 'kind')));
       const peerAttachmentIds = new Set(
         selectedAttachments
@@ -207,8 +226,8 @@ export function buildOperationalTopology(
     });
   const routeLabels = selectedPrefixes.map((item) => cidr(item.resource.spec.prefix));
   const egressLabels = selectedEgresses.map(name);
-  const selectedPolicies = resources.policies.filter((item) => value(item, 'segment_id') === segmentId);
-  const selectedDns = resources.dns.filter((item) => value(item, 'segment_id') === segmentId);
+  const selectedPolicies = resources.policies.filter(segmentMatches);
+  const selectedDns = resources.dns.filter(segmentMatches);
   const freshTelemetry = nodes
     .filter((node) => node.telemetryState === 'online')
     .map((node) => node.telemetry)
@@ -225,9 +244,13 @@ export function buildOperationalTopology(
     return values.length > 0 ? values.reduce((sum, item) => sum + item, 0) : null;
   };
   return {
-    segment: segmentResource ? { id: segmentId, name: name(segmentResource), overlayCidr: cidr(segmentResource.resource.spec.overlay_prefix) } : null,
+    segment: segmentResource
+      ? { id: segmentId, name: name(segmentResource), overlayCidr: cidr(segmentResource.resource.spec.overlay_prefix) }
+      : resources.segments.length > 0
+        ? { id: '', name: '全部网络', overlayCidr: `${resources.segments.length} 个网络分段` }
+        : null,
     readiness,
-    readinessLabel: readinessLabel(readiness),
+    readinessLabel: aggregateReadinessLabel,
     sites,
     nodes,
     links,
@@ -239,7 +262,7 @@ export function buildOperationalTopology(
     rejectedNodeCount: nodes.filter((node) => node.applyState === 'rejected').length,
     pendingNodeCount: nodes.filter((node) => node.applyState === 'pending').length,
     activeLinkCount: links.filter((link) => link.state === 'active').length,
-    pathCount: resources.paths.filter((item) => value(item, 'segment_id') === segmentId).length,
+    pathCount: resources.paths.filter(segmentMatches).length,
     routeCount: selectedPrefixes.length,
     routeLabels,
     egressCount: selectedEgresses.length,

@@ -59,6 +59,23 @@ describe('operational topology', () => {
     expect(snapshot.readinessLabel).toBe('等待 Cloud 生成配置');
   });
 
+  it('keeps the default topology global instead of selecting one segment', () => {
+    const secondSegment = resource('segment-2', 'SEGMENT', { name: '办公网络', overlay_prefix: { network: '100.65.0.0', prefix_len: 24 } });
+    const secondSite = resource('site-c', 'SITE', { name: '深圳', kind: 'EDGE' });
+    const secondNode = resource('node-c', 'NODE', { display_name: '深圳网关', site_id: 'site-c', device_id: 'device-c', device_key_id: 'key-c' });
+    const global = buildOperationalTopology({
+      ...fixture(),
+      segments: [...fixture().segments, secondSegment],
+      sites: [...fixture().sites, secondSite],
+      nodes: [...fixture().nodes, secondNode],
+      attachments: [...fixture().attachments, resource('attachment-c', 'ATTACHMENT', { segment_id: 'segment-2', site_id: 'site-c', node_id: 'node-c' })],
+      prefixes: [...fixture().prefixes, resource('prefix-c', 'PREFIX', { segment_id: 'segment-2', site_id: 'site-c', prefix: { network: '10.20.0.0', prefix_len: 16 } })],
+    }, [], {}, '');
+    expect(global.segment?.name).toBe('全部网络');
+    expect(global.sites.map((site) => site.id)).toEqual(['site-a', 'site-b', 'site-c']);
+    expect(global.routeLabels).toEqual(['192.168.1.0/24', '10.20.0.0/16']);
+  });
+
   it('distinguishes fresh data-plane telemetry from stale configuration receipts', () => {
     const now = Date.parse('2026-08-18T10:00:00Z');
     const active: RuntimeTelemetry = {

@@ -139,8 +139,7 @@ export function Overview({ session }: Props) {
     return () => window.clearInterval(timer);
   }, [autoRefresh, load]);
   useEffect(() => {
-    const available = resources.segments.some((segment) => segment.metadata.id === selectedSegmentId);
-    if (!available) setSelectedSegmentId(resources.segments[0]?.metadata.id ?? '');
+    if (selectedSegmentId && !resources.segments.some((segment) => segment.metadata.id === selectedSegmentId)) setSelectedSegmentId('');
   }, [resources.segments, selectedSegmentId]);
 
   const topology = useMemo(
@@ -205,10 +204,10 @@ export function Overview({ session }: Props) {
                 <span className="topology-update-state"><i className={autoRefresh ? 'active' : ''} />{relativeTime(lastUpdated)}{refreshing ? ' · 同步中' : ''}</span>
               </div>
               <Select
-                value={selectedSegmentId || undefined}
-                onChange={setSelectedSegmentId}
-                options={resources.segments.map((segment) => ({ label: String(segment.resource.spec.name ?? segment.metadata.id), value: segment.metadata.id }))}
-                placeholder="选择网络分段"
+                value={selectedSegmentId || 'all'}
+                options={[{ label: '全部网络', value: 'all' }, ...resources.segments.map((segment) => ({ label: String(segment.resource.spec.name ?? segment.metadata.id), value: segment.metadata.id }))]}
+                onChange={(value) => setSelectedSegmentId(value === 'all' ? '' : value)}
+                placeholder="筛选网络分段"
                 className="segment-selector"
               />
             </header>
@@ -245,13 +244,13 @@ export function Overview({ session }: Props) {
         </div>
 
         {topology.segment && <section className="resource-observability">
-          <header><div><Typography.Title heading={5}>资源与路由状态</Typography.Title><Typography.Text type="secondary">当前分段的实际配置关系</Typography.Text></div><Tag color={topology.readiness?.ready ? 'green' : 'orange'}>{topology.readinessLabel}</Tag></header>
+          <header><div><Typography.Title heading={5}>资源与路由状态</Typography.Title><Typography.Text type="secondary">{selectedSegmentId ? '当前网络分段的实际配置关系' : '所有网络分段的实际配置关系'}</Typography.Text></div><Tag color={topology.readiness?.ready ? 'green' : 'orange'}>{topology.readinessLabel}</Tag></header>
           <div className="resource-observability-grid">
             <ResourceSignal label="站点" value={topology.sites.length} detail={topology.sites.map((site) => site.name).join('、') || '未接入'} />
             <ResourceSignal label="节点" value={topology.nodes.length} detail={`${topology.onlineNodeCount} 个在线 · ${topology.activeNodeCount} 个配置已生效`} />
             <ResourceSignal label="路由前缀" value={topology.routeCount} detail={topology.routeLabels.join('、') || '未发布'} mono />
             <ResourceSignal label="互联网出口" value={topology.egressCount} detail={topology.egressLabels.join('、') || '未配置'} />
-            <ResourceSignal label="流量策略" value={topology.policyRuleCount} detail={`${resources.policies.filter((item) => String(item.resource.spec.segment_id ?? '') === topology.segment?.id).length} 个策略版本`} />
+            <ResourceSignal label="流量策略" value={topology.policyRuleCount} detail={`${topology.policyRuleCount > 0 ? topology.policyRuleCount : 0} 条规则`} />
             <ResourceSignal label="DNS" value={topology.dnsRecordCount} detail={`${topology.dnsZoneCount} 个内部区域`} />
           </div>
         </section>}
