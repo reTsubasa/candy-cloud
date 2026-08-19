@@ -339,12 +339,18 @@ paths:
       summary: Report the management API degraded state
       description: This route is mounted by cloud-api, not cloud-auth.
       responses:
-        "503":
-          description: The current implementation always reports degraded.
+        "200":
+          description: Required management API dependencies are available.
           content:
             text/plain:
-              schema: { type: string, const: degraded }
-              example: degraded
+              schema: { type: string, const: not degraded }
+              example: not degraded
+        "503":
+          description: A required management API dependency is unavailable.
+          content:
+            text/plain:
+              schema: { type: string }
+              example: database schema unavailable
   /v1/tenants/{tenant_id}/{collection}:
     parameters:
       - $ref: "#/components/parameters/TenantId"

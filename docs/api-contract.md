@@ -393,4 +393,6 @@ connections for a single direct path.
 - `/health/live`: process event loop is running.
 - `/health/ready`: required database, schema, authentication, key, CA, and Core
   module dependencies for that service are available.
-- `/health/degraded`: management API degraded marker; currently always `503`.
+- `/health/degraded`: returns `200 not degraded` when the management API's
+  authentication and database dependencies are ready, otherwise `503` with
+  the failing dependency reason.
