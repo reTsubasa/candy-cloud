@@ -16,6 +16,10 @@ exit 0
 EOF
 cat >"$bin/candy-server" <<'EOF'
 #!/bin/sh
+if [ "${1:-}" = --help ]; then
+	printf '%s\n' '  candy-server bootstrap FILE'
+	exit 0
+fi
 printf '<%s>' "$@" >>"$FAKE_CALLS"
 printf '\n' >>"$FAKE_CALLS"
 [ "$1" = bootstrap ]

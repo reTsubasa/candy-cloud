@@ -176,11 +176,24 @@ validate_cloud_address "$cloud_address"
 installed_server=${CANDY_SERVER_BIN:-$(command -v candy-server 2>/dev/null || true)}
 installed_sdwan_runtime=${CANDY_SDWAN_RUNTIME_PATH:-/usr/local/libexec/candy-sdwan-runtime}
 installed_enroll_client=${CANDY_ENROLL_CLIENT_PATH:-/usr/local/libexec/candy-cloud-enroll}
-if [ -n "$installed_server" ] && [ -x "$installed_server" ] && [ -x "$installed_sdwan_runtime" ] && [ -x "$installed_enroll_client" ]; then
+installed_server_supports_bootstrap=0
+if [ -n "$installed_server" ] && [ -x "$installed_server" ]; then
+	# A pre-0.4 server launcher treats an unknown `bootstrap` argument as
+	# ordinary server options and reports a misleading missing-Core error.
+	# Only reuse an existing installation when its public product command
+	# explicitly advertises the file-based enrollment contract.
+	if "$installed_server" --help 2>&1 | grep -F 'candy-server bootstrap FILE' >/dev/null 2>&1; then
+		installed_server_supports_bootstrap=1
+	fi
+fi
+if [ "$installed_server_supports_bootstrap" -eq 1 ] && [ -x "$installed_sdwan_runtime" ] && [ -x "$installed_enroll_client" ]; then
 	log info enrollment "Candy is already installed; using the existing Runtime"
 	"$installed_server" bootstrap "$bootstrap_file"
 	COMMITTED=1
 	exit 0
+fi
+if [ -n "$installed_server" ] && [ -x "$installed_server" ]; then
+	log info upgrade "Existing Candy installation does not support file-based enrollment; upgrading the Runtime before registration"
 fi
 
 case "$(uname -s)" in Linux) ;; *) fail "automatic installation supports Linux only" ;; esac
