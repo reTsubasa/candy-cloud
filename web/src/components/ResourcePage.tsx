@@ -13,10 +13,11 @@ import {
   Tooltip,
   Typography,
 } from '@arco-design/web-react';
-import { IconBranch, IconDelete, IconEdit, IconLocation, IconLock, IconPlus, IconRefresh, IconSafe, IconSearch, IconSync } from '@arco-design/web-react/icon';
-import { CloudApiError, deleteResource, fetchRuntimeConfigurationStatuses, getResource, listResourceReferences, listResources } from '../api';
+import { IconBranch, IconDelete, IconEdit, IconLocation, IconLock, IconPlus, IconRefresh, IconRight, IconSafe, IconSearch, IconSync } from '@arco-design/web-react/icon';
+import { CloudApiError, deleteResource, fetchRuntimeConfigurationStatuses, getResource, listAllResources, listResourceReferences, listResources } from '../api';
 import type { ControlResource, ResourceDefinition, ResourceReference, RuntimeConfigurationStatus, Session } from '../types';
 import { attachmentTableValues } from '../resource-table';
+import { compactPolicyValues, summarizePolicy, type PolicyReferences } from '../policy-summary';
 import { ResourceEditor } from './ResourceEditor';
 
 type Props = {
@@ -137,6 +138,15 @@ function stateColor(state: string): string {
   return 'gray';
 }
 
+const emptyPolicyReferences: PolicyReferences = { segments: {}, sites: {}, egresses: {} };
+
+function namesById(items: ControlResource[], field: string): Record<string, string> {
+  return Object.fromEntries(items.map((item) => {
+    const value = item.resource.spec[field];
+    return [item.metadata.id, typeof value === 'string' ? value.trim() : ''];
+  }));
+}
+
 export function ResourcePage({ definition, session, createRequest = 0, onEnrollNode, onReenrollNode, focusRequest, onLocateResource, onFocusHandled }: Props) {
   const [message, messageHolder] = Message.useMessage();
   const [items, setItems] = useState<ControlResource[]>([]);
@@ -150,6 +160,9 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
   const [referenceLoading, setReferenceLoading] = useState(false);
   const [deleteReferences, setDeleteReferences] = useState<ResourceReference[]>([]);
   const [relatedNames, setRelatedNames] = useState<Record<string, string>>({});
+  const [policyReferences, setPolicyReferences] = useState<PolicyReferences>(emptyPolicyReferences);
+  const [policyReferencesLoading, setPolicyReferencesLoading] = useState(false);
+  const [policyReferenceError, setPolicyReferenceError] = useState<string | null>(null);
   const [runtimeStatuses, setRuntimeStatuses] = useState<Record<string, RuntimeConfigurationStatus>>({});
   const tenantId = session.claims.tenant_id;
 
@@ -181,6 +194,38 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
   }, [definition.collection, definition.kind, session.token, tenantId]);
 
   useEffect(() => { void load(); }, [load]);
+  const loadPolicyReferences = useCallback(async (cancelled?: () => boolean) => {
+    if (!tenantId || definition.kind !== 'SERVICE_POLICY') {
+      if (!cancelled?.()) {
+        setPolicyReferences(emptyPolicyReferences);
+        setPolicyReferencesLoading(false);
+        setPolicyReferenceError(null);
+      }
+      return;
+    }
+    setPolicyReferencesLoading(true);
+    setPolicyReferenceError(null);
+    const results = await Promise.allSettled([
+      listAllResources(session.token, tenantId, 'segments'),
+      listAllResources(session.token, tenantId, 'sites'),
+      listAllResources(session.token, tenantId, 'egresses'),
+    ]);
+    if (cancelled?.()) return;
+    const items = results.map((result) => result.status === 'fulfilled' ? result.value : []);
+    setPolicyReferences({
+      segments: namesById(items[0], 'name'),
+      sites: namesById(items[1], 'name'),
+      egresses: namesById(items[2], 'name'),
+    });
+    const failedLabels = ['网络', '站点', '出口'].filter((_, index) => results[index].status === 'rejected');
+    setPolicyReferenceError(failedLabels.length > 0 ? `${failedLabels.join('、')}名称读取失败，部分策略路径暂时无法完整显示。` : null);
+    setPolicyReferencesLoading(false);
+  }, [definition.kind, session.token, tenantId]);
+  useEffect(() => {
+    let cancelled = false;
+    void loadPolicyReferences(() => cancelled);
+    return () => { cancelled = true; };
+  }, [loadPolicyReferences]);
   useEffect(() => {
     if (!tenantId) { setRelatedNames({}); return; }
     const relation = definition.kind === 'PEER'
@@ -260,7 +305,46 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
     }
   };
 
-  const columns = [
+  const actionColumn = {
+    title: '',
+    width: 92,
+    align: 'right' as const,
+    render: (_: unknown, record: ControlResource) => (
+      <Space size={4}>
+        {definition.kind === 'NODE' && <Tooltip content="重新生成加入文件"><Button type="text" size="small" icon={<IconSync />} aria-label="重新加入" onClick={() => onReenrollNode?.(record)} /></Tooltip>}
+        <Tooltip content="编辑"><Button type="text" size="small" icon={<IconEdit />} aria-label="编辑" onClick={() => setEditor({ visible: true, resource: record })} /></Tooltip>
+        <Tooltip content="删除"><Button type="text" size="small" status="danger" icon={<IconDelete />} aria-label="删除" loading={deletingId === record.metadata.id} disabled={deletingId !== null} onClick={() => void openDelete(record)} /></Tooltip>
+      </Space>
+    ),
+  };
+  const policyColumns = [
+    {
+      title: '生效网络',
+      width: 220,
+      render: (_: unknown, record: ControlResource) => {
+        const summary = summarizePolicy(record, policyReferences);
+        return <div className="policy-network"><strong>{summary.segmentName}</strong><span>{summary.rules.length > 0 ? `${summary.rules.length} 条流量规则` : '未设置覆盖规则'}</span></div>;
+      },
+    },
+    {
+      title: '流量路径（来源 → 匹配 → 出口）',
+      render: (_: unknown, record: ControlResource) => {
+        const summary = summarizePolicy(record, policyReferences);
+        if (summary.rules.length === 0) return <div className="policy-default"><span>默认</span><strong>{summary.defaultAction}</strong></div>;
+        return <div className="policy-flow-list">{summary.rules.map((rule) => <div className="policy-flow-rule" key={rule.id}>
+          <span className="policy-priority">P{rule.priority === Number.MAX_SAFE_INTEGER ? '—' : rule.priority}</span>
+          <div className="policy-flow-step"><small>来源</small><strong title={rule.sources.join('、')}>{compactPolicyValues(rule.sources)}</strong></div>
+          <IconRight className="policy-flow-arrow" />
+          <div className="policy-flow-step match"><small>匹配</small><strong title={rule.conditions.join('、')}>{compactPolicyValues(rule.conditions)}</strong></div>
+          <IconRight className="policy-flow-arrow" />
+          <div className={`policy-flow-step destination${rule.remote ? ' remote' : ''}`}><small>{rule.remote ? '远端出口' : '出口'}</small><strong>{rule.action}</strong></div>
+        </div>)}</div>;
+      },
+    },
+    { title: '状态', width: 104, render: (_: unknown, record: ControlResource) => <Tag color={stateColor(record.metadata.state)}>{label(record.metadata.state)}</Tag> },
+    actionColumn,
+  ];
+  const defaultColumns = [
     {
       title: definition.kind === 'ATTACHMENT' ? '节点名称' : definition.label,
       render: (_: unknown, record: ControlResource) => (
@@ -286,19 +370,9 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
         );
       },
     }] : []),
-    {
-      title: '',
-      width: 92,
-      align: 'right' as const,
-      render: (_: unknown, record: ControlResource) => (
-        <Space size={4}>
-          {definition.kind === 'NODE' && <Tooltip content="重新生成加入文件"><Button type="text" size="small" icon={<IconSync />} aria-label="重新加入" onClick={() => onReenrollNode?.(record)} /></Tooltip>}
-          <Tooltip content="编辑"><Button type="text" size="small" icon={<IconEdit />} aria-label="编辑" onClick={() => setEditor({ visible: true, resource: record })} /></Tooltip>
-          <Tooltip content="删除"><Button type="text" size="small" status="danger" icon={<IconDelete />} aria-label="删除" loading={deletingId === record.metadata.id} disabled={deletingId !== null} onClick={() => void openDelete(record)} /></Tooltip>
-        </Space>
-      ),
-    },
+    actionColumn,
   ];
+  const columns = definition.kind === 'SERVICE_POLICY' ? policyColumns : defaultColumns;
 
   return (
     <section className="workspace-section">
@@ -309,7 +383,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
           <Typography.Text type="secondary">{definition.description}</Typography.Text>
         </div>
         <Space>
-          <Button icon={<IconRefresh />} onClick={() => void load()} loading={loading}>刷新</Button>
+          <Button icon={<IconRefresh />} onClick={() => { void load(); void loadPolicyReferences(); }} loading={loading || policyReferencesLoading}>刷新</Button>
           {definition.kind === 'NODE' ? (
             <Button type="primary" icon={<IconSafe />} onClick={onEnrollNode}>添加节点</Button>
           ) : (
@@ -332,9 +406,10 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
         </Typography.Text>
       </div>
       {error && <Alert type="error" showIcon content={error} action={<Button size="small" onClick={() => void load()}>重试</Button>} />}
+      {policyReferenceError && <Alert type="warning" showIcon content={policyReferenceError} action={<Button size="small" onClick={() => void loadPolicyReferences()}>重试</Button>} />}
       <div className="table-surface">
-        <Spin loading={loading} block>
-          {!loading && !error && filtered.length === 0 ? (
+        <Spin loading={loading || policyReferencesLoading} block>
+          {!loading && !policyReferencesLoading && !error && filtered.length === 0 ? (
             <Empty description={query ? '没有匹配的资源' : definition.emptyTitle} />
           ) : (
             <Table

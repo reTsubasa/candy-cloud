@@ -126,6 +126,24 @@ button, input, textarea { font: inherit; }
 .table-surface .arco-table-th { background: #f7f8fa; color: #4e5969; font-weight: 600; }
 .table-surface .arco-table-td { border-bottom-color: #edf0f4; }
 .resource-primary { display: flex; flex-direction: column; gap: 4px; min-width: 180px; }
+.policy-network { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.policy-network strong { overflow: hidden; color: #1d2129; text-overflow: ellipsis; white-space: nowrap; }
+.policy-network span { color: var(--muted); font-size: 12px; }
+.policy-flow-list { min-width: 590px; }
+.policy-flow-rule { min-height: 54px; display: grid; grid-template-columns: 44px minmax(112px, .75fr) 18px minmax(180px, 1.35fr) 18px minmax(130px, .9fr); align-items: center; gap: 8px; padding: 8px 0; }
+.policy-flow-rule + .policy-flow-rule { border-top: 1px solid #edf0f4; }
+.policy-priority { width: 44px; padding: 3px 5px; color: #4e5969; background: #f2f3f5; border-radius: 3px; font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; text-align: center; }
+.policy-flow-step { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.policy-flow-step small { color: #86909c; font-size: 10px; line-height: 1; }
+.policy-flow-step strong { overflow: hidden; color: #1d2129; font-size: 12px; font-weight: 600; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.policy-flow-step.match strong { color: #4e5969; font-weight: 500; }
+.policy-flow-step.destination { padding-left: 9px; border-left: 2px solid #c9cdd4; }
+.policy-flow-step.destination.remote { border-left-color: var(--blue); }
+.policy-flow-step.destination.remote strong { color: #0e42d2; }
+.policy-flow-arrow { color: #a9b5c7; font-size: 13px; }
+.policy-default { min-height: 54px; display: flex; align-items: center; gap: 10px; color: #4e5969; }
+.policy-default span { padding: 3px 7px; color: #4e5969; background: #f2f3f5; border-radius: 3px; font-size: 11px; }
+.policy-default strong { font-size: 12px; font-weight: 500; }
 .compact-id { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .editor-alert { margin-bottom: 16px; }
 .revision-value { color: #4e5969; font-variant-numeric: tabular-nums; }
