@@ -5,6 +5,7 @@ use cloud_db::{
         EnrollmentCompletionOutcome, EnrollmentCompletionRepository, EnrollmentCompletionWrite,
     },
 };
+use serde_json::json;
 use uuid::Uuid;
 
 async fn setup() -> Option<(cloud_db::DbPool, Uuid, Uuid, Uuid)> {
@@ -41,6 +42,7 @@ async fn setup() -> Option<(cloud_db::DbPool, Uuid, Uuid, Uuid)> {
             requested_display_name: None,
             requested_platform: None,
             requested_architecture: None,
+            replace_node_id: None,
             code_hash,
             expires_at: Utc::now() + Duration::hours(1),
             created_by: "admin".into(),
@@ -212,6 +214,7 @@ async fn completion_request_id_is_unique_across_a_tenant() {
             requested_display_name: None,
             requested_platform: None,
             requested_architecture: None,
+            replace_node_id: None,
             code_hash: second_code_hash,
             expires_at: Utc::now() + Duration::hours(1),
             created_by: "admin".into(),
@@ -250,4 +253,142 @@ async fn completion_request_id_is_unique_across_a_tenant() {
         repository.complete(&second).await.unwrap(),
         EnrollmentCompletionOutcome::Conflict
     );
+}
+
+#[tokio::test]
+async fn reenrollment_rotates_identity_without_replacing_the_control_node() {
+    let Some((pool, organization_id, tenant_id, _)) = setup().await else {
+        return;
+    };
+    let site_id = Uuid::now_v7();
+    let control_node_id = Uuid::now_v7();
+    let old_device_id = Uuid::now_v7();
+    let old_key_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO devices (id, tenant_id, device_id, display_name, status) VALUES (?, ?, ?, 'old-node', 'ACTIVE')")
+        .bind(old_device_id)
+        .bind(tenant_id)
+        .bind(old_device_id.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO device_keys (id, tenant_id, device_id, key_id, public_key, assurance_level, status) VALUES (?, ?, ?, ?, ?, 1, 'ACTIVE')")
+        .bind(old_key_id)
+        .bind(tenant_id)
+        .bind(old_device_id)
+        .bind(old_key_id.to_string())
+        .bind([9u8; 32].as_slice())
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (kind, id, document) in [
+        (
+            "SITE",
+            site_id,
+            json!({"metadata":{"schema_version":1,"id":site_id,"tenant_id":tenant_id,"revision":1,"state":"ACTIVE"},"resource":{"kind":"SITE","spec":{"name":"Branch","kind":"EDGE"}}}),
+        ),
+        (
+            "NODE",
+            control_node_id,
+            json!({"metadata":{"schema_version":1,"id":control_node_id,"tenant_id":tenant_id,"revision":1,"state":"ACTIVE"},"resource":{"kind":"NODE","spec":{"device_id":old_device_id,"device_key_id":old_key_id,"site_id":site_id,"display_name":"Branch Router","platform":"OPEN_WRT","architecture":"armv7"}}}),
+        ),
+    ] {
+        sqlx::query("INSERT INTO sdwan_control_resources (tenant_id, resource_kind, id, revision, state, document_hash, document_json, created_by, updated_by) VALUES (?, ?, ?, 1, 'ACTIVE', ?, CAST(? AS JSON), 'test', 'test')")
+            .bind(tenant_id)
+            .bind(kind)
+            .bind(id)
+            .bind([7u8; 32].as_slice())
+            .bind(document.to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO sdwan_control_resource_references (tenant_id, source_kind, source_id, target_kind, target_id) VALUES (?, 'NODE', ?, 'SITE', ?)")
+        .bind(tenant_id)
+        .bind(control_node_id)
+        .bind(site_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let activation_id = Uuid::now_v7();
+    let challenge_id = Uuid::now_v7();
+    let mut code_hash = [0u8; 32];
+    code_hash[..16].copy_from_slice(activation_id.as_bytes());
+    code_hash[16..].copy_from_slice(challenge_id.as_bytes());
+    let enrollment = EnrollmentRepository::new(pool.clone());
+    enrollment
+        .insert_activation_code(&ActivationCodeWrite {
+            id: activation_id,
+            organization_id,
+            tenant_id,
+            site_id: Some(site_id),
+            requested_display_name: Some("Branch Router".into()),
+            requested_platform: Some("OPEN_WRT".into()),
+            requested_architecture: Some("armv7".into()),
+            replace_node_id: Some(control_node_id),
+            code_hash,
+            expires_at: Utc::now() + Duration::minutes(10),
+            created_by: "admin".into(),
+        })
+        .await
+        .unwrap();
+    enrollment
+        .reserve_challenge(
+            &code_hash,
+            &EnrollmentChallengeWrite {
+                id: challenge_id,
+                request_id: format!("challenge-{challenge_id}"),
+                request_fingerprint: [21; 32],
+                enrollment_instance_id: "replacement-installation".into(),
+                display_name: "Branch Router".into(),
+                root_public_key: [22; 32],
+                operational_public_key: [23; 32],
+                metadata_hash: [24; 32],
+                attestation_hash: [25; 32],
+                server_nonce: [26; 32],
+                assurance_level: 1,
+                expires_at: Utc::now() + Duration::minutes(10),
+            },
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    let write = completion(challenge_id, organization_id, tenant_id);
+    assert!(matches!(
+        EnrollmentCompletionRepository::new(pool.clone())
+            .complete(&write)
+            .await
+            .unwrap(),
+        EnrollmentCompletionOutcome::Issued(_)
+    ));
+
+    let (revision, document): (u64, String) = sqlx::query_as("SELECT revision, CAST(document_json AS CHAR) FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = 'NODE' AND id = ?")
+        .bind(tenant_id)
+        .bind(control_node_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(revision, 2);
+    assert!(document.contains(&write.device_record_id.to_string()));
+    assert!(document.contains(&write.key_record_id.to_string()));
+    let old_device_status: String = sqlx::query_scalar("SELECT status FROM devices WHERE id = ?")
+        .bind(old_device_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let old_key_status: String = sqlx::query_scalar("SELECT status FROM device_keys WHERE id = ?")
+        .bind(old_key_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(old_device_status, "REVOKED");
+    assert_eq!(old_key_status, "REVOKED");
+    let reference_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sdwan_control_resource_references WHERE tenant_id = ? AND source_kind = 'NODE' AND source_id = ? AND target_kind = 'SITE' AND target_id = ?")
+        .bind(tenant_id)
+        .bind(control_node_id)
+        .bind(site_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(reference_count, 1);
 }

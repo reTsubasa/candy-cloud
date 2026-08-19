@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createNodeJoinCode, createResource, fetchCloudVersion, fetchHealth, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, listAccountSessions, listAllResources, listResources, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
+import { CloudApiError, createNodeJoinCode, createResource, deleteResource, fetchCloudVersion, fetchHealth, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, listAccountSessions, listAllResources, listResourceReferences, listResources, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
 import { saveIdentitySession } from './session';
 
 describe('same-origin Cloud API client', () => {
@@ -59,6 +59,30 @@ describe('same-origin Cloud API client', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/tenants/tenant/enrollment/activations', expect.objectContaining({
       method: 'POST', body: JSON.stringify({ expires_in_seconds: 600 }),
     }));
+  });
+
+  it('binds a recovery join code to the existing node profile', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'join-code-id', credential: 'A'.repeat(43), expires_at: new Date().toISOString(),
+    }), { status: 201, headers: { 'content-type': 'application/json' } }));
+    await createNodeJoinCode('token', 'tenant', 600, {
+      site_id: 'site-id', display_name: 'Branch', platform: 'OPEN_WRT', architecture: 'armv7', replace_node_id: 'node-id',
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/tenants/tenant/enrollment/activations', expect.objectContaining({
+      body: JSON.stringify({ expires_in_seconds: 600, site_id: 'site-id', display_name: 'Branch', platform: 'OPEN_WRT', architecture: 'armv7', replace_node_id: 'node-id' }),
+    }));
+  });
+
+  it('preserves structured deletion blockers for navigation', async () => {
+    const reference = { kind: 'ATTACHMENT', collection: 'attachments', id: 'attachment-id', resource: { metadata: { id: 'attachment-id' } } };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ schema_version: 1, references: [reference] }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ schema_version: 1, code: 'RESOURCE_REFERENCE_CONFLICT', message: 'still referenced', references: [reference] }), { status: 409, headers: { 'content-type': 'application/json' } }));
+    await expect(listResourceReferences('token', 'tenant', 'sites', 'site-id')).resolves.toMatchObject({ references: [reference] });
+    await expect(deleteResource('token', 'tenant', 'sites', 'site-id', 2)).rejects.toEqual(expect.objectContaining<Partial<CloudApiError>>({
+      code: 'RESOURCE_REFERENCE_CONFLICT', details: expect.objectContaining({ references: [reference] }),
+    }));
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/tenants/tenant/sites/site-id/references');
   });
 
   it('reports real health response status and body', async () => {

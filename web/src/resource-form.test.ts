@@ -45,7 +45,7 @@ describe('resource form contract mapping', () => {
       destination_attachment_id: uuid, kind: 'DIRECT', transport_node_id: '', priority: 1,
     })).toContain('transport_node_id:required');
     expect(validateResourceEditor('DNS_INTENT', {
-      segment_id: uuid, site_id: uuid, zone: 'corp.test',
+      segment_id: uuid, publish_scope: 'ALL', site_ids: [], zone: 'corp.test',
       records: [{ name: 'host.corp.test', type: 'AAAA', value: '2001:::10', ttl_seconds: 60 }],
     })).toContain('records.0.value:ipv6');
   });
@@ -65,10 +65,24 @@ describe('resource form contract mapping', () => {
   });
 
   it('serializes DNS rows into tagged record data', () => {
-    expect(buildResourceSpec('DNS_INTENT', {
-      segment_id: 'segment', site_id: 'site', zone: 'corp.test', records: [
+    const document = buildResourceSpec('DNS_INTENT', {
+      segment_id: 'segment', publish_scope: 'SELECTED', site_ids: ['site-a', 'site-b'], zone: 'corp.test', records: [
         { name: 'gateway.corp.test', type: 'A', value: '10.0.0.10', ttl_seconds: 60, required_prefix_id: '' },
       ],
-    }).spec.records).toEqual([{ name: 'gateway.corp.test', ttl_seconds: 60, data: { type: 'A', value: '10.0.0.10' }, required_prefix_id: null }]);
+    });
+    expect(document.spec.site_ids).toEqual(['site-a', 'site-b']);
+    expect(document.spec).not.toHaveProperty('site_id');
+    expect(document.spec).not.toHaveProperty('publish_scope');
+    expect(document.spec.records).toEqual([{ name: 'gateway.corp.test', ttl_seconds: 60, data: { type: 'A', value: '10.0.0.10' }, required_prefix_id: null }]);
+  });
+
+  it('normalizes legacy DNS scope and validates selected-site publication', () => {
+    const siteId = '019ff9c1-ac24-7303-a6c3-905768fe5902';
+    expect(normalizeSpecForEditor({ kind: 'DNS_INTENT', spec: {
+      segment_id: 'segment', site_id: siteId, zone: 'corp.test', records: [],
+    } })).toMatchObject({ publish_scope: 'SELECTED', site_ids: [siteId] });
+    expect(validateResourceEditor('DNS_INTENT', {
+      segment_id: '019ff9c1-ac24-7303-a6c3-905768fe5901', publish_scope: 'SELECTED', site_ids: [], zone: 'corp.test', records: [],
+    })).toContain('site_ids:required');
   });
 });

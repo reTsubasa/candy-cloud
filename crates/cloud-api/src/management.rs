@@ -149,6 +149,28 @@ pub struct ResourceListResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ResourceReferenceResponse {
+    pub kind: &'static str,
+    pub collection: &'static str,
+    pub id: Uuid,
+    pub resource: ControlResourceV1,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResourceReferenceListResponse {
+    pub schema_version: u16,
+    pub references: Vec<ResourceReferenceResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct ResourceReferenceConflictBody {
+    schema_version: u16,
+    code: &'static str,
+    message: &'static str,
+    references: Vec<ResourceReferenceResponse>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct MutationResponse {
     pub schema_version: u16,
     pub replayed: bool,
@@ -163,6 +185,7 @@ pub struct ActivationCreateRequest {
     pub display_name: Option<String>,
     pub platform: Option<String>,
     pub architecture: Option<String>,
+    pub replace_node_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -188,6 +211,7 @@ pub struct ActivationResponse {
     pub display_name: Option<String>,
     pub device_id: Option<Uuid>,
     pub device_key_id: Option<Uuid>,
+    pub replace_node_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -442,6 +466,7 @@ pub async fn list_activations(
                 display_name: record.display_name,
                 device_id: record.device_id,
                 device_key_id: record.device_key_id,
+                replace_node_id: record.replace_node_id,
             })
             .collect(),
     ))
@@ -501,6 +526,39 @@ pub async fn create_activation(
             message: "node bootstrap configuration is invalid",
         });
     }
+    if let Some(node_id) = body.replace_node_id {
+        let control = state.repository.as_ref().ok_or(ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "CONTROL_PLANE_UNAVAILABLE",
+            message: "control plane storage is not configured",
+        })?;
+        let node = control
+            .get(tenant_id, ResourceKind::Node, node_id)
+            .await
+            .map_err(ApiError::from_store)?;
+        let ResourceSpecV1::Node(node) = node.resource else {
+            return Err(ApiError {
+                status: StatusCode::BAD_REQUEST,
+                code: "INVALID_REENROLLMENT_TARGET",
+                message: "replacement target is not an active node",
+            });
+        };
+        if body.site_id != Some(node.site_id)
+            || body.display_name.as_deref() != Some(node.display_name.as_str())
+            || body.platform.as_deref()
+                != Some(match node.platform {
+                    cloud_control::NodePlatformV1::OpenWrt => "OPEN_WRT",
+                    cloud_control::NodePlatformV1::Linux => "LINUX",
+                })
+            || body.architecture.as_deref() != Some(node.architecture.as_str())
+        {
+            return Err(ApiError {
+                status: StatusCode::BAD_REQUEST,
+                code: "REENROLLMENT_INTENT_MISMATCH",
+                message: "replacement enrollment must preserve the existing node profile",
+            });
+        }
+    }
     let repository = state.enrollment.as_ref().ok_or(ApiError {
         status: StatusCode::SERVICE_UNAVAILABLE,
         code: "ENROLLMENT_UNAVAILABLE",
@@ -524,6 +582,7 @@ pub async fn create_activation(
             requested_display_name: body.display_name.map(|value| value.trim().to_owned()),
             requested_platform: body.platform,
             requested_architecture: body.architecture,
+            replace_node_id: body.replace_node_id,
             code_hash: cloud_db::enrollment::hash_activation_credential(&credential),
             expires_at,
             created_by: principal.actor_id,
@@ -673,6 +732,36 @@ pub async fn get(
     ))
 }
 
+pub async fn references(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path((tenant_id, collection, id)): Path<(Uuid, String, Uuid)>,
+) -> Result<Json<ResourceReferenceListResponse>, ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::ReadConfiguration)?;
+    let kind = ResourceKind::parse_api_collection(&collection).ok_or(ApiError {
+        status: StatusCode::NOT_FOUND,
+        code: "UNKNOWN_RESOURCE",
+        message: "resource collection is not supported",
+    })?;
+    let repository = state.repository.as_ref().ok_or(ApiError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        code: "CONTROL_PLANE_UNAVAILABLE",
+        message: "control plane storage is not configured",
+    })?;
+    let references = repository
+        .references_to(tenant_id, kind, id)
+        .await
+        .map_err(ApiError::from_store)?
+        .into_iter()
+        .map(|reference| reference_response(reference.resource))
+        .collect();
+    Ok(Json(ResourceReferenceListResponse {
+        schema_version: CONTROL_SCHEMA_V1,
+        references,
+    }))
+}
+
 pub async fn create(
     State(state): State<Arc<ManagementState>>,
     principal: Option<Extension<AuthenticatedPrincipal>>,
@@ -797,6 +886,16 @@ pub async fn replace(
     Ok(mutation_response(outcome, StatusCode::OK))
 }
 
+fn reference_response(resource: ControlResourceV1) -> ResourceReferenceResponse {
+    let kind = resource.resource.kind();
+    ResourceReferenceResponse {
+        kind: kind.database_value(),
+        collection: kind.api_collection(),
+        id: resource.metadata.id,
+        resource,
+    }
+}
+
 pub async fn delete(
     State(state): State<Arc<ManagementState>>,
     principal: Option<Extension<AuthenticatedPrincipal>>,
@@ -839,7 +938,7 @@ pub async fn delete(
         key,
         &resource,
     )?;
-    let outcome = repository
+    let outcome = match repository
         .mutate(
             &ResourceMutation {
                 context,
@@ -849,7 +948,29 @@ pub async fn delete(
             Utc::now(),
         )
         .await
-        .map_err(ApiError::from_store)?;
+    {
+        Ok(outcome) => outcome,
+        Err(ControlStoreError::ReferenceConflict) => {
+            let references = repository
+                .references_to(tenant_id, kind, id)
+                .await
+                .map_err(ApiError::from_store)?
+                .into_iter()
+                .map(|reference| reference_response(reference.resource))
+                .collect();
+            return Ok((
+                StatusCode::CONFLICT,
+                Json(ResourceReferenceConflictBody {
+                    schema_version: CONTROL_SCHEMA_V1,
+                    code: "RESOURCE_REFERENCE_CONFLICT",
+                    message: "resource is still referenced by active configuration",
+                    references,
+                }),
+            )
+                .into_response());
+        }
+        Err(error) => return Err(ApiError::from_store(error)),
+    };
     Ok(mutation_response(outcome, StatusCode::OK))
 }
 

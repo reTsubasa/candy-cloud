@@ -97,6 +97,27 @@ button, input, textarea { font: inherit; }
 .page-header, .section-heading-row, .toolbar-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .page-header { margin-bottom: 20px; }
 .page-header h4, .section-heading-row h5 { margin: 0 0 4px; }
+.segment-guide { min-height: 132px; display: grid; grid-template-columns: minmax(360px, 1.45fr) minmax(320px, 1fr) auto; align-items: center; gap: 24px; padding: 18px 20px; margin: -2px 0 18px; background: #f7f8fa; border-radius: 6px; }
+.segment-guide-copy { min-width: 0; display: flex; align-items: flex-start; gap: 13px; }
+.segment-guide-icon { flex: 0 0 auto; width: 34px; height: 34px; display: grid; place-items: center; color: var(--blue); background: #e8f3ff; border-radius: 6px; font-size: 18px; }
+.segment-guide-copy > div { min-width: 0; }
+.segment-guide-copy strong { color: #1d2129; font-size: 14px; }
+.segment-guide-copy p { max-width: 660px; margin: 6px 0 0; color: #4e5969; font-size: 12px; line-height: 1.7; }
+.segment-guide-example { min-width: 0; display: grid; grid-template-columns: minmax(72px, auto) 28px minmax(138px, 1fr); align-items: center; }
+.segment-example-sites { display: grid; gap: 6px; }
+.segment-example-sites span { position: relative; display: flex; align-items: center; gap: 5px; color: #4e5969; font-size: 11px; }
+.segment-example-sites span::after { position: absolute; right: -28px; width: 20px; height: 1px; background: #a9b5c7; content: ''; }
+.segment-example-sites svg { color: #86909c; }
+.segment-example-link { position: relative; height: 66px; margin-right: 8px; border-right: 1px solid #a9b5c7; }
+.segment-example-link::before, .segment-example-link::after { position: absolute; right: -8px; width: 8px; height: 1px; background: #a9b5c7; content: ''; }
+.segment-example-link::before { top: 0; }.segment-example-link::after { bottom: 0; }
+.segment-example-network { min-height: 58px; display: flex; align-items: center; gap: 9px; padding: 10px 12px; color: var(--blue); background: #fff; border-radius: 5px; }
+.segment-example-network > svg { flex: 0 0 auto; font-size: 18px; }
+.segment-example-network > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.segment-example-network strong { color: #1d2129; font-size: 12px; }.segment-example-network small { color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; }
+.segment-guide-rules { display: grid; gap: 9px; padding-left: 20px; border-left: 1px solid var(--line); }
+.segment-guide-rules > span { display: flex; align-items: center; gap: 7px; color: #4e5969; font-size: 11px; white-space: nowrap; }
+.segment-guide-rules > span > svg { flex: 0 0 auto; color: var(--blue); }.segment-guide-rules > span > span { display: flex; flex-direction: column; gap: 1px; }.segment-guide-rules strong { color: #1d2129; font-size: 11px; }.segment-guide-rules small { color: #4e5969; font-size: 10px; }
 .toolbar-row { min-height: 48px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--line); border-bottom: 0; border-radius: 6px 6px 0 0; }
 .resource-search { width: min(100%, 360px); }
 .table-surface { min-height: 260px; background: var(--surface); border: 1px solid var(--line); border-radius: 0 0 6px 6px; overflow: hidden; }
@@ -241,6 +262,17 @@ button, input, textarea { font: inherit; }
 .cloud-drawer { width: 80vw !important; }
 .cloud-drawer .arco-drawer-body { padding: 0; }
 .resource-drawer:not(.setup-drawer) .arco-drawer-body { padding: 24px 28px; }
+.reference-checking { min-height: 84px; display: flex; align-items: center; justify-content: center; gap: 10px; }
+.reference-blocker-list { display: grid; gap: 8px; max-height: 320px; margin-top: 16px; overflow: auto; }
+.reference-blocker { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px; background: #f7f8fa; border-radius: 5px; }
+.reference-blocker > div { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.reference-blocker > div > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.reference-blocker strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reference-blocker small { color: var(--muted); }
+.recovery-profile { display: grid; gap: 1px; margin-top: 16px; background: var(--line); }
+.recovery-profile > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; background: #fff; }
+.recovery-profile span { color: var(--muted); font-size: 12px; }
+.recovery-profile strong, .recovery-profile code { color: #1d2129; font-size: 12px; }
 .quick-setup-shell { min-height: calc(100vh - 65px); display: grid; grid-template-columns: 252px minmax(0, 1fr); background: #fff; }
 .quick-setup-nav { padding: 24px 14px; background: #f7f8fa; border-right: 1px solid var(--line); }
 .quick-setup-progress { padding: 4px 10px 22px; border-bottom: 1px solid var(--line); }
@@ -395,6 +427,8 @@ button, input, textarea { font: inherit; }
 .activation-instructions { margin: 14px 0 0; padding-left: 20px; color: #4e5969; font-size: 12px; line-height: 2; }
 
 @media (max-width: 1100px) {
+  .segment-guide { grid-template-columns: minmax(360px, 1.4fr) minmax(300px, 1fr); }
+  .segment-guide-rules { grid-column: 1 / -1; grid-template-columns: repeat(2, max-content); gap: 22px; padding: 12px 0 0 47px; border-top: 1px solid var(--line); border-left: 0; }
   .session-shell { grid-template-columns: minmax(400px, 480px) 1fr; }
   .session-panel { padding: 48px; }
   .session-context { padding: 48px 36px; }
@@ -427,6 +461,9 @@ button, input, textarea { font: inherit; }
   .workspace { padding: 18px 14px; }
   .page-header, .toolbar-row { align-items: flex-start; flex-direction: column; }
   .page-header > .arco-space { width: 100%; justify-content: flex-end; }
+  .segment-guide { grid-template-columns: 1fr; gap: 18px; padding: 16px; }
+  .segment-guide-example { width: min(100%, 330px); padding-left: 47px; }
+  .segment-guide-rules { grid-column: auto; grid-template-columns: 1fr; gap: 9px; padding: 14px 0 0 47px; }
   .toolbar-row { gap: 8px; }
   .resource-search { width: 100%; }
   .system-grid { grid-template-columns: 1fr; }

@@ -143,6 +143,11 @@ pub struct ResourcePage {
     pub next_cursor: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceReference {
+    pub resource: ControlResourceV1,
+}
+
 impl ResourcePageRequest {
     pub fn new(limit: u16, after_id: Option<Uuid>) -> Result<Self, ControlStoreError> {
         if limit == 0 || limit > MAX_PAGE_SIZE || after_id.is_some_and(|id| id.is_nil()) {
@@ -788,6 +793,40 @@ impl ControlRepository {
         Ok(ResourcePage { items, next_cursor })
     }
 
+    pub async fn references_to(
+        &self,
+        tenant_id: Uuid,
+        kind: ResourceKind,
+        id: Uuid,
+    ) -> Result<Vec<ResourceReference>, ControlStoreError> {
+        validate_scope(tenant_id, id)?;
+        let target_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = ? AND id = ? AND state <> 'DELETED')",
+        )
+        .bind(tenant_id)
+        .bind(kind.database_value())
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        if !target_exists {
+            return Err(ControlStoreError::NotFound);
+        }
+        let rows = sqlx::query(
+            "SELECT CAST(source.document_json AS CHAR) AS document_json FROM sdwan_control_resource_references refs JOIN sdwan_control_resources source ON source.tenant_id = refs.tenant_id AND source.resource_kind = refs.source_kind AND source.id = refs.source_id WHERE refs.tenant_id = ? AND refs.target_kind = ? AND refs.target_id = ? AND source.state <> 'DELETED' ORDER BY source.resource_kind, source.id",
+        )
+        .bind(tenant_id)
+        .bind(kind.database_value())
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                decode_resource(row.try_get("document_json")?)
+                    .map(|resource| ResourceReference { resource })
+            })
+            .collect()
+    }
+
     pub async fn mutate(
         &self,
         mutation: &ResourceMutation,
@@ -1072,7 +1111,12 @@ fn resource_references(resource: &ControlResourceV1) -> HashSet<(ResourceKind, U
         }
         ResourceSpecV1::DnsIntent(value) => {
             insert(ResourceKind::Segment, value.segment_id);
-            insert(ResourceKind::Site, value.site_id);
+            if let Some(site_id) = value.site_id {
+                insert(ResourceKind::Site, site_id);
+            }
+            for site_id in &value.site_ids {
+                insert(ResourceKind::Site, *site_id);
+            }
             for prefix_id in value
                 .records
                 .iter()
@@ -1192,6 +1236,16 @@ async fn validate_cross_resource(
             }
         }
         ResourceSpecV1::Prefix(value) => {
+            if !site_attached_to_segment(
+                transaction,
+                resource.metadata.tenant_id,
+                value.segment_id,
+                value.site_id,
+            )
+            .await?
+            {
+                return Err(ControlStoreError::ReferenceConflict);
+            }
             let segment = load_control_resource(
                 transaction,
                 resource.metadata.tenant_id,
@@ -1223,6 +1277,18 @@ async fn validate_cross_resource(
             }
         }
         ResourceSpecV1::Peer(value) => {
+            for site_id in [value.site_a_id, value.site_b_id] {
+                if !site_attached_to_segment(
+                    transaction,
+                    resource.metadata.tenant_id,
+                    value.segment_id,
+                    site_id,
+                )
+                .await?
+                {
+                    return Err(ControlStoreError::ReferenceConflict);
+                }
+            }
             let rows = sqlx::query(
                 "SELECT CAST(document_json AS CHAR) AS document_json FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = 'PEER' AND id <> ? AND state <> 'DELETED' AND segment_id = ? FOR SHARE",
             )
@@ -1259,6 +1325,18 @@ async fn validate_cross_resource(
         }
         ResourceSpecV1::ServicePolicy(value) => {
             for rule in &value.rules {
+                for site_id in &rule.source_site_ids {
+                    if !site_attached_to_segment(
+                        transaction,
+                        resource.metadata.tenant_id,
+                        value.segment_id,
+                        *site_id,
+                    )
+                    .await?
+                    {
+                        return Err(ControlStoreError::ReferenceConflict);
+                    }
+                }
                 if let PolicyActionV1::RemoteEgress(egress_id) = rule.action {
                     let egress = load_control_resource(
                         transaction,
@@ -1285,6 +1363,22 @@ async fn validate_cross_resource(
             }
         }
         ResourceSpecV1::DnsIntent(value) => {
+            for site_id in value
+                .site_id
+                .into_iter()
+                .chain(value.site_ids.iter().copied())
+            {
+                if !site_attached_to_segment(
+                    transaction,
+                    resource.metadata.tenant_id,
+                    value.segment_id,
+                    site_id,
+                )
+                .await?
+                {
+                    return Err(ControlStoreError::ReferenceConflict);
+                }
+            }
             for prefix_id in value
                 .records
                 .iter()
@@ -1306,6 +1400,23 @@ async fn validate_cross_resource(
         ResourceSpecV1::Site(_) | ResourceSpecV1::Relay(_) => {}
     }
     Ok(())
+}
+
+async fn site_attached_to_segment(
+    transaction: &mut Transaction<'_, MySql>,
+    tenant_id: Uuid,
+    segment_id: Uuid,
+    site_id: Uuid,
+) -> Result<bool, ControlStoreError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sdwan_control_resources attachment WHERE attachment.tenant_id = ? AND attachment.resource_kind = 'ATTACHMENT' AND attachment.state = 'ACTIVE' AND attachment.segment_id = ? AND JSON_UNQUOTE(JSON_EXTRACT(attachment.document_json, '$.resource.spec.site_id')) = ?)",
+    )
+    .bind(tenant_id)
+    .bind(segment_id)
+    .bind(site_id.to_string())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(ControlStoreError::from)
 }
 
 async fn load_control_resource(

@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use cloud_control::{ControlResourceV1, ResourceSpecV1};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
@@ -92,7 +93,7 @@ impl EnrollmentCompletionRepository {
             return Ok(EnrollmentCompletionOutcome::Conflict);
         }
         let challenge = sqlx::query(
-            "SELECT ec.organization_id, ec.tenant_id, ec.enrollment_instance_id, ec.display_name, ec.operational_public_key, ec.assurance_level, ec.status, ec.expires_at, ec.completion_request_id, ec.completion_fingerprint, ec.device_id, ec.certificate_id, ac.id AS activation_code_id, ac.status AS activation_status FROM enrollment_challenges ec JOIN enrollment_activation_codes ac ON ac.id = ec.activation_code_id WHERE ec.id = ? FOR UPDATE",
+            "SELECT ec.organization_id, ec.tenant_id, ec.enrollment_instance_id, ec.display_name, ec.operational_public_key, ec.assurance_level, ec.status, ec.expires_at, ec.completion_request_id, ec.completion_fingerprint, ec.device_id, ec.certificate_id, ac.id AS activation_code_id, ac.status AS activation_status, ac.replace_node_id FROM enrollment_challenges ec JOIN enrollment_activation_codes ac ON ac.id = ec.activation_code_id WHERE ec.id = ? FOR UPDATE",
         )
         .bind(write.challenge_id)
         .fetch_optional(&mut *transaction)
@@ -155,6 +156,7 @@ impl EnrollmentCompletionRepository {
         }
         let assurance_level: u64 = challenge.try_get("assurance_level")?;
         let activation_code_id: Uuid = challenge.try_get("activation_code_id")?;
+        let replace_node_id: Option<Uuid> = challenge.try_get("replace_node_id")?;
 
         let proved = sqlx::query(
             "UPDATE enrollment_challenges SET status = 'PROVED', proved_at = ? WHERE id = ? AND status = 'CHALLENGED'",
@@ -185,6 +187,7 @@ impl EnrollmentCompletionRepository {
         .bind(display_name)
         .execute(&mut *transaction)
         .await?;
+
         sqlx::query(
             "INSERT INTO device_keys (id, tenant_id, device_id, key_id, public_key, assurance_level, status) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')",
         )
@@ -216,6 +219,18 @@ impl EnrollmentCompletionRepository {
         .bind(write.not_after)
         .execute(&mut *transaction)
         .await?;
+
+        if let Some(control_node_id) = replace_node_id {
+            replace_control_node_identity(
+                &mut transaction,
+                &audit_context,
+                control_node_id,
+                write.device_record_id,
+                write.key_record_id,
+                write.issued_at,
+            )
+            .await?;
+        }
 
         let consumed = sqlx::query(
             "UPDATE enrollment_activation_codes SET status = 'CONSUMED', consumed_at = ? WHERE id = ? AND status = 'RESERVED'",
@@ -303,6 +318,181 @@ impl EnrollmentCompletionRepository {
         transaction.commit().await?;
         Ok(EnrollmentCompletionOutcome::Replay(record))
     }
+}
+
+async fn replace_control_node_identity(
+    transaction: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    audit: &EnrollmentAuditContext<'_>,
+    control_node_id: Uuid,
+    new_device_id: Uuid,
+    new_device_key_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<(), RepositoryError> {
+    let row = sqlx::query(
+        "SELECT revision, CAST(document_json AS CHAR) AS document_json FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = 'NODE' AND id = ? AND state = 'ACTIVE' FOR UPDATE",
+    )
+    .bind(audit.tenant_id)
+    .bind(control_node_id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::InvalidCompletionRecord)?;
+    let mut resource: ControlResourceV1 =
+        serde_json::from_str(&row.try_get::<String, _>("document_json")?)
+            .map_err(|_| RepositoryError::InvalidCompletionRecord)?;
+    let ResourceSpecV1::Node(node) = &mut resource.resource else {
+        return Err(RepositoryError::InvalidCompletionRecord);
+    };
+    let old_device_id = node.device_id;
+    let old_device_key_id = node.device_key_id;
+    let old_identity_active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM devices d JOIN device_keys dk ON dk.id = ? AND dk.device_id = d.id AND dk.tenant_id = d.tenant_id WHERE d.id = ? AND d.tenant_id = ? AND d.status = 'ACTIVE' AND dk.status = 'ACTIVE')",
+    )
+    .bind(old_device_key_id)
+    .bind(old_device_id)
+    .bind(audit.tenant_id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    if !old_identity_active {
+        return Err(RepositoryError::InvalidCompletionRecord);
+    }
+
+    node.device_id = new_device_id;
+    node.device_key_id = new_device_key_id;
+    resource.metadata.revision = resource
+        .metadata
+        .revision
+        .checked_add(1)
+        .ok_or(RepositoryError::InvalidCompletionRecord)?;
+    let document =
+        serde_json::to_string(&resource).map_err(|_| RepositoryError::InvalidCompletionRecord)?;
+    let document_hash = resource
+        .resource
+        .document_hash()
+        .map_err(|_| RepositoryError::InvalidCompletionRecord)?;
+    let changed = sqlx::query(
+        "UPDATE sdwan_control_resources SET revision = ?, document_hash = ?, document_json = CAST(? AS JSON), updated_by = ? WHERE tenant_id = ? AND resource_kind = 'NODE' AND id = ? AND revision = ? AND state = 'ACTIVE'",
+    )
+    .bind(resource.metadata.revision)
+    .bind(document_hash.as_slice())
+    .bind(document)
+    .bind(audit.actor_id)
+    .bind(audit.tenant_id)
+    .bind(control_node_id)
+    .bind(row.try_get::<u64, _>("revision")?)
+    .execute(&mut **transaction)
+    .await?;
+    if changed.rows_affected() != 1 {
+        return Err(RepositoryError::InvalidCompletionRecord);
+    }
+
+    let service_nodes = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM nodes WHERE tenant_id = ? AND device_id = ? AND device_key_id = ? FOR UPDATE",
+    )
+    .bind(audit.tenant_id)
+    .bind(old_device_id)
+    .bind(old_device_key_id)
+    .fetch_all(&mut **transaction)
+    .await?;
+    for service_node_id in service_nodes {
+        sqlx::query("DELETE FROM runtime_projection_transport_catalog WHERE transport_node_id = ?")
+            .bind(service_node_id)
+            .execute(&mut **transaction)
+            .await?;
+        sqlx::query("UPDATE node_endpoints SET status = 'DISABLED' WHERE node_id = ?")
+            .bind(service_node_id)
+            .execute(&mut **transaction)
+            .await?;
+        sqlx::query("UPDATE nodes SET device_id = ?, device_key_id = ?, node_id = ? WHERE id = ?")
+            .bind(new_device_id)
+            .bind(new_device_key_id)
+            .bind(format!("candy:device:{new_device_id}"))
+            .bind(service_node_id)
+            .execute(&mut **transaction)
+            .await?;
+    }
+
+    sqlx::query("UPDATE device_certificates SET status = 'SUPERSEDED', revoked_at = ? WHERE tenant_id = ? AND device_id = ? AND status = 'ACTIVE'")
+        .bind(now)
+        .bind(audit.tenant_id)
+        .bind(old_device_id)
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("UPDATE device_keys SET status = 'REVOKED', revoked_at = ? WHERE tenant_id = ? AND id = ? AND status = 'ACTIVE'")
+        .bind(now)
+        .bind(audit.tenant_id)
+        .bind(old_device_key_id)
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("UPDATE devices SET status = 'REVOKED' WHERE tenant_id = ? AND id = ? AND status = 'ACTIVE'")
+        .bind(audit.tenant_id)
+        .bind(old_device_id)
+        .execute(&mut **transaction)
+        .await?;
+
+    let segment_ids = sqlx::query_scalar::<_, Uuid>(
+        "WITH RECURSIVE dependents (resource_kind, resource_id) AS (SELECT CAST('NODE' AS CHAR(32)), CAST(? AS BINARY(16)) UNION DISTINCT SELECT CAST(refs.source_kind AS CHAR(32)), refs.source_id FROM sdwan_control_resource_references refs JOIN dependents current ON refs.tenant_id = ? AND CAST(refs.target_kind AS CHAR(32)) = current.resource_kind AND refs.target_id = current.resource_id) SELECT DISTINCT resources.segment_id FROM dependents JOIN sdwan_control_resources resources ON resources.tenant_id = ? AND CAST(resources.resource_kind AS CHAR(32)) = dependents.resource_kind AND resources.id = dependents.resource_id WHERE resources.state <> 'DELETED' AND resources.segment_id IS NOT NULL",
+    )
+    .bind(control_node_id)
+    .bind(audit.tenant_id)
+    .bind(audit.tenant_id)
+    .fetch_all(&mut **transaction)
+    .await?;
+    let mut hash = Sha256::new();
+    hash.update(b"candy/node-reenrollment/v1\0");
+    hash.update(control_node_id.as_bytes());
+    hash.update(new_device_id.as_bytes());
+    let request_hash: [u8; 32] = hash.finalize().into();
+    for segment_id in segment_ids {
+        enqueue_reenrollment_generation(transaction, audit.tenant_id, segment_id, request_hash)
+            .await?;
+    }
+    append_audit(
+        transaction,
+        audit,
+        "CONTROL_NODE_IDENTITY_REPLACED",
+        "SDWAN_CONTROL_NODE",
+        control_node_id,
+        "ACTIVE",
+    )
+    .await?;
+    Ok(())
+}
+
+async fn enqueue_reenrollment_generation(
+    transaction: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    tenant_id: Uuid,
+    segment_id: Uuid,
+    request_hash: [u8; 32],
+) -> Result<(), RepositoryError> {
+    sqlx::query("INSERT IGNORE INTO segment_generation_heads (tenant_id, segment_id, desired_revision) VALUES (?, ?, 0)")
+        .bind(tenant_id)
+        .bind(segment_id)
+        .execute(&mut **transaction)
+        .await?;
+    let current: u64 = sqlx::query_scalar("SELECT desired_revision FROM segment_generation_heads WHERE tenant_id = ? AND segment_id = ? FOR UPDATE")
+        .bind(tenant_id)
+        .bind(segment_id)
+        .fetch_one(&mut **transaction)
+        .await?;
+    let desired = current
+        .checked_add(1)
+        .ok_or(RepositoryError::InvalidCompletionRecord)?;
+    sqlx::query("UPDATE segment_generation_heads SET desired_revision = ? WHERE tenant_id = ? AND segment_id = ? AND desired_revision = ?")
+        .bind(desired)
+        .bind(tenant_id)
+        .bind(segment_id)
+        .bind(current)
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("INSERT INTO segment_generation_jobs (id, tenant_id, segment_id, desired_revision, idempotency_hash) VALUES (?, ?, ?, ?, ?)")
+        .bind(Uuid::now_v7())
+        .bind(tenant_id)
+        .bind(segment_id)
+        .bind(desired)
+        .bind(request_hash.as_slice())
+        .execute(&mut **transaction)
+        .await?;
+    Ok(())
 }
 
 async fn load_completion_record(

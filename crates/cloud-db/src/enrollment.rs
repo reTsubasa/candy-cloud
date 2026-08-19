@@ -33,6 +33,7 @@ pub struct ActivationCodeWrite {
     pub requested_display_name: Option<String>,
     pub requested_platform: Option<String>,
     pub requested_architecture: Option<String>,
+    pub replace_node_id: Option<Uuid>,
     pub code_hash: [u8; 32],
     pub expires_at: DateTime<Utc>,
     pub created_by: String,
@@ -60,6 +61,7 @@ pub struct ActivationCodeRecord {
     pub display_name: Option<String>,
     pub device_id: Option<Uuid>,
     pub device_key_id: Option<Uuid>,
+    pub replace_node_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,9 +285,25 @@ impl EnrollmentRepository {
                 return Err(RepositoryError::InvalidActivationScope);
             }
         }
+        if let Some(node_id) = write.replace_node_id {
+            let node_exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = 'NODE' AND id = ? AND state = 'ACTIVE' FOR UPDATE")
+                .bind(write.tenant_id)
+                .bind(node_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+            if node_exists.is_none() || write.site_id.is_none() {
+                transaction.rollback().await?;
+                return Err(RepositoryError::InvalidActivationScope);
+            }
+            sqlx::query("UPDATE enrollment_activation_codes SET status = 'REVOKED' WHERE tenant_id = ? AND replace_node_id = ? AND status IN ('ACTIVE', 'RESERVED')")
+                .bind(write.tenant_id)
+                .bind(node_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
 
         let inserted = sqlx::query(
-            "INSERT INTO enrollment_activation_codes (id, organization_id, tenant_id, site_id, requested_display_name, requested_platform, requested_architecture, code_hash, expires_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO enrollment_activation_codes (id, organization_id, tenant_id, site_id, requested_display_name, requested_platform, requested_architecture, replace_node_id, code_hash, expires_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(write.id)
         .bind(write.organization_id)
@@ -294,6 +312,7 @@ impl EnrollmentRepository {
         .bind(&write.requested_display_name)
         .bind(&write.requested_platform)
         .bind(&write.requested_architecture)
+        .bind(write.replace_node_id)
         .bind(write.code_hash.as_slice())
         .bind(write.expires_at)
         .bind(&write.created_by)
@@ -434,7 +453,7 @@ impl EnrollmentRepository {
         .execute(&mut *transaction)
         .await?;
         let rows = sqlx::query(
-            "SELECT ac.id, ac.tenant_id, ac.site_id, ac.requested_display_name, ac.requested_platform, ac.requested_architecture, ac.status, ac.expires_at, ac.created_at, ac.reserved_at, ac.consumed_at, COALESCE(ec.display_name, ac.requested_display_name) AS display_name, ec.device_id, dc.device_key_id FROM enrollment_activation_codes ac LEFT JOIN enrollment_challenges ec ON ec.activation_code_id = ac.id LEFT JOIN device_certificates dc ON dc.id = ec.certificate_id WHERE ac.tenant_id = ? ORDER BY ac.created_at DESC, ac.id DESC LIMIT 100",
+            "SELECT ac.id, ac.tenant_id, ac.site_id, ac.requested_display_name, ac.requested_platform, ac.requested_architecture, ac.replace_node_id, ac.status, ac.expires_at, ac.created_at, ac.reserved_at, ac.consumed_at, COALESCE(ec.display_name, ac.requested_display_name) AS display_name, ec.device_id, dc.device_key_id FROM enrollment_activation_codes ac LEFT JOIN enrollment_challenges ec ON ec.activation_code_id = ac.id LEFT JOIN device_certificates dc ON dc.id = ec.certificate_id WHERE ac.tenant_id = ? ORDER BY ac.created_at DESC, ac.id DESC LIMIT 100",
         )
         .bind(tenant_id)
         .fetch_all(&mut *transaction)
@@ -683,6 +702,7 @@ fn activation_from_row(
         display_name: row.try_get("display_name")?,
         device_id: row.try_get("device_id")?,
         device_key_id: row.try_get("device_key_id")?,
+        replace_node_id: row.try_get("replace_node_id")?,
     })
 }
 

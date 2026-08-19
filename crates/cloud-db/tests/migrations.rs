@@ -81,6 +81,13 @@ fn runtime_path_telemetry_is_bounded_latest_state() {
 }
 
 #[test]
+fn node_reenrollment_is_explicitly_bound_to_one_control_node() {
+    let migration = include_str!("../migrations/0018_node_reenrollment.sql");
+    assert!(migration.contains("replace_node_id BINARY(16) NULL"));
+    assert!(migration.contains("idx_enrollment_activation_replacement"));
+}
+
+#[test]
 fn control_plane_readiness_requires_the_latest_telemetry_migration() {
     let source = include_str!("../src/control.rs");
     assert!(source.contains("_sqlx_migrations WHERE version = 17 AND success = TRUE"));

@@ -18,6 +18,7 @@ import type {
   RuntimeConfigurationStatusResponse,
   RuntimeTelemetryResponse,
   CloudVersionInfo,
+  ResourceReferenceListResponse,
 } from './types';
 
 export class CloudApiError extends Error {
@@ -25,6 +26,7 @@ export class CloudApiError extends Error {
     message: string,
     public readonly status: number,
     public readonly code?: string,
+    public readonly details?: ApiErrorBody,
   ) {
     super(message);
   }
@@ -184,7 +186,7 @@ async function responseError(response: Response): Promise<CloudApiError> {
   const contentType = response.headers.get('content-type') ?? '';
   if (contentType.includes('application/json')) {
     const body = (await response.json().catch(() => ({}))) as ApiErrorBody;
-    return new CloudApiError(body.message ?? `请求失败 (${response.status})`, response.status, body.code);
+    return new CloudApiError(body.message ?? `请求失败 (${response.status})`, response.status, body.code, body);
   }
   const text = await response.text().catch(() => '');
   return new CloudApiError(text || `请求失败 (${response.status})`, response.status);
@@ -388,6 +390,15 @@ export function deleteResource(
   });
 }
 
+export function listResourceReferences(
+  token: string,
+  tenantId: string,
+  collection: string,
+  id: string,
+): Promise<ResourceReferenceListResponse> {
+  return requestJson(`${collectionPath(tenantId, collection)}/${encodeURIComponent(id)}/references`, token);
+}
+
 export function listNodeJoinCodes(token: string, tenantId: string): Promise<EnrollmentActivation[]> {
   return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/enrollment/activations`, token);
 }
@@ -396,7 +407,7 @@ export function createNodeJoinCode(
   token: string,
   tenantId: string,
   expiresInSeconds = 600,
-  intent?: { site_id: string; display_name: string; platform: 'OPEN_WRT' | 'LINUX'; architecture: string },
+  intent?: { site_id: string; display_name: string; platform: 'OPEN_WRT' | 'LINUX'; architecture: string; replace_node_id?: string },
 ): Promise<EnrollmentActivationSecret> {
   return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/enrollment/activations`, token, {
     method: 'POST',

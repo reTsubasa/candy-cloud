@@ -106,6 +106,14 @@ header. Until that implementation lands, clients must read
 `metadata.revision` and construct the quoted numeric `If-Match` value. This gap
 does not apply to Runtime configuration ETags.
 
+Before deletion, clients may call
+`GET /api/v1/tenants/{tenant_id}/{collection}/{id}/references`. It returns the
+active resources that directly reference the target. If a reference is added
+after that check, `DELETE` still fails atomically with
+`RESOURCE_REFERENCE_CONFLICT` and returns the current blockers in the same
+structured form. Management clients should present those blockers as direct
+navigation targets rather than retrying deletion.
+
 Lists use headers rather than query parameters:
 
 ```text
@@ -123,6 +131,19 @@ The default lifetime is 10 minutes.
 the secret. `DELETE` revokes an `ACTIVE` or `RESERVED` credential. The Web
 console exposes this as **节点加入** and does not claim a node is online until
 the device completes the public enrollment exchange below.
+
+To recover an existing node after reinstalling it or losing its local identity,
+the management client supplies `replace_node_id` together with the existing
+node's exact site, display name, platform, and architecture. Cloud binds the
+single-use activation to that control node. Enrollment completion atomically
+rotates its device identity, revokes the old certificate and key, preserves all
+resource references, and queues new segment projections. A second active or
+reserved recovery activation for the same node revokes the previous one.
+
+`DNS_INTENT.site_ids` controls publication inside its `segment_id`: an empty
+list publishes to every site attached to the segment, while a non-empty list
+publishes only to those attached sites. The legacy optional `site_id` remains
+read-compatible, but new clients must write `site_ids` and must not send both.
 
 Runtime creates a root key and operational key locally, then performs:
 

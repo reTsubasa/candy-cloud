@@ -20,7 +20,7 @@ import {
 } from '@arco-design/web-react/icon';
 import { acceptOrganizationInvitation, fetchCloudVersion, listAccountMemberships, logoutAccount, refreshStoredSession, switchAccountContext } from './api';
 import { clearSession, isSessionExpiringSoon, loadRefreshToken, loadSession, saveIdentitySession } from './session';
-import type { CloudVersionInfo, IdentityMembership, ResourceDefinition, Session } from './types';
+import type { CloudVersionInfo, ControlResource, IdentityMembership, ResourceDefinition, ResourceReference, Session } from './types';
 import { resourceDefinitions, pathDefinition } from './resource-definitions';
 import { SessionGate } from './components/SessionGate';
 import { Overview } from './components/Overview';
@@ -55,6 +55,9 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(() => loadSession());
   const [restoring, setRestoring] = useState(true);
   const [selected, setSelected] = useState('overview');
+  const [peerTab, setPeerTab] = useState('relationships');
+  const [focusRequest, setFocusRequest] = useState<{ collection: string; id: string; nonce: number }>();
+  const [reenrollNode, setReenrollNode] = useState<ControlResource | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [createRequest, setCreateRequest] = useState<{ key: string; nonce: number }>({ key: '', nonce: 0 });
@@ -144,6 +147,17 @@ export default function App() {
     setSelected('overview');
   };
 
+  const locateResource = (reference: ResourceReference) => {
+    const definition = resourceDefinitions.find((item) => item.collection === reference.collection);
+    if (reference.collection === 'peers' || reference.collection === 'path-candidates') {
+      setSelected('peers');
+      setPeerTab(reference.collection === 'path-candidates' ? 'candidates' : 'relationships');
+    } else if (definition) {
+      setSelected(definition.key);
+    }
+    setFocusRequest({ collection: reference.collection, id: reference.id, nonce: Date.now() });
+  };
+
   return (
     <Layout className="app-layout">
       <Layout.Sider className={`app-sider ${mobileNav ? 'mobile-open' : ''}`} width={232} collapsedWidth={64} collapsed={collapsed}>
@@ -191,12 +205,12 @@ export default function App() {
         </header>
         <Layout.Content className="workspace">
           {selected === 'overview' && <Overview session={session} />}
-          {selected === 'enrollment' && <NodeEnrollment session={session} onBack={() => setSelected('nodes')} onCreateSite={() => { setSelected('sites'); setCreateRequest({ key: 'sites', nonce: Date.now() }); }} onFinished={() => setSelected('nodes')} />}
-          {selectedDefinition && selected !== 'peers' && <ResourcePage definition={selectedDefinition} session={session} createRequest={createRequest.key === selected ? createRequest.nonce : 0} onEnrollNode={() => { setSelected('enrollment'); setCreateRequest({ key: '', nonce: 0 }); }} />}
+          {selected === 'enrollment' && <NodeEnrollment session={session} recoveryNode={reenrollNode} onBack={() => { setReenrollNode(null); setSelected('nodes'); }} onCreateSite={() => { setReenrollNode(null); setSelected('sites'); setCreateRequest({ key: 'sites', nonce: Date.now() }); }} onFinished={() => { setReenrollNode(null); setSelected('nodes'); }} />}
+          {selectedDefinition && selected !== 'peers' && <ResourcePage definition={selectedDefinition} session={session} createRequest={createRequest.key === selected ? createRequest.nonce : 0} focusRequest={focusRequest} onFocusHandled={() => setFocusRequest(undefined)} onLocateResource={locateResource} onEnrollNode={() => { setReenrollNode(null); setSelected('enrollment'); setCreateRequest({ key: '', nonce: 0 }); }} onReenrollNode={(node) => { setReenrollNode(node); setSelected('enrollment'); }} />}
           {selected === 'peers' && (
-            <Tabs className="peer-tabs" defaultActiveTab="relationships" destroyOnHide lazyload>
-              <Tabs.TabPane key="relationships" title="互联关系"><ResourcePage definition={pageDefinition('peers')!} session={session} /></Tabs.TabPane>
-              <Tabs.TabPane key="candidates" title="线路配置"><ResourcePage definition={pathDefinition} session={session} /></Tabs.TabPane>
+            <Tabs className="peer-tabs" activeTab={peerTab} onChange={setPeerTab} destroyOnHide lazyload>
+              <Tabs.TabPane key="relationships" title="互联关系"><ResourcePage definition={pageDefinition('peers')!} session={session} focusRequest={focusRequest} onFocusHandled={() => setFocusRequest(undefined)} onLocateResource={locateResource} /></Tabs.TabPane>
+              <Tabs.TabPane key="candidates" title="线路配置"><ResourcePage definition={pathDefinition} session={session} focusRequest={focusRequest} onFocusHandled={() => setFocusRequest(undefined)} onLocateResource={locateResource} /></Tabs.TabPane>
             </Tabs>
           )}
           {selected === 'system' && <SystemPage session={session} />}

@@ -42,6 +42,7 @@ async fn activation_code_rejects_an_expired_credential_before_database_access() 
         requested_display_name: None,
         requested_platform: None,
         requested_architecture: None,
+        replace_node_id: None,
         code_hash: [1; 32],
         expires_at: Utc::now() - Duration::seconds(1),
         created_by: "admin".into(),

@@ -575,9 +575,29 @@ paths:
         "401": { $ref: "#/components/responses/ManagementUnauthorized" }
         "403": { $ref: "#/components/responses/ManagementForbidden" }
         "404": { $ref: "#/components/responses/ManagementNotFound" }
-        "409": { $ref: "#/components/responses/ManagementConflict" }
+        "409": { $ref: "#/components/responses/ResourceReferenceConflict" }
         "412": { $ref: "#/components/responses/RevisionConflict" }
         "428": { $ref: "#/components/responses/IfMatchRequired" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/tenants/{tenant_id}/{collection}/{id}/references:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+      - $ref: "#/components/parameters/Collection"
+      - $ref: "#/components/parameters/ResourceId"
+    get:
+      tags: [Management]
+      operationId: listControlResourceReferences
+      summary: List active configuration that prevents deletion of a resource
+      security: [{ managementBearer: [] }]
+      responses:
+        "200":
+          description: Direct active references, including the full resource needed for management navigation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResourceReferenceListResponse" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "404": { $ref: "#/components/responses/ManagementNotFound" }
         "503": { $ref: "#/components/responses/ManagementUnavailable" }
   /v1/bootstrap/exchange:
     post:
@@ -998,6 +1018,9 @@ components:
         display_name: { type: string, minLength: 1, maxLength: 200 }
         platform: { type: string, enum: [OPEN_WRT, LINUX] }
         architecture: { type: string, minLength: 1, maxLength: 80 }
+        replace_node_id:
+          description: Existing control-node id whose device identity will be atomically replaced after enrollment. The submitted site, name, platform, and architecture must exactly match that node.
+          oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }]
     ActivationCreateResponse:
       type: object
       additionalProperties: false
@@ -1009,7 +1032,7 @@ components:
     EnrollmentActivation:
       type: object
       additionalProperties: false
-      required: [id, tenant_id, site_id, requested_display_name, requested_platform, requested_architecture, status, expires_at, created_at, reserved_at, consumed_at, display_name, device_id, device_key_id]
+      required: [id, tenant_id, site_id, requested_display_name, requested_platform, requested_architecture, replace_node_id, status, expires_at, created_at, reserved_at, consumed_at, display_name, device_id, device_key_id]
       properties:
         id: { $ref: "#/components/schemas/Uuid" }
         tenant_id: { $ref: "#/components/schemas/Uuid" }
@@ -1017,6 +1040,7 @@ components:
         requested_display_name: { oneOf: [{ type: string, minLength: 1, maxLength: 200 }, { type: "null" }] }
         requested_platform: { oneOf: [{ type: string, enum: [OPEN_WRT, LINUX] }, { type: "null" }] }
         requested_architecture: { oneOf: [{ type: string, enum: [x86_64, aarch64, armv7] }, { type: "null" }] }
+        replace_node_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
         status: { type: string, enum: [ACTIVE, RESERVED, CONSUMED, REVOKED, EXPIRED] }
         expires_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
@@ -1343,10 +1367,19 @@ components:
     DnsIntentSpec:
       type: object
       additionalProperties: false
-      required: [segment_id, site_id, zone, records]
+      required: [segment_id, zone, records]
       properties:
         segment_id: { $ref: "#/components/schemas/Uuid" }
-        site_id: { $ref: "#/components/schemas/Uuid" }
+        site_id:
+          description: Legacy single-site scope. New clients use site_ids.
+          oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }]
+        site_ids:
+          description: Empty or omitted publishes to every site attached to the segment; otherwise publishes only to these attached sites.
+          type: array
+          maxItems: 256
+          uniqueItems: true
+          default: []
+          items: { $ref: "#/components/schemas/Uuid" }
         zone: { type: string, maxLength: 253 }
         records: { type: array, maxItems: 4096, items: { $ref: "#/components/schemas/DnsRecord" } }
     ResourceSpec:
@@ -1441,6 +1474,31 @@ components:
         items: { type: array, maxItems: 200, items: { $ref: "#/components/schemas/ControlResource" } }
         next_cursor:
           oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }]
+    ResourceReference:
+      type: object
+      additionalProperties: false
+      required: [kind, collection, id, resource]
+      properties:
+        kind: { type: string, enum: [NODE, SITE, SEGMENT, ATTACHMENT, PREFIX, PEER, RELAY, PATH_CANDIDATE, EGRESS, SERVICE_POLICY, DNS_INTENT] }
+        collection: { type: string, enum: [nodes, sites, segments, attachments, prefixes, peers, relays, path-candidates, egresses, service-policies, dns-intents] }
+        id: { $ref: "#/components/schemas/Uuid" }
+        resource: { $ref: "#/components/schemas/ControlResource" }
+    ResourceReferenceListResponse:
+      type: object
+      additionalProperties: false
+      required: [schema_version, references]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        references: { type: array, items: { $ref: "#/components/schemas/ResourceReference" } }
+    ResourceReferenceConflict:
+      type: object
+      additionalProperties: false
+      required: [schema_version, code, message, references]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        code: { type: string, const: RESOURCE_REFERENCE_CONFLICT }
+        message: { type: string }
+        references: { type: array, minItems: 1, items: { $ref: "#/components/schemas/ResourceReference" } }
     MutationResponse:
       type: object
       additionalProperties: false
@@ -1822,6 +1880,9 @@ components:
     ManagementConflict:
       description: Referential, idempotency, or state conflict.
       content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    ResourceReferenceConflict:
+      description: The resource is still used by active configuration. Each blocker is returned for direct navigation.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ResourceReferenceConflict" } } }
     RevisionConflict:
       description: Current revision does not match `If-Match`.
       content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }

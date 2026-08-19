@@ -49,13 +49,13 @@ const referenceKeysByKind: Record<string, ReferenceKey[]> = {
   NODE: ['sites'],
   SEGMENT: [],
   ATTACHMENT: ['segments', 'sites', 'nodes', 'attachments'],
-  PREFIX: ['sites', 'segments'],
-  PEER: ['sites', 'segments'],
+  PREFIX: ['sites', 'segments', 'attachments'],
+  PEER: ['sites', 'segments', 'attachments'],
   PATH_CANDIDATE: ['segments', 'attachments', 'peers', 'relays'],
   EGRESS: ['sites', 'attachments'],
   RELAY: ['nodes'],
-  SERVICE_POLICY: ['segments', 'sites', 'egresses'],
-  DNS_INTENT: ['segments', 'sites', 'prefixes'],
+  SERVICE_POLICY: ['segments', 'sites', 'attachments', 'egresses'],
+  DNS_INTENT: ['segments', 'sites', 'attachments', 'prefixes'],
 };
 const nodeArchitectureOptions = {
   OPEN_WRT: [
@@ -101,6 +101,25 @@ function shortId(value: string): string {
 function optionFor(item: ControlResource): ReferenceOption {
   const label = displayName(item);
   return { value: item.metadata.id, label, description: label === item.metadata.id ? undefined : shortId(item.metadata.id), spec: item.resource.spec };
+}
+
+function segmentAttachments(segmentId: unknown, references: References): ReferenceOption[] {
+  if (!segmentId) return [];
+  return (references.attachments ?? []).filter((item) => item.spec.segment_id === segmentId);
+}
+
+function segmentSites(segmentId: unknown, references: References): ReferenceOption[] {
+  const siteIds = new Set(segmentAttachments(segmentId, references).map((item) => String(item.spec.site_id)));
+  return (references.sites ?? []).filter((item) => siteIds.has(item.value));
+}
+
+function segmentEgresses(segmentId: unknown, references: References): ReferenceOption[] {
+  const attachmentIds = new Set(segmentAttachments(segmentId, references).map((item) => item.value));
+  return (references.egresses ?? []).filter((item) => attachmentIds.has(String(item.spec.attachment_id)));
+}
+
+function segmentPrefixes(segmentId: unknown, references: References): ReferenceOption[] {
+  return (references.prefixes ?? []).filter((item) => item.spec.segment_id === segmentId);
 }
 
 function getValue(spec: Spec, key: string): string {
@@ -318,9 +337,9 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
         <Collapse className="advanced-collapse"><Collapse.Item name="identity" header="高级：节点身份"><FieldHelp>设备身份由安全加入流程签发。只有迁移或恢复节点时才应修改。</FieldHelp><div className="form-grid two identity-fields"><Form.Item label="设备 ID" required><Input className="mono-input" value={getValue(spec, 'device_id')} onChange={(value) => update('device_id', value)} /></Form.Item><Form.Item label="设备密钥 ID" required><Input className="mono-input" value={getValue(spec, 'device_key_id')} onChange={(value) => update('device_key_id', value)} /></Form.Item></div></Collapse.Item></Collapse>
       </>;
       case 'SEGMENT': return <>
-        <FormIntro title="创建独立的站点网络">同一分段中的站点可以按策略互通；不同分段默认彼此隔离。</FormIntro>
+        <FormIntro title="按互通边界创建网络">需要共享路由和策略的站点放在同一分段，不要按地区拆分。只有业务隔离、地址重叠或安全边界不同时，才创建不同分段。</FormIntro>
         <Form.Item label="分段名称" required><Input value={getValue(spec, 'name')} onChange={(value) => update('name', value)} placeholder="例如：办公网络" /></Form.Item>
-        <Form.Item label="隧道地址池" required><Input className="mono-input" value={getValue(spec, 'overlay_cidr')} onChange={(value) => update('overlay_cidr', value)} placeholder="100.64.10.0/24" /><FieldHelp>专供 Candy 节点间通信使用，不应与任何站点局域网重叠。一个 /24 地址池通常可满足中小型网络。</FieldHelp></Form.Item>
+        <Form.Item label="隧道地址池" required><Input className="mono-input" value={getValue(spec, 'overlay_cidr')} onChange={(value) => update('overlay_cidr', value)} placeholder="100.64.10.0/24" /><FieldHelp>只为该分段内的 Candy 节点分配 TUN 地址，不是站点局域网。应避开各站点 LAN 网段；需要互通的 LAN 网段请在“网段”菜单中单独发布。</FieldHelp></Form.Item>
       </>;
       case 'ATTACHMENT': {
         const nodeOptions = (references.nodes ?? []).filter((item) => !spec.site_id || item.spec.site_id === spec.site_id);
@@ -333,7 +352,7 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
       }
       case 'PREFIX': return <>
         <FormIntro title="发布站点内网">其他站点只会访问这里明确声明的网段，不会自动暴露整个局域网。</FormIntro>
-        <div className="form-grid two"><Form.Item label="所属站点" required>{referenceSelect('sites', spec.site_id, (value) => update('site_id', value), '选择站点')}</Form.Item><Form.Item label="网络分段" required>{referenceSelect('segments', spec.segment_id, (value) => update('segment_id', value), '选择分段')}</Form.Item></div>
+        <div className="form-grid two"><Form.Item label="网络分段" required>{referenceSelect('segments', spec.segment_id, (value) => setSpec((current) => ({ ...current, segment_id: value, site_id: '' })), '选择分段')}</Form.Item><Form.Item label="所属站点" required>{referenceSelect('sites', spec.site_id, (value) => update('site_id', value), spec.segment_id ? '选择已接入该网络的站点' : '请先选择网络分段', segmentSites(spec.segment_id, references))}</Form.Item></div>
         <Form.Item label="可访问网段" required><Input className="mono-input" value={getValue(spec, 'cidr')} onChange={(value) => update('cidr', value)} placeholder="10.10.0.0/16" /><FieldHelp>填写本站希望向该网络分段发布的规范 IPv4 CIDR，不能与隧道地址池或其他已发布网段重叠。</FieldHelp></Form.Item>
         <Collapse className="advanced-collapse"><Collapse.Item name="source" header="高级：网段来源"><Form.Item label="来源" required><Select value={getValue(spec, 'source') || undefined} onChange={(value) => update('source', value)} options={[{ label: '手动配置', value: 'CONFIGURED' }, { label: '节点直连上报', value: 'CONNECTED' }, { label: '已批准学习', value: 'APPROVED_LEARNED' }]} /></Form.Item><FieldHelp>通过控制台创建时通常保持“手动配置”；另外两种来源用于节点上报和审批流程。</FieldHelp></Collapse.Item></Collapse>
       </>;
@@ -345,8 +364,8 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
         };
         return <>
           <FormIntro title="建立双向站点互联">选择同一网络分段中的两个站点，Candy 会为双向流量使用同一套路径策略。</FormIntro>
-          <Form.Item label="网络分段" required>{referenceSelect('segments', spec.segment_id, (value) => update('segment_id', value), '选择分段')}</Form.Item>
-          <div className="form-grid two"><Form.Item label="第一个站点" required>{referenceSelect('sites', spec.site_a_id, (value) => update('site_a_id', value), '选择站点')}</Form.Item><Form.Item label="第二个站点" required>{referenceSelect('sites', spec.site_b_id, (value) => update('site_b_id', value), '选择另一个站点')}</Form.Item></div>
+          <Form.Item label="网络分段" required>{referenceSelect('segments', spec.segment_id, (value) => setSpec((current) => ({ ...current, segment_id: value, site_a_id: '', site_b_id: '' })), '选择分段')}</Form.Item>
+          <div className="form-grid two"><Form.Item label="第一个站点" required>{referenceSelect('sites', spec.site_a_id, (value) => update('site_a_id', value), spec.segment_id ? '选择已接入该网络的站点' : '请先选择网络分段', segmentSites(spec.segment_id, references))}</Form.Item><Form.Item label="第二个站点" required>{referenceSelect('sites', spec.site_b_id, (value) => update('site_b_id', value), spec.segment_id ? '选择另一个已接入站点' : '请先选择网络分段', segmentSites(spec.segment_id, references).filter((item) => item.value !== spec.site_a_id))}</Form.Item></div>
           <Form.Item label="路径策略" required><Radio.Group type="button" value={spec.path_policy} onChange={(value) => update('path_policy', value)} options={[{ label: '自动选择', value: 'DIRECT_PREFERRED' }, { label: '仅直连', value: 'DIRECT_ONLY' }, { label: '固定中继', value: 'RELAY_REQUIRED' }]} /><FieldHelp>{pathHelp[String(spec.path_policy)] ?? pathHelp.DIRECT_PREFERRED}</FieldHelp></Form.Item>
         </>;
       }
@@ -378,7 +397,7 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
         <CapacityFields spec={spec} update={update} />
       </>;
       case 'SERVICE_POLICY': return <PolicyFields spec={spec} update={update} updateList={updateList} removeListItem={removeListItem} references={references} referenceSelect={referenceSelect} />;
-      case 'DNS_INTENT': return <DnsFields spec={spec} update={update} updateList={updateList} removeListItem={removeListItem} referenceSelect={referenceSelect} />;
+      case 'DNS_INTENT': return <DnsFields spec={spec} update={update} updateList={updateList} removeListItem={removeListItem} references={references} referenceSelect={referenceSelect} />;
       default: return null;
     }
   // Functions are stable for the lifetime of a render; spec and references intentionally drive this projection.
@@ -429,33 +448,48 @@ type ListProps = {
 
 function PolicyFields({ spec, update, updateList, removeListItem, references, referenceSelect }: ListProps & { references: References; referenceSelect: ReferenceSelect }) {
   const rules = (spec.rules as Spec[]) ?? [];
+  const siteOptions = segmentSites(spec.segment_id, references);
+  const egressOptions = segmentEgresses(spec.segment_id, references);
   return <>
-    <FormIntro title="按业务条件选择出口">规则按优先级依次匹配；没有命中的流量继续使用来源站点的本地出口。</FormIntro>
-    <Form.Item label="生效网络" required>{referenceSelect('segments', spec.segment_id, (value) => update('segment_id', value), '选择网络分段')}</Form.Item>
+    <FormIntro title="在一个网络分段内选择出口">策略只匹配所选分段内的站点与流量，不会跨分段生效。规则按优先级依次匹配；没有命中的流量继续使用来源站点的本地出口。</FormIntro>
+    <Form.Item label="生效网络" required>{referenceSelect('segments', spec.segment_id, (value) => {
+      update('segment_id', value);
+      update('rules', rules.map((rule) => ({ ...rule, source_site_ids: [], egress_id: rule.action_type === 'REMOTE_EGRESS' ? '' : rule.egress_id })));
+    }, '选择网络分段')}</Form.Item>
     <Collapse className="advanced-collapse"><Collapse.Item name="generation" header="高级：策略代次"><Form.Item label="配置代次" required><InputNumber min={1} precision={0} value={Number(spec.generation)} onChange={(value) => update('generation', value)} /></Form.Item><FieldHelp>用于控制策略发布顺序。普通修改保持当前值即可，系统仍会通过资源修订防止覆盖并发变更。</FieldHelp></Collapse.Item></Collapse>
     <div className="collection-heading"><div><Typography.Title heading={6}>流量规则</Typography.Title><Typography.Text type="secondary">优先级数字越小越先匹配；条件留空表示不限制。</Typography.Text></div><Button icon={<IconPlus />} onClick={() => update('rules', [...rules, { id: crypto.randomUUID(), priority: rules.length * 100 + 100, source_site_ids: [], destination_cidrs: [], domains: [], traffic_classes: [], action_type: 'LOCAL_EGRESS', egress_id: '' }])}>添加规则</Button></div>
     {rules.length === 0 ? <div className="inline-empty">尚未添加覆盖规则，所有流量保持本站出口。</div> : <div className="structured-list">{rules.map((rule, index) => <section className="structured-item" key={String(rule.id ?? index)}>
       <header><div><strong>规则 {index + 1}</strong><span>优先级 {String(rule.priority)}</span></div><Button type="text" status="danger" icon={<IconDelete />} aria-label={`删除规则 ${index + 1}`} onClick={() => removeListItem('rules', index)} /></header>
-      <div className="form-grid rule-grid"><Form.Item label="优先级"><InputNumber min={0} precision={0} value={Number(rule.priority)} onChange={(value) => updateList('rules', index, 'priority', value)} /></Form.Item><Form.Item label="来源站点"><Select mode="multiple" showSearch value={(rule.source_site_ids as string[]) ?? []} onChange={(value) => updateList('rules', index, 'source_site_ids', value)} options={references.sites ?? []} placeholder="全部站点" maxTagCount="responsive" /></Form.Item></div>
+      <div className="form-grid rule-grid"><Form.Item label="优先级"><InputNumber min={0} precision={0} value={Number(rule.priority)} onChange={(value) => updateList('rules', index, 'priority', value)} /></Form.Item><Form.Item label="来源站点"><Select mode="multiple" showSearch value={(rule.source_site_ids as string[]) ?? []} onChange={(value) => updateList('rules', index, 'source_site_ids', value)} options={siteOptions} placeholder={spec.segment_id ? '全部已接入站点' : '请先选择生效网络'} maxTagCount="responsive" /></Form.Item></div>
       <Form.Item label="目标网段"><InputTag value={(rule.destination_cidrs as string[]) ?? []} onChange={(value) => updateList('rules', index, 'destination_cidrs', value)} tokenSeparators={[',', ' ']} saveOnBlur placeholder="输入 CIDR 后回车，例如 10.20.0.0/16" /></Form.Item>
       <Form.Item label="目标域名"><InputTag value={(rule.domains as string[]) ?? []} onChange={(value) => updateList('rules', index, 'domains', value)} tokenSeparators={[',', ' ']} saveOnBlur placeholder="输入域名后回车，例如 video.example.com" /></Form.Item>
       <div className="form-grid two"><Form.Item label="业务类型"><Select mode="multiple" allowCreate showSearch value={(rule.traffic_classes as string[]) ?? []} onChange={(value) => updateList('rules', index, 'traffic_classes', value)} options={trafficClassOptions} placeholder="全部业务" maxTagCount="responsive" /></Form.Item><Form.Item label="使用出口"><Radio.Group type="button" value={rule.action_type} onChange={(value) => updateList('rules', index, 'action_type', value)} options={[{ label: '本站出口', value: 'LOCAL_EGRESS' }, { label: '远端出口', value: 'REMOTE_EGRESS' }]} /></Form.Item></div>
-      {rule.action_type === 'REMOTE_EGRESS' && <Form.Item label="指定远端出口" required>{referenceSelect('egresses', rule.egress_id, (value) => updateList('rules', index, 'egress_id', value), '选择已发布的出口')}</Form.Item>}
+      {rule.action_type === 'REMOTE_EGRESS' && <Form.Item label="指定远端出口" required>{referenceSelect('egresses', rule.egress_id, (value) => updateList('rules', index, 'egress_id', value), spec.segment_id ? '选择该网络内已发布的出口' : '请先选择生效网络', egressOptions)}</Form.Item>}
     </section>)}</div>}
   </>;
 }
 
-function DnsFields({ spec, update, updateList, removeListItem, referenceSelect }: ListProps & { referenceSelect: ReferenceSelect }) {
+function DnsFields({ spec, update, updateList, removeListItem, references, referenceSelect }: ListProps & { references: References; referenceSelect: ReferenceSelect }) {
   const records = (spec.records as Spec[]) ?? [];
+  const selectedSiteIds = (spec.site_ids as string[]) ?? [];
+  const publishScope = String(spec.publish_scope ?? (selectedSiteIds.length > 0 ? 'SELECTED' : 'ALL'));
+  const siteOptions = segmentSites(spec.segment_id, references);
+  const prefixOptions = segmentPrefixes(spec.segment_id, references);
   return <>
-    <FormIntro title="为内部服务提供统一名称">DNS 记录只发布到所选网络分段，不影响公网 DNS，也不会泄露给未授权站点。</FormIntro>
-    <div className="form-grid two"><Form.Item label="网络分段" required>{referenceSelect('segments', spec.segment_id, (value) => update('segment_id', value), '选择分段')}</Form.Item><Form.Item label="服务所在站点" required>{referenceSelect('sites', spec.site_id, (value) => update('site_id', value), '选择站点')}</Form.Item></div>
+    <FormIntro title="为内部服务提供统一名称">DNS 记录只发布到所选网络分段；你可以发布到该分段的全部站点，也可以限制到指定站点。</FormIntro>
+    <Form.Item label="网络分段" required>{referenceSelect('segments', spec.segment_id, (value) => {
+      update('segment_id', value);
+      update('site_ids', []);
+      update('records', records.map((record) => ({ ...record, required_prefix_id: '' })));
+    }, '选择分段')}</Form.Item>
+    <Form.Item label="发布范围" required><Radio.Group type="button" value={publishScope} onChange={(value) => { update('publish_scope', value); if (value === 'ALL') update('site_ids', []); }} options={[{ label: '全部站点', value: 'ALL' }, { label: '指定站点', value: 'SELECTED' }]} /></Form.Item>
+    {publishScope === 'SELECTED' && <Form.Item label="指定站点" required><Select mode="multiple" showSearch allowClear value={selectedSiteIds} onChange={(value) => update('site_ids', value)} options={siteOptions} placeholder={spec.segment_id ? '选择已接入该网络的站点' : '请先选择网络分段'} maxTagCount="responsive" notFoundContent="该网络暂无已接入站点" /></Form.Item>}
     <Form.Item label="内部域" required><Input value={getValue(spec, 'zone')} onChange={(value) => update('zone', value)} placeholder="corp.example.internal" /><FieldHelp>建议使用组织自有域名的内部子域，避免与公网域名或本地域名冲突。</FieldHelp></Form.Item>
     <div className="collection-heading"><div><Typography.Title heading={6}>解析记录</Typography.Title><Typography.Text type="secondary">统一发布站点间服务地址，无需逐台维护 hosts。</Typography.Text></div><Button icon={<IconPlus />} onClick={() => update('records', [...records, { name: '', type: 'A', value: '', ttl_seconds: 60, required_prefix_id: '' }])}>添加记录</Button></div>
     {records.length === 0 ? <div className="inline-empty">尚未添加解析记录。保存空配置不会改变现有公网 DNS。</div> : <div className="structured-list dns-list">{records.map((record, index) => <section className="structured-item" key={index}>
       <header><div><strong>记录 {index + 1}</strong><span>{String(record.type ?? 'A')}</span></div><Button type="text" status="danger" icon={<IconDelete />} aria-label={`删除记录 ${index + 1}`} onClick={() => removeListItem('records', index)} /></header>
       <div className="form-grid dns-grid"><Form.Item label="服务名称"><Input value={getValue(record, 'name')} onChange={(value) => updateList('records', index, 'name', value)} placeholder="gateway.corp.example.internal" /></Form.Item><Form.Item label="类型"><Select value={getValue(record, 'type') || 'A'} onChange={(value) => updateList('records', index, 'type', value)} options={['A', 'AAAA', 'CNAME']} /></Form.Item><Form.Item label="指向地址"><Input className="mono-input" value={getValue(record, 'value')} onChange={(value) => updateList('records', index, 'value', value)} placeholder={record.type === 'CNAME' ? 'target.example.internal' : record.type === 'AAAA' ? '2001:db8::10' : '10.0.0.10'} /></Form.Item><Form.Item label="缓存时间"><InputNumber min={5} max={86400} precision={0} value={Number(record.ttl_seconds)} onChange={(value) => updateList('records', index, 'ttl_seconds', value)} suffix="秒" /></Form.Item></div>
-      <Collapse className="advanced-collapse record-constraint"><Collapse.Item name={`constraint-${index}`} header="高级：仅在网段可达时发布"><Form.Item label="依赖网段">{referenceSelect('prefixes', record.required_prefix_id, (value) => updateList('records', index, 'required_prefix_id', value), '不限制')}</Form.Item><FieldHelp>选择后，只有对应网段可达时才向节点发布这条记录，可避免把不可访问的地址交给客户端。</FieldHelp></Collapse.Item></Collapse>
+      <Collapse className="advanced-collapse record-constraint"><Collapse.Item name={`constraint-${index}`} header="高级：仅在网段可达时发布"><Form.Item label="依赖网段">{referenceSelect('prefixes', record.required_prefix_id, (value) => updateList('records', index, 'required_prefix_id', value), '不限制', prefixOptions)}</Form.Item><FieldHelp>选择后，只有同一网络分段内的对应网段可达时才向节点发布这条记录，可避免把不可访问的地址交给客户端。</FieldHelp></Collapse.Item></Collapse>
     </section>)}</div>}
   </>;
 }

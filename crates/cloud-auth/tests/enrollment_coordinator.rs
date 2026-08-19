@@ -65,6 +65,7 @@ async fn setup() -> Option<(cloud_db::DbPool, Uuid, [u8; 32])> {
             requested_display_name: None,
             requested_platform: None,
             requested_architecture: None,
+            replace_node_id: None,
             code_hash: hash_activation_credential(&credential),
             expires_at: Utc::now() + Duration::hours(1),
             created_by: "admin".into(),

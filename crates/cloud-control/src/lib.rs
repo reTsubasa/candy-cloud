@@ -250,7 +250,12 @@ pub struct DnsRecordV1 {
 #[serde(deny_unknown_fields)]
 pub struct DnsIntentV1 {
     pub segment_id: Uuid,
-    pub site_id: Uuid,
+    /// Legacy single-site scope. New documents use `site_ids`; `None` and an
+    /// empty `site_ids` publish to every site in the segment.
+    #[serde(default)]
+    pub site_id: Option<Uuid>,
+    #[serde(default)]
+    pub site_ids: Vec<Uuid>,
     pub zone: String,
     pub records: Vec<DnsRecordV1>,
 }
@@ -470,11 +475,16 @@ fn validate_service_policy(value: &ServicePolicyV1) -> Result<(), ContractError>
     let mut ids = std::collections::HashSet::new();
     let mut priorities = std::collections::HashSet::new();
     for rule in &value.rules {
+        let unique_source_sites = rule
+            .source_site_ids
+            .iter()
+            .collect::<std::collections::HashSet<_>>();
         if rule.id.is_nil()
             || !ids.insert(rule.id)
             || !priorities.insert(rule.priority)
             || rule.source_site_ids.iter().any(Uuid::is_nil)
             || rule.source_site_ids.len() > 256
+            || unique_source_sites.len() != rule.source_site_ids.len()
             || rule.destination_prefixes.len() > 256
             || rule.domains.len() > 256
             || rule.traffic_classes.len() > 32
@@ -496,7 +506,19 @@ fn validate_service_policy(value: &ServicePolicyV1) -> Result<(), ContractError>
 }
 
 fn validate_dns_intent(value: &DnsIntentV1) -> Result<(), ContractError> {
-    require_ids([value.segment_id, value.site_id])?;
+    require_ids([value.segment_id])?;
+    if value.site_id.is_some_and(|site_id| site_id.is_nil())
+        || value.site_ids.len() > 256
+        || value.site_ids.iter().any(Uuid::is_nil)
+        || value
+            .site_ids
+            .iter()
+            .enumerate()
+            .any(|(index, site_id)| value.site_ids[..index].contains(site_id))
+        || (value.site_id.is_some() && !value.site_ids.is_empty())
+    {
+        return Err(ContractError::InvalidDnsIntent);
+    }
     if value.records.len() > MAX_DNS_RECORDS {
         return Err(ContractError::InvalidDnsIntent);
     }
@@ -674,7 +696,8 @@ mod tests {
     fn dns_intent_binds_route_scope() {
         let intent = ResourceSpecV1::DnsIntent(DnsIntentV1 {
             segment_id: id(1),
-            site_id: id(2),
+            site_id: Some(id(2)),
+            site_ids: Vec::new(),
             zone: "internal.example".into(),
             records: vec![DnsRecordV1 {
                 name: "router.internal.example".into(),
@@ -685,6 +708,24 @@ mod tests {
         });
         assert_eq!(intent.validate(), Ok(()));
         assert_ne!(intent.document_hash().unwrap(), [0; 32]);
+    }
+
+    #[test]
+    fn policy_rejects_duplicate_source_sites() {
+        let policy = ResourceSpecV1::ServicePolicy(ServicePolicyV1 {
+            segment_id: id(1),
+            generation: 1,
+            rules: vec![ServicePolicyRuleV1 {
+                id: id(2),
+                priority: 100,
+                source_site_ids: vec![id(3), id(3)],
+                destination_prefixes: Vec::new(),
+                domains: Vec::new(),
+                traffic_classes: Vec::new(),
+                action: PolicyActionV1::LocalEgress,
+            }],
+        });
+        assert_eq!(policy.validate(), Err(ContractError::InvalidServicePolicy));
     }
 
     #[test]

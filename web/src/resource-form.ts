@@ -49,6 +49,12 @@ export function formatCidr(value: unknown): string {
 
 export function normalizeSpecForEditor(resource: ResourceSpec): Spec {
   const spec = structuredClone(resource.spec);
+  if (resource.kind === 'DNS_INTENT') {
+    const legacySiteId = typeof spec.site_id === 'string' ? spec.site_id : '';
+    const siteIds = Array.isArray(spec.site_ids) ? spec.site_ids : legacySiteId ? [legacySiteId] : [];
+    spec.site_ids = siteIds;
+    spec.publish_scope = siteIds.length > 0 ? 'SELECTED' : 'ALL';
+  }
   if ('overlay_prefix' in spec) spec.overlay_cidr = formatCidr(spec.overlay_prefix);
   if ('prefix' in spec) spec.cidr = formatCidr(spec.prefix);
   if ('max_bits_per_second' in spec) spec.capacity_mbps = Number(spec.max_bits_per_second) / 1_000_000;
@@ -100,6 +106,9 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
     }));
   }
   if (kind === 'DNS_INTENT') {
+    delete spec.publish_scope;
+    delete spec.site_id;
+    spec.site_ids = ((editor.site_ids as string[]) ?? []).filter(Boolean);
     spec.records = ((editor.records as Spec[]) ?? []).map((record) => ({
       name: cleanText(record.name),
       ttl_seconds: positiveInteger(record.ttl_seconds),
@@ -125,7 +134,7 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
     EGRESS: ['site_id', 'attachment_id'],
     RELAY: ['service_node_id'],
     SERVICE_POLICY: ['segment_id'],
-    DNS_INTENT: ['segment_id', 'site_id'],
+    DNS_INTENT: ['segment_id'],
   };
   const textFields: Record<string, string[]> = {
     SITE: ['name', 'kind'], NODE: ['display_name', 'platform', 'architecture'], SEGMENT: ['name'], ATTACHMENT: ['overlay_router_ipv4'],
@@ -167,6 +176,10 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
     });
   }
   if (kind === 'DNS_INTENT') {
+    const siteIds = (spec.site_ids as string[]) ?? [];
+    if (!['ALL', 'SELECTED'].includes(cleanText(spec.publish_scope))) errors.push('publish_scope:invalid');
+    if (cleanText(spec.publish_scope) === 'SELECTED' && siteIds.length === 0) errors.push('site_ids:required');
+    siteIds.forEach((siteId, index) => { if (!uuidPattern.test(cleanText(siteId))) errors.push(`site_ids.${index}:uuid`); });
     if (!hostnamePattern.test(cleanText(spec.zone))) errors.push('zone:domain');
     ((spec.records as Spec[]) ?? []).forEach((record, index) => {
       if (!hostnamePattern.test(cleanText(record.name))) errors.push(`records.${index}.name:domain`);

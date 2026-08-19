@@ -200,6 +200,7 @@ export type EnrollmentActivation = {
   display_name: string | null;
   device_id: string | null;
   device_key_id: string | null;
+  replace_node_id: string | null;
 };
 
 export type EnrollmentActivationSecret = {
@@ -227,6 +228,19 @@ export type ApiErrorBody = {
   schema_version?: number;
   code?: string;
   message?: string;
+  references?: ResourceReference[];
+};
+
+export type ResourceReference = {
+  kind: string;
+  collection: string;
+  id: string;
+  resource: ControlResource;
+};
+
+export type ResourceReferenceListResponse = {
+  schema_version: number;
+  references: ResourceReference[];
 };
 
 export type ResourceDefinition = {

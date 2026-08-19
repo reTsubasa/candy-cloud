@@ -121,4 +121,8 @@ fn management_routes() -> Router<Arc<ManagementState>> {
                 .put(management::replace)
                 .delete(management::delete),
         )
+        .route(
+            "/v1/tenants/{tenant_id}/{collection}/{id}/references",
+            get(management::references),
+        )
 }
