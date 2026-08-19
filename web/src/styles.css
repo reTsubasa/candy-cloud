@@ -337,6 +337,18 @@ button, input, textarea { font: inherit; }
 .automatic-connection > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .automatic-connection span { color: var(--muted); font-size: 12px; line-height: 1.55; }
 .activation-monitor { margin-top: 24px; }
+.activation-stale-warning { margin-top: 10px; }
+.activation-status-bar { margin: 16px 0 18px; padding: 16px 18px; background: #f7f8fa; border-radius: 6px; }
+.activation-status-heading { min-height: 40px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.activation-status-icon { width: 32px; height: 32px; display: grid; place-items: center; color: #00b42a; background: #e8ffea; border-radius: 50%; font-size: 17px; }
+.activation-status-heading > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.activation-status-heading > div > span, .activation-status-item small, .activation-status-empty { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.activation-status-items { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px; margin-top: 14px; }
+.activation-status-item { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; background: #fff; border-radius: 5px; }
+.activation-status-item > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.activation-status-item strong, .activation-status-item small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activation-status-empty { padding: 12px 0 0 44px; }
+.activation-status-bar > .arco-alert { margin-top: 10px; }
 .quick-workspace-footer { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 32px; background: #fff; border-top: 1px solid var(--line); }
 .embedded-resource-editor { min-width: 0; padding-top: 2px; }
 .embedded-editor-actions { display: flex; justify-content: flex-end; padding-top: 18px; margin-top: 6px; border-top: 1px solid var(--line); }

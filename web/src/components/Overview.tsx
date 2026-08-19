@@ -59,6 +59,17 @@ function controlPlaneDetail(health: HealthState): string {
   return '至少一项控制面依赖尚未就绪';
 }
 
+function inactiveNodeDetail(node: OperationalTopologySnapshot['nodes'][number]): string {
+  if (node.telemetry?.last_error_code) return node.telemetry.last_error_code;
+  if (node.lifecycle === 'stopped') {
+    return node.applyState === 'active'
+      ? 'Runtime 已停止 SD-WAN 数据面；基础网络保持可用，请检查节点服务状态'
+      : '节点尚未应用当前网络配置；请检查 Runtime 服务和最近一次同步';
+  }
+  if (node.lifecycle === 'degraded') return '数据面处于降级状态，请检查节点运行日志和线路遥测';
+  return 'Runtime 未提供可识别的运行状态，请检查节点服务和版本';
+}
+
 export function Overview({ session }: Props) {
   const [resources, setResources] = useState<OperationalResources>(emptyOperationalResources);
   const [resourceErrors, setResourceErrors] = useState<ResourceLoadErrors>({});
@@ -151,7 +162,7 @@ export function Overview({ session }: Props) {
   const incidents = useMemo(() => {
     const items: Array<{ tone: 'error' | 'warn'; title: string; detail: string }> = [];
     if (!controlReady) items.push({ tone: 'error', title: '控制面未就绪', detail: controlPlaneDetail(health) });
-    if (health.degraded.status !== null && health.degraded.status !== 200) items.push({ tone: 'warn', title: '控制面依赖降级', detail: '依赖探针返回异常状态，请在系统页查看具体服务' });
+    if (controlReady && health.degraded.status !== null && health.degraded.status !== 200) items.push({ tone: 'warn', title: '控制面依赖降级', detail: health.degraded.text || '依赖探针返回异常状态，请在系统页查看具体服务' });
     if (resourceErrorCount > 0) items.push({ tone: 'error', title: '资源读取不完整', detail: `${resourceErrorCount} 类资源读取失败，拓扑仅显示已验证数据` });
     if (!telemetryAvailable) items.push({ tone: 'warn', title: '运行遥测不可用', detail: '无法读取 Runtime 最新状态，在线状态不会被推测' });
     for (const node of topology.nodes.filter((item) => item.applyState === 'rejected')) {
@@ -165,7 +176,7 @@ export function Overview({ session }: Props) {
     }
     for (const node of topology.nodes.filter((item) => item.telemetryState === 'online'
       && !item.failOpenRequired && ['degraded', 'stopped', 'unknown'].includes(item.lifecycle ?? ''))) {
-      items.push({ tone: 'warn', title: `${node.name} 数据面未活跃`, detail: node.telemetry?.last_error_code || `Runtime 状态：${node.lifecycle ?? 'unknown'}` });
+      items.push({ tone: 'warn', title: `${node.name} 数据面未活跃`, detail: inactiveNodeDetail(node) });
     }
     for (const node of topology.nodes.filter((item) => item.telemetryState === 'stale')) {
       items.push({ tone: 'warn', title: `${node.name} 遥测中断`, detail: `超过 ${telemetryStaleAfter} 秒没有收到运行状态` });

@@ -1813,13 +1813,12 @@ impl GenerationJobRepository {
         Ok(Some(job))
     }
 
-    /// Requeue jobs that were permanently stopped by the pre-materialization
-    /// publisher. The route publisher now creates the normalized contract
-    /// transactionally, so this exact historical error is recoverable after an
-    /// upgrade. Other permanent failures remain terminal by design.
+    /// Requeue only the newest failed revision for failures fixed by a Cloud or
+    /// Core upgrade. Desired revisions track configuration changes; successful
+    /// publication generations remain an independent contiguous sequence.
     pub async fn recover_route_input_head_failures(&self) -> Result<u64, ControlStoreError> {
         let result = sqlx::query(
-            "UPDATE segment_generation_jobs SET state = 'RETRY', lease_owner = NULL, lease_until = NULL, next_attempt_at = CURRENT_TIMESTAMP(6), last_error_code = 'ROUTE_RETRY_TOPOLOGY_MATERIALIZATION' WHERE state = 'PERMANENT_FAILURE' AND last_error_code IN ('ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD', 'ROUTE_DB_PRINCIPAL_MISMATCH')",
+            "UPDATE segment_generation_jobs candidate JOIN (SELECT jobs.tenant_id, jobs.segment_id, MAX(jobs.desired_revision) AS desired_revision FROM segment_generation_jobs jobs JOIN sdwan_control_resources segment ON segment.tenant_id = jobs.tenant_id AND segment.resource_kind = 'SEGMENT' AND segment.id = jobs.segment_id AND segment.state = 'ACTIVE' WHERE jobs.state = 'PERMANENT_FAILURE' AND (jobs.last_error_code IN ('ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD', 'ROUTE_DB_PRINCIPAL_MISMATCH') OR jobs.last_error_code LIKE 'ROUTE_INPUT_ROUTE_PUBLICATION_REVISION_%_IS_NOT_ADJACENT_TO_CURRENT_HEAD_%' OR jobs.last_error_code LIKE 'ROUTE_BUILD_CORE_MODULE_ROUTE_OPERATION_FAILED_CORE_PREPARE_FAILED_WITH_ABI_STAT%') GROUP BY jobs.tenant_id, jobs.segment_id) recoverable ON recoverable.tenant_id = candidate.tenant_id AND recoverable.segment_id = candidate.segment_id AND recoverable.desired_revision = candidate.desired_revision SET candidate.state = 'RETRY', candidate.lease_owner = NULL, candidate.lease_until = NULL, candidate.next_attempt_at = CURRENT_TIMESTAMP(6), candidate.last_error_code = 'ROUTE_RETRY_AFTER_RUNTIME_UPGRADE'",
         )
         .execute(&self.pool)
         .await?;

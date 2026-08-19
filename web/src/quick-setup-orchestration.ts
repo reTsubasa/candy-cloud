@@ -69,7 +69,7 @@ export function nextOverlayAddress(
 }
 
 export function activationMessage(readiness: RuntimeActivationReadiness | null): string {
-  if (!readiness) return '正在读取 Cloud 激活状态。';
+  if (!readiness) return '尚未读取 Cloud 激活状态。';
   if (readiness.ready) return 'Cloud 配置已完整，等待节点同步后会自动启用。';
   const messages: string[] = [];
   if (readiness.candidate_count === 0) messages.push('尚未生成双向线路');

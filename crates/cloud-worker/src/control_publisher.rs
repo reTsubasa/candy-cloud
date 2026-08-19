@@ -80,14 +80,12 @@ impl ControlRoutePublisher {
         let generation = current_generation
             .checked_add(1)
             .context("segment generation overflow")?;
-        if snapshot.desired_revision != generation
-            || (current_generation == 0 && current_hash != [0; 32])
+        if (current_generation == 0 && current_hash != [0; 32])
             || (current_generation != 0 && current_hash == [0; 32])
         {
             bail!(
-                "route publication revision {} is not adjacent to current head {}",
-                snapshot.desired_revision,
-                current_generation
+                "segment publication head {} has an invalid content hash",
+                current_generation,
             );
         }
         let mut segment = None;
@@ -481,11 +479,6 @@ impl SegmentGenerationPublisher for ControlRoutePublisher {
             .await
             .map_err(classify_publish_error)?
         {
-            if generation != snapshot.desired_revision {
-                return Err(PublicationFailure::Permanent {
-                    code: "ROUTE_REPLAY_GENERATION_MISMATCH".into(),
-                });
-            }
             return Ok(PublishedGeneration {
                 generation,
                 content_hash,

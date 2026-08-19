@@ -237,6 +237,14 @@ where
         };
         match self.publisher.publish(&job).await {
             Ok(result) => {
+                tracing::info!(
+                    event = "segment_generation_published",
+                    tenant_id = %job.tenant_id,
+                    segment_id = %job.segment_id,
+                    desired_revision = job.desired_revision,
+                    publication_generation = result.generation,
+                    "published SD-WAN runtime configuration"
+                );
                 self.queue.publish(&job, Utc::now(), result).await?;
                 Ok(RunOutcome::Published)
             }
@@ -247,6 +255,15 @@ where
                 let retry_at = Utc::now()
                     + chrono::Duration::from_std(retry_after)
                         .map_err(|_| WorkerLoopError::InvalidRetryDelay)?;
+                tracing::warn!(
+                    event = "segment_generation_retry",
+                    tenant_id = %job.tenant_id,
+                    segment_id = %job.segment_id,
+                    desired_revision = job.desired_revision,
+                    error_code = %normalize_failure_code(&code),
+                    retry_after_seconds = retry_after.as_secs(),
+                    "runtime configuration publication will be retried"
+                );
                 self.queue
                     .fail(
                         &job,
@@ -260,6 +277,14 @@ where
                 Ok(RunOutcome::RetryScheduled)
             }
             Err(PublicationFailure::Permanent { code }) => {
+                tracing::error!(
+                    event = "segment_generation_failed",
+                    tenant_id = %job.tenant_id,
+                    segment_id = %job.segment_id,
+                    desired_revision = job.desired_revision,
+                    error_code = %normalize_failure_code(&code),
+                    "runtime configuration publication stopped for this revision"
+                );
                 self.queue
                     .fail(
                         &job,

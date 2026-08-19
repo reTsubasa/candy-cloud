@@ -39,6 +39,24 @@ async fn readiness_fails_closed_without_database_configuration() {
 }
 
 #[tokio::test]
+async fn degradation_probe_fails_closed_without_dependencies() {
+    let response = cloud_api::app()
+        .oneshot(
+            Request::builder()
+                .uri("/health/degraded")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "management authentication unavailable"
+    );
+}
+
+#[tokio::test]
 async fn version_is_available_without_management_authentication() {
     let response = cloud_api::app()
         .oneshot(

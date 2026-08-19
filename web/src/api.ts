@@ -192,27 +192,39 @@ async function responseError(response: Response): Promise<CloudApiError> {
   return new CloudApiError(text || `请求失败 (${response.status})`, response.status);
 }
 
-async function requestJson<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
+async function requestJson<T>(path: string, token: string, init: RequestInit = {}, timeoutMs = 15_000): Promise<T> {
+  const controller = init.signal ? null : new AbortController();
+  const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   const perform = (accessToken: string) => fetch(`/api${path}`, {
     ...init,
     credentials: 'same-origin',
+    signal: init.signal ?? controller?.signal,
     headers: {
       Accept: 'application/json',
       Authorization: `Bearer ${accessToken}`,
       ...init.headers,
     },
   });
-  let response = await perform(token);
-  if (response.status === 401) {
-    const refreshed = await refreshStoredSession();
-    if (refreshed) response = await perform(refreshed);
+  try {
+    let response = await perform(token);
+    if (response.status === 401) {
+      const refreshed = await refreshStoredSession();
+      if (refreshed) response = await perform(refreshed);
+    }
+    if (!response.ok) throw await responseError(response);
+    if (response.status === 204) return undefined as T;
+    if (!(response.headers.get('content-type') ?? '').includes('application/json')) {
+      throw new CloudApiError('服务返回格式异常，请稍后重试并查看系统状态', response.status, 'INVALID_RESPONSE_FORMAT');
+    }
+    return response.json() as Promise<T>;
+  } catch (reason) {
+    if (reason instanceof DOMException && reason.name === 'AbortError') {
+      throw new CloudApiError('请求超时，Cloud 暂时没有响应。请稍后重试。', 504, 'REQUEST_TIMEOUT');
+    }
+    throw reason;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
-  if (!response.ok) throw await responseError(response);
-  if (response.status === 204) return undefined as T;
-  if (!(response.headers.get('content-type') ?? '').includes('application/json')) {
-    throw new CloudApiError('服务返回格式异常，请稍后重试并查看系统状态', response.status, 'INVALID_RESPONSE_FORMAT');
-  }
-  return response.json() as Promise<T>;
 }
 
 let refreshInFlight: Promise<string | null> | null = null;
@@ -311,6 +323,8 @@ export function fetchRuntimeActivationReadiness(
   return requestJson(
     `/v1/tenants/${encodeURIComponent(tenantId)}/runtime-activation-readiness?segment_id=${encodeURIComponent(segmentId)}`,
     token,
+    {},
+    8_000,
   );
 }
 

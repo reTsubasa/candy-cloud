@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -44,13 +44,13 @@ import type {
 import { downloadEnrollmentBootstrap, enrollmentExpired, validCloudAddress } from '../enrollment-bootstrap';
 import { compatibleEnrollmentArchitecture, defaultEnrollmentArchitecture, enrollmentArchitectureOptions, type EnrollmentPlatform } from '../enrollment-platform';
 import {
-  activationMessage,
   matchingPrefix,
   nextOverlayAddress,
   pathDirection,
   samePair,
   type QuickSetupSelection as Selection,
 } from '../quick-setup-orchestration';
+import { activationDisplay } from '../activation-status';
 import { ResourceEditor } from './ResourceEditor';
 
 type Props = {
@@ -121,6 +121,9 @@ export function QuickSetupWizard({ visible, session, onClose, onChanged }: Props
   const [transportNodeId, setTransportNodeId] = useState('');
   const [relayId, setRelayId] = useState('');
   const [activationReadiness, setActivationReadiness] = useState<RuntimeActivationReadiness | null>(null);
+  const [activationLoading, setActivationLoading] = useState(false);
+  const [activationError, setActivationError] = useState<string | null>(null);
+  const readinessRequest = useRef(0);
   const tenantId = session.claims.tenant_id;
 
   const load = useCallback(async () => {
@@ -185,19 +188,48 @@ export function QuickSetupWizard({ visible, session, onClose, onChanged }: Props
   }, [resources.nodes, selection.nodeA, selection.nodeB, transportNodeId]);
 
   const refreshReadiness = useCallback(async () => {
-    if (!tenantId || !selection.segment) { setActivationReadiness(null); return; }
-    try {
-      setActivationReadiness(await fetchRuntimeActivationReadiness(session.token, tenantId, selection.segment));
-    } catch {
+    const request = ++readinessRequest.current;
+    const segmentId = selection.segment;
+    if (!tenantId || !segmentId) {
       setActivationReadiness(null);
+      setActivationError(null);
+      setActivationLoading(false);
+      return;
+    }
+    setActivationLoading(true);
+    setActivationError(null);
+    try {
+      const result = await fetchRuntimeActivationReadiness(session.token, tenantId, segmentId);
+      if (request === readinessRequest.current) setActivationReadiness(result);
+    } catch (reason) {
+      if (request === readinessRequest.current) {
+        setActivationError(reason instanceof Error ? reason.message : 'Cloud 暂时无法读取激活状态');
+      }
+    } finally {
+      if (request === readinessRequest.current) setActivationLoading(false);
     }
   }, [selection.segment, session.token, tenantId]);
 
   useEffect(() => {
-    if (!visible || current !== 2 || !selection.segment) return undefined;
-    void refreshReadiness();
-    const timer = window.setInterval(() => void refreshReadiness(), 4000);
-    return () => window.clearInterval(timer);
+    if (!visible || current !== 2 || !selection.segment) {
+      readinessRequest.current += 1;
+      setActivationReadiness(null);
+      setActivationError(null);
+      setActivationLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      await refreshReadiness();
+      if (!cancelled) timer = window.setTimeout(() => void poll(), 4000);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      readinessRequest.current += 1;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [current, refreshReadiness, selection.segment, visible]);
 
   const endpointsReady = Boolean(selection.siteA && selection.siteB && selection.siteA !== selection.siteB
@@ -377,9 +409,9 @@ export function QuickSetupWizard({ visible, session, onClose, onChanged }: Props
         {pathPolicy === 'RELAY_REQUIRED'
           ? <Form.Item label="中继节点" required><Select value={relayId || undefined} onChange={setRelayId} options={options(resources.relays)} placeholder="选择可用中继" /></Form.Item>
           : <div className="automatic-connection"><IconCheckCircle /><div><strong>接入点自动选择</strong><span>Candy 将优先使用 {resourceName(automaticTransportNode)} 的可用 UDP 端点；节点不可达时会在激活检查中给出明确原因。</span></div></div>}
-        <div className="orchestration-actions"><Button type="primary" loading={saving} onClick={() => void orchestrateConnection()}>{forwardReady && reverseReady ? '重新检查激活状态' : '生成双向线路并激活'}</Button></div>
+        <div className="orchestration-actions"><Button type="primary" loading={saving || activationLoading} onClick={() => void (forwardReady && reverseReady ? refreshReadiness() : orchestrateConnection())}>{forwardReady && reverseReady ? '重新检查状态' : '生成双向线路并发布'}</Button></div>
       </Form>
-      <PathStatus forward={forwardReady} reverse={reverseReady} readiness={activationReadiness} />
+      <PathStatus forward={forwardReady} reverse={reverseReady} readiness={activationReadiness} loading={activationLoading} error={activationError} onRetry={() => void refreshReadiness()} />
     </>;
   })();
 
@@ -413,10 +445,25 @@ export function QuickSetupWizard({ visible, session, onClose, onChanged }: Props
   </Drawer>;
 }
 
-function PathStatus({ forward, reverse, readiness }: { forward: boolean; reverse: boolean; readiness: RuntimeActivationReadiness | null }) {
+function PathStatus({ forward, reverse, readiness, loading, error, onRetry }: {
+  forward: boolean;
+  reverse: boolean;
+  readiness: RuntimeActivationReadiness | null;
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  const display = activationDisplay(readiness, error, loading);
   return <div className="activation-monitor">
     <div className="path-direction-status"><div className={forward ? 'done' : ''}><span>{forward ? <IconCheck /> : '1'}</span><strong>去程线路</strong><small>第一端 → 第二端</small></div><IconRight /><div className={reverse ? 'done' : ''}><span>{reverse ? <IconCheck /> : '2'}</span><strong>返程线路</strong><small>第二端 → 第一端</small></div></div>
-    {readiness?.ready ? <div className="quick-stage-complete"><IconCheckCircle /><div><strong>网络配置已发布</strong><span>节点同步并验证成功后会自动启用全双工 TUN，无需本地开关。</span></div></div> : <Alert type={forward && reverse ? 'warning' : 'info'} showIcon content={activationMessage(readiness)} />}
+    {readiness?.ready ? <div className="quick-stage-complete"><IconCheckCircle /><div><strong>网络已启用</strong><span>节点已同步并验证当前配置，全双工 TUN 数据面正在运行。</span></div></div> : <Alert
+      type={error && !readiness ? 'error' : forward && reverse ? 'warning' : 'info'}
+      showIcon
+      title={display.label}
+      content={display.detail}
+      action={error ? <Button size="small" icon={<IconRefresh />} onClick={onRetry}>重试</Button> : undefined}
+    />}
+    {error && readiness && <Alert className="activation-stale-warning" type="warning" showIcon content={`显示的是最近一次状态；本次刷新失败：${error}`} action={<Button size="small" onClick={onRetry}>重试</Button>} />}
   </div>;
 }
 

@@ -201,7 +201,7 @@ export function buildOperationalTopology(
       }, readinessBySegment[resources.segments[0].metadata.id])
       : null;
   const aggregateReadinessLabel = !selectedSegmentId && resources.segments.length > 0
-    ? readiness ? (readiness.ready ? '全部网络已就绪' : `${resources.segments.filter((segment) => readinessBySegment[segment.metadata.id]?.ready).length}/${resources.segments.length} 个网络已就绪`) : `${resources.segments.length} 个网络分段 · 全局视图`
+    ? readiness ? (readiness.ready ? '全部网络已就绪' : `${resources.segments.filter((segment) => readinessBySegment[segment.metadata.id]?.ready).length}/${resources.segments.length} 个网络已就绪 · ${readinessLabel(readiness)}`) : `${resources.segments.length} 个网络分段 · 全局视图`
     : readinessLabel(readiness);
   const links: OperationalLink[] = resources.peers
     .filter(segmentMatches)

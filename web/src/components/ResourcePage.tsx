@@ -19,6 +19,7 @@ import type { ControlResource, ResourceDefinition, ResourceReference, RuntimeCon
 import { attachmentTableValues } from '../resource-table';
 import { compactPolicyValues, summarizePolicy, type PolicyReferences } from '../policy-summary';
 import { ResourceEditor } from './ResourceEditor';
+import { ActivationStatusBar } from './ActivationStatusBar';
 
 type Props = {
   definition: ResourceDefinition;
@@ -392,6 +393,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
         </Space>
       </header>
       {definition.kind === 'SEGMENT' && <SegmentGuide />}
+      {(definition.kind === 'PEER' || definition.kind === 'PATH_CANDIDATE') && <ActivationStatusBar resources={items} session={session} />}
       <div className="toolbar-row">
         <Input
           allowClear

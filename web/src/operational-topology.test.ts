@@ -79,6 +79,15 @@ describe('operational topology', () => {
     expect(global.routeLabels).toEqual(['192.168.1.0/24', '10.20.0.0/16']);
   });
 
+  it('explains why an aggregate network is not ready', () => {
+    const readiness: RuntimeActivationReadiness = {
+      schema_version: 1, segment_id: 'segment', ready: false, candidate_count: 2,
+      ready_candidate_count: 0, missing_transport_count: 0, reason_codes: ['config_pending'],
+    };
+    const snapshot = buildOperationalTopology(fixture(), [], { segment: readiness }, '');
+    expect(snapshot.readinessLabel).toBe('0/1 个网络已就绪 · 配置发布中');
+  });
+
   it('distinguishes fresh data-plane telemetry from stale configuration receipts', () => {
     const now = Date.parse('2026-08-18T10:00:00Z');
     const active: RuntimeTelemetry = {

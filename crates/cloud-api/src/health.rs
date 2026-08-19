@@ -10,24 +10,28 @@ pub async fn live() -> &'static str {
 }
 
 pub async fn ready(State(state): State<Arc<ManagementState>>) -> impl IntoResponse {
-    if !state.authentication_ready {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "management authentication unavailable",
-        );
-    }
-    match &state.repository {
-        Some(repository) if repository.readiness_check().await.is_ok() => (StatusCode::OK, "ready"),
-        Some(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "database schema unavailable",
-        ),
-        None => (StatusCode::SERVICE_UNAVAILABLE, "database not configured"),
+    match dependency_status(&state).await {
+        Ok(()) => (StatusCode::OK, "ready"),
+        Err(reason) => (StatusCode::SERVICE_UNAVAILABLE, reason),
     }
 }
 
-pub async fn degraded() -> (StatusCode, &'static str) {
-    (StatusCode::SERVICE_UNAVAILABLE, "degraded")
+pub async fn degraded(State(state): State<Arc<ManagementState>>) -> impl IntoResponse {
+    match dependency_status(&state).await {
+        Ok(()) => (StatusCode::OK, "not degraded"),
+        Err(reason) => (StatusCode::SERVICE_UNAVAILABLE, reason),
+    }
+}
+
+async fn dependency_status(state: &ManagementState) -> Result<(), &'static str> {
+    if !state.authentication_ready {
+        return Err("management authentication unavailable");
+    }
+    match &state.repository {
+        Some(repository) if repository.readiness_check().await.is_ok() => Ok(()),
+        Some(_) => Err("database schema unavailable"),
+        None => Err("database not configured"),
+    }
 }
 
 #[derive(Debug, Serialize)]
