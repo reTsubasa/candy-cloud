@@ -36,11 +36,9 @@ jobs:
       - name: Install verification tools
         run: |
           set -eu
-          sudo timeout --signal=TERM 300 apt-get \
-            -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-          sudo timeout --signal=TERM 300 apt-get \
-            -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
-            install -y --no-install-recommends build-essential cmake git jq
+          for command in cmake gcc git jq; do
+            command -v "$command" >/dev/null || { echo "missing Runner tool: $command" >&2; exit 1; }
+          done
           git init -q /tmp/usign
           git -C /tmp/usign remote add origin https://github.com/openwrt/usign.git
           git -C /tmp/usign fetch --depth 1 origin c4c72b1b07945ee192361dc751291a7c98d6adcd
