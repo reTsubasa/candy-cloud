@@ -309,8 +309,8 @@ impl ControlRoutePublisher {
                 (
                     candidate.peer_site_id.0,
                     candidate.peer_attachment_id.0,
-                    candidate.kind as u8,
                     candidate.priority,
+                    candidate.kind as u8,
                     candidate.candidate_id.0,
                 )
             });
@@ -484,11 +484,26 @@ impl SegmentGenerationPublisher for ControlRoutePublisher {
                 content_hash,
             });
         }
-        let input = self
-            .build_input(snapshot)
-            .await
-            .map_err(classify_input_error)?;
+        let input = self.build_input(snapshot).await.map_err(|error| {
+            tracing::error!(
+                event = "route_publication_input_failed",
+                tenant_id = %snapshot.tenant_id,
+                segment_id = %snapshot.segment_id,
+                desired_revision = snapshot.desired_revision,
+                error = %format_args!("{error:#}"),
+                "could not construct the Core route publication input"
+            );
+            classify_input_error(error)
+        })?;
         let built = build_route_publication(&input, &self.signer).map_err(|error| {
+            tracing::error!(
+                event = "route_publication_core_failed",
+                tenant_id = %snapshot.tenant_id,
+                segment_id = %snapshot.segment_id,
+                desired_revision = snapshot.desired_revision,
+                error = %error,
+                "Core rejected the route publication"
+            );
             PublicationFailure::Permanent {
                 code: format!("ROUTE_BUILD_{error}"),
             }

@@ -327,9 +327,12 @@ fn module_seal<T>(
     });
     let request = serde_json::to_vec(&request)
         .map_err(|error| RoutePublicationError::Core(error.to_string()))?;
-    let prepared = core
-        .prepare(&request)
-        .map_err(|error| RoutePublicationError::Core(error.to_string()))?;
+    let prepared = core.prepare(&request).map_err(|error| {
+        RoutePublicationError::Core(format!(
+            "object type {} prepare failed: {error}",
+            object_type.0
+        ))
+    })?;
     if prepared.object_type != object_type {
         return Err(RoutePublicationError::Core(format!(
             "Core returned object type {}, expected {}",

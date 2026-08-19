@@ -449,7 +449,10 @@ impl ControlRepository {
         crate::sdwan::SdwanRepository::new(self.pool.clone())
             .ensure_control_topology(tenant_id, segment_id, &resources)
             .await
-            .map_err(|error| ControlStoreError::Database(error.to_string()))?;
+            .map_err(|error| match error {
+                crate::sdwan::SdwanError::Database(message) => ControlStoreError::Database(message),
+                error => ControlStoreError::InvalidResource(error.to_string()),
+            })?;
         let mut transaction = self.pool.begin().await?;
         let transport_bindings =
             load_transport_bindings(&mut transaction, tenant_id, &resources).await?;

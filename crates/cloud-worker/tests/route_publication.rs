@@ -124,8 +124,10 @@ fn fixture() -> RoutePublicationInput {
     let segment = SegmentId([2; 16]);
     let local_site = SiteId([0x20; 16]);
     let remote_site = SiteId([0x21; 16]);
+    let tunnel_host_site = SiteId([0x22; 16]);
     let local_attachment = AttachmentId([0x10; 16]);
     let remote_attachment = AttachmentId([0x11; 16]);
+    let tunnel_host_attachment = AttachmentId([0x12; 16]);
     RoutePublicationInput {
         publication_id: Uuid::from_bytes([0x70; 16]),
         audit_event_id: Uuid::from_bytes([0x71; 16]),
@@ -160,6 +162,18 @@ fn fixture() -> RoutePublicationInput {
                 state: AttachmentState::Active,
                 epoch_floor: 2,
             },
+            SegmentAttachmentV1 {
+                attachment_id: tunnel_host_attachment,
+                site_id: Some(tunnel_host_site),
+                principal: AttachmentPrincipalV1::Device {
+                    device_id: DeviceId([0x32; 16]),
+                    device_key_id: DeviceKeyId([0x42; 16]),
+                },
+                overlay_router_ipv4: [100, 64, 0, 12],
+                local_prefixes: vec![],
+                state: AttachmentState::Active,
+                epoch_floor: 3,
+            },
         ],
         not_before: 1_800_000_000,
         expires_at: 1_800_003_600,
@@ -187,6 +201,27 @@ fn fixture() -> RoutePublicationInput {
                 0x62,
                 peer(local_site, local_attachment, 0x91, 0x63),
             ),
+            DeviceProjectionInput {
+                publication_id: Uuid::from_bytes([0x82; 16]),
+                attachment_id: tunnel_host_attachment,
+                projection_id: PolicyId([0x64; 16]),
+                projection_generation: 1,
+                previous_hash: [0; 32],
+                local_transport_node: None,
+                path_policy: PathSelectionPolicyV1::DirectPreferred,
+                peer_paths: vec![
+                    peer(local_site, local_attachment, 0x92, 0x65),
+                    peer(remote_site, remote_attachment, 0x93, 0x66),
+                ],
+                coherent_manifest: CoherentPolicyManifestV1 {
+                    generation: 1,
+                    peer_paths_hash: [0; 32],
+                    dns_projection: None,
+                    egress_authorization: None,
+                },
+                max_inner_mtu: 1180,
+                resources: resources(),
+            },
         ],
     }
 }
@@ -207,7 +242,7 @@ fn builds_and_verifies_direct_first_v1_publication() {
         Some(&key.verifying_key().to_bytes()),
     )
     .unwrap();
-    assert_eq!(built.segment.source.attachments.len(), 2);
+    assert_eq!(built.segment.source.attachments.len(), 3);
     for projection in &built.projections {
         core.validate(
             ObjectType::ROUTE_ENVELOPE_V1,
@@ -215,8 +250,13 @@ fn builds_and_verifies_direct_first_v1_publication() {
             Some(&key.verifying_key().to_bytes()),
         )
         .unwrap();
-        assert_eq!(projection.sealed.source.peer_paths.len(), 1);
     }
+    let tunnel_host = built
+        .projections
+        .iter()
+        .find(|projection| projection.sealed.source.local_prefixes.is_empty())
+        .unwrap();
+    assert_eq!(tunnel_host.sealed.source.peer_paths.len(), 2);
 }
 
 #[test]

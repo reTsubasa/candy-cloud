@@ -59,22 +59,32 @@ where
             .control
             .segment_snapshot(job.tenant_id, job.segment_id, job.desired_revision)
             .await
-            .map_err(|error| match error {
-                ControlStoreError::InvalidResource(_)
-                | ControlStoreError::InvalidRequest
-                | ControlStoreError::NotFound
-                | ControlStoreError::ReferenceConflict
-                | ControlStoreError::InvalidTransition => PublicationFailure::Permanent {
-                    code: format!("CONTROL_SNAPSHOT_{}", control_error_code(&error)),
-                },
-                ControlStoreError::RevisionConflict
-                | ControlStoreError::IdempotencyConflict
-                | ControlStoreError::IdempotencyReplayExpired
-                | ControlStoreError::LeaseLost
-                | ControlStoreError::Database(_) => PublicationFailure::Retryable {
-                    code: format!("CONTROL_SNAPSHOT_{}", control_error_code(&error)),
-                    retry_after: Duration::from_secs(5),
-                },
+            .map_err(|error| {
+                tracing::error!(
+                    event = "segment_snapshot_failed",
+                    tenant_id = %job.tenant_id,
+                    segment_id = %job.segment_id,
+                    desired_revision = job.desired_revision,
+                    error = %error,
+                    "could not build the SD-WAN control snapshot"
+                );
+                match error {
+                    ControlStoreError::InvalidResource(_)
+                    | ControlStoreError::InvalidRequest
+                    | ControlStoreError::NotFound
+                    | ControlStoreError::ReferenceConflict
+                    | ControlStoreError::InvalidTransition => PublicationFailure::Permanent {
+                        code: format!("CONTROL_SNAPSHOT_{}", control_error_code(&error)),
+                    },
+                    ControlStoreError::RevisionConflict
+                    | ControlStoreError::IdempotencyConflict
+                    | ControlStoreError::IdempotencyReplayExpired
+                    | ControlStoreError::LeaseLost
+                    | ControlStoreError::Database(_) => PublicationFailure::Retryable {
+                        code: format!("CONTROL_SNAPSHOT_{}", control_error_code(&error)),
+                        retry_after: Duration::from_secs(5),
+                    },
+                }
             })?;
         self.publisher.publish_snapshot(&snapshot).await
     }
