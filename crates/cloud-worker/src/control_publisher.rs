@@ -83,10 +83,7 @@ impl ControlRoutePublisher {
         if (current_generation == 0 && current_hash != [0; 32])
             || (current_generation != 0 && current_hash == [0; 32])
         {
-            bail!(
-                "segment publication head {} has an invalid content hash",
-                current_generation,
-            );
+            bail!("segment publication head {current_generation} has an invalid content hash");
         }
         let mut segment = None;
         let mut attachments = Vec::new();
