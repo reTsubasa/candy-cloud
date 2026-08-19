@@ -121,7 +121,9 @@ export function buildOperationalTopology(
   const segmentMatches = (item: ControlResource): boolean => !selectedSegmentId || value(item, 'segment_id') === selectedSegmentId;
   const selectedAttachments = resources.attachments.filter(segmentMatches);
   const attachedNodeIds = new Set(selectedAttachments.map((item) => value(item, 'node_id')));
-  const selectedNodes = resources.nodes.filter((item) => attachedNodeIds.has(item.metadata.id));
+  const selectedNodes = selectedSegmentId
+    ? resources.nodes.filter((item) => attachedNodeIds.has(item.metadata.id))
+    : resources.nodes;
   const statusByIdentity = new Map(statuses.map((status) => [`${status.device_id}:${status.device_key_id}`, status]));
   const telemetryByIdentity = new Map(telemetry.map((item) => [`${item.device_id}:${item.device_key_id}`, item]));
   const nodes: OperationalNode[] = selectedNodes.map((item) => {
@@ -159,7 +161,9 @@ export function buildOperationalTopology(
   });
   const selectedPrefixes = resources.prefixes.filter(segmentMatches);
   const selectedEgresses = resources.egress.filter((item) => selectedAttachments.some((attachment) => attachment.metadata.id === value(item, 'attachment_id')));
-  const siteIds = new Set(selectedAttachments.map((item) => value(item, 'site_id')));
+  const siteIds = selectedSegmentId
+    ? new Set(selectedAttachments.map((item) => value(item, 'site_id')))
+    : new Set(resources.sites.map((item) => item.metadata.id));
   const sites: OperationalSite[] = resources.sites
     .filter((item) => siteIds.has(item.metadata.id))
     .map((item) => {

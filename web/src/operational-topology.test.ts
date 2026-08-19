@@ -72,7 +72,10 @@ describe('operational topology', () => {
       prefixes: [...fixture().prefixes, resource('prefix-c', 'PREFIX', { segment_id: 'segment-2', site_id: 'site-c', prefix: { network: '10.20.0.0', prefix_len: 16 } })],
     }, [], {}, '');
     expect(global.segment?.name).toBe('全部网络');
+    const unassignedSite = resource('site-unassigned', 'SITE', { name: '北京待配置', kind: 'EDGE' });
+    const withUnassigned = buildOperationalTopology({ ...fixture(), sites: [...fixture().sites, unassignedSite], nodes: [...fixture().nodes, resource('node-unassigned', 'NODE', { display_name: '待接入节点', site_id: 'site-unassigned', device_id: 'device-unassigned', device_key_id: 'key-unassigned' })] }, [], {}, '');
     expect(global.sites.map((site) => site.id)).toEqual(['site-a', 'site-b', 'site-c']);
+    expect(withUnassigned.sites.map((site) => site.id)).toContain('site-unassigned');
     expect(global.routeLabels).toEqual(['192.168.1.0/24', '10.20.0.0/16']);
   });
 
