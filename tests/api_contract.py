@@ -162,6 +162,7 @@ def main() -> None:
         "RuntimeTelemetryInventory",
         "runtime telemetry inventory contract",
     )
+    require(openapi, "RuntimeLocalNetworkTelemetry", "runtime local network telemetry contract")
 
     for path in ["/v1/auth/login", "/v1/auth/refresh"]:
         block = blocks[path]

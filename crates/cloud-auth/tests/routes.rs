@@ -607,7 +607,7 @@ async fn runtime_configuration_returns_coherent_signed_bundle_and_honors_etag() 
             Request::builder()
                 .uri("/v1/runtime/configuration")
                 .header("if-none-match", etag)
-                .extension(actor)
+                .extension(actor.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -702,7 +702,14 @@ async fn runtime_telemetry_uses_authenticated_identity_and_rejects_impossible_co
         "rx_bps": null,
         "tx_bps": null,
         "reconnects": null,
-        "path_changes": null
+        "path_changes": null,
+        "local_networks": [{
+            "network_id": "30bfd718e3f4b79faf151e52915f15928bf9c63b57a7963b807c8c1f7f502ae5",
+            "interface_name": "br-lan.10",
+            "cidr": "192.168.10.0/24",
+            "address": "192.168.10.1",
+            "kind": "direct_ipv4"
+        }]
     });
     let response = app
         .clone()
@@ -721,9 +728,75 @@ async fn runtime_telemetry_uses_authenticated_identity_and_rejects_impossible_co
     let command = service.telemetry.lock().unwrap().pop().unwrap();
     assert_eq!(command.actor, actor);
     assert_eq!(command.active_peers, 2);
+    let local_networks = command.local_networks.expect("local network telemetry");
+    assert_eq!(local_networks.len(), 1);
+    assert_eq!(
+        local_networks[0].network_id,
+        "30bfd718e3f4b79faf151e52915f15928bf9c63b57a7963b807c8c1f7f502ae5"
+    );
 
-    let mut invalid = body;
+    let legacy = serde_json::json!({
+        "schema_version": 1,
+        "boot_id": Uuid::new_v4(),
+        "sequence": 1,
+        "lifecycle": "stopped",
+        "configured_peers": 0,
+        "active_peers": 0,
+        "required_route_owners": 0,
+        "ready_route_owners": 0,
+        "fail_open_required": false,
+        "last_error_code": null,
+        "rtt_ms": null,
+        "jitter_ms": null,
+        "packet_loss_ppm": null,
+        "rx_bps": null,
+        "tx_bps": null,
+        "reconnects": null,
+        "path_changes": null
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/runtime/telemetry")
+                .header("content-type", "application/json")
+                .extension(actor.clone())
+                .body(Body::from(legacy.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(service
+        .telemetry
+        .lock()
+        .unwrap()
+        .pop()
+        .unwrap()
+        .local_networks
+        .is_none());
+
+    let mut invalid = body.clone();
     invalid["active_peers"] = serde_json::json!(3);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/runtime/telemetry")
+                .header("content-type", "application/json")
+                .extension(actor.clone())
+                .body(Body::from(invalid.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(service.telemetry.lock().unwrap().is_empty());
+
+    let mut invalid_network = body;
+    invalid_network["local_networks"][0]["cidr"] = serde_json::json!("192.168.10.0/129");
     let response = app
         .oneshot(
             Request::builder()
@@ -731,7 +804,7 @@ async fn runtime_telemetry_uses_authenticated_identity_and_rejects_impossible_co
                 .uri("/v1/runtime/telemetry")
                 .header("content-type", "application/json")
                 .extension(actor)
-                .body(Body::from(invalid.to_string()))
+                .body(Body::from(invalid_network.to_string()))
                 .unwrap(),
         )
         .await

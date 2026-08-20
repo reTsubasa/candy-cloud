@@ -54,7 +54,7 @@ export type OperationalLink = {
 };
 
 export type OperationalTopologySnapshot = {
-  segment: { id: string; name: string; overlayCidr: string } | null;
+  segment: { id: string; name: string; overlayCidr: string; aggregate: boolean } | null;
   readiness: RuntimeActivationReadiness | null;
   readinessLabel: string;
   sites: OperationalSite[];
@@ -249,9 +249,9 @@ export function buildOperationalTopology(
   };
   return {
     segment: segmentResource
-      ? { id: segmentId, name: name(segmentResource), overlayCidr: cidr(segmentResource.resource.spec.overlay_prefix) }
+      ? { id: segmentId, name: name(segmentResource), overlayCidr: cidr(segmentResource.resource.spec.overlay_prefix), aggregate: false }
       : resources.segments.length > 0
-        ? { id: '', name: '全部网络', overlayCidr: `${resources.segments.length} 个网络分段` }
+        ? { id: '', name: '全部网络', overlayCidr: `${resources.segments.length} 个网络分段`, aggregate: true }
         : null,
     readiness,
     readinessLabel: aggregateReadinessLabel,

@@ -12,10 +12,11 @@ import {
   Select,
   Space,
   Spin,
+  Tag,
   Typography,
 } from '@arco-design/web-react';
 import { IconCloud, IconDelete, IconDesktop, IconPlus, IconSave, IconSettings, IconStorage, IconWifi } from '@arco-design/web-react/icon';
-import { createResource, listResources, replaceResource } from '../api';
+import { createResource, fetchRuntimeTelemetry, listResources, replaceResource } from '../api';
 import { defaultSpec } from '../resource-definitions';
 import {
   buildResourceSpec,
@@ -25,7 +26,7 @@ import {
   validateResourceEditor,
   type Spec,
 } from '../resource-form';
-import type { ControlResource, ResourceDefinition, ResourceOption, Session } from '../types';
+import type { ControlResource, ResourceDefinition, ResourceOption, RuntimeTelemetry, Session } from '../types';
 
 type Props = {
   visible: boolean;
@@ -49,7 +50,7 @@ const referenceKeysByKind: Record<string, ReferenceKey[]> = {
   NODE: ['sites'],
   SEGMENT: [],
   ATTACHMENT: ['segments', 'sites', 'nodes', 'attachments'],
-  PREFIX: ['sites', 'segments', 'attachments'],
+  PREFIX: ['sites', 'segments', 'attachments', 'prefixes', 'nodes'],
   PEER: ['sites', 'segments', 'attachments'],
   PATH_CANDIDATE: ['segments', 'attachments', 'peers', 'relays'],
   EGRESS: ['sites', 'attachments'],
@@ -194,6 +195,8 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
   const [spec, setSpec] = useState<Spec>({});
   const [references, setReferences] = useState<References>({});
   const [loadingReferences, setLoadingReferences] = useState(false);
+  const [runtimeTelemetry, setRuntimeTelemetry] = useState<RuntimeTelemetry[]>([]);
+  const [loadingNetworks, setLoadingNetworks] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const tenantId = session.claims.tenant_id;
@@ -231,6 +234,47 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
     }).finally(() => { if (!cancelled) setLoadingReferences(false); });
     return () => { cancelled = true; };
   }, [definition.kind, session.token, tenantId, visible]);
+
+  useEffect(() => {
+    if (!visible || definition.kind !== 'PREFIX' || !tenantId) {
+      setRuntimeTelemetry([]);
+      setLoadingNetworks(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingNetworks(true);
+    void fetchRuntimeTelemetry(session.token, tenantId)
+      .then((response) => { if (!cancelled) setRuntimeTelemetry(response.items); })
+      .catch(() => { if (!cancelled) setRuntimeTelemetry([]); })
+      .finally(() => { if (!cancelled) setLoadingNetworks(false); });
+    return () => { cancelled = true; };
+  }, [definition.kind, session.token, tenantId, visible]);
+
+  const discoveredNetworks = useMemo(() => {
+    const nodeByIdentity = new Map((references.nodes ?? []).map((node) => [
+      `${String(node.spec.device_id)}:${String(node.spec.device_key_id)}`,
+      node,
+    ]));
+    const published = new Set((references.prefixes ?? []).map((prefix) => {
+      const value = prefix.spec.prefix as Spec | undefined;
+      return `${String(prefix.spec.segment_id)}:${String(prefix.spec.site_id)}:${String(value?.network)}/${String(value?.prefix_len)}`;
+    }));
+    const attachedNodes = new Set(
+      segmentAttachments(String(spec.segment_id ?? ''), references)
+        .map((item) => String(item.spec.node_id)),
+    );
+    return runtimeTelemetry.flatMap((telemetry) => {
+      const node = nodeByIdentity.get(`${telemetry.device_id}:${telemetry.device_key_id}`);
+      if (!node || (spec.segment_id && !attachedNodes.has(node.value))) return [];
+      return telemetry.local_networks.map((network) => ({
+        ...network,
+        nodeId: node.value,
+        nodeName: node.label,
+        siteId: String(node.spec.site_id),
+        published: published.has(`${String(spec.segment_id)}:${String(node.spec.site_id)}:${network.cidr}`),
+      }));
+    }).sort((left, right) => left.nodeName.localeCompare(right.nodeName) || left.cidr.localeCompare(right.cidr));
+  }, [references, runtimeTelemetry, spec.segment_id]);
 
   const update = (key: string, value: unknown) => setSpec((current) => ({ ...current, [key]: value }));
   const updateNodePlatform = (platform: 'OPEN_WRT' | 'LINUX') => setSpec((current) => {
@@ -353,6 +397,21 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
       case 'PREFIX': return <>
         <FormIntro title="发布站点内网">其他站点只会访问这里明确声明的网段，不会自动暴露整个局域网。</FormIntro>
         <div className="form-grid two"><Form.Item label="网络分段" required>{referenceSelect('segments', spec.segment_id, (value) => setSpec((current) => ({ ...current, segment_id: value, site_id: '' })), '选择分段')}</Form.Item><Form.Item label="所属站点" required>{referenceSelect('sites', spec.site_id, (value) => update('site_id', value), spec.segment_id ? '选择已接入该网络的站点' : '请先选择网络分段', segmentSites(spec.segment_id, references))}</Form.Item></div>
+        <Form.Item label="节点发现的网段">
+          {!spec.segment_id ? <div className="network-discovery-empty">先选择网络分段，即可查看参与节点上报的本地网段。</div> : loadingNetworks ? <div className="network-discovery-empty"><Spin dot /> 正在读取节点网段…</div> : discoveredNetworks.length === 0 ? <div className="network-discovery-empty">参与节点尚未上报可发布的直连网段，仍可在下方手动填写。</div> : <div className="network-discovery-list">
+            {discoveredNetworks.map((network) => <button
+              type="button"
+              className={`network-discovery-item${spec.cidr === network.cidr && spec.site_id === network.siteId ? ' selected' : ''}`}
+              key={`${network.nodeId}:${network.network_id}`}
+              disabled={network.published}
+              onClick={() => setSpec((current) => ({ ...current, site_id: network.siteId, cidr: network.cidr, source: 'CONNECTED' }))}
+            >
+              <span className="network-discovery-main"><strong>{network.cidr}</strong><small>{network.nodeName} · {network.interface_name} · 本机 {network.address}</small></span>
+              <span className="network-discovery-meta"><code>{network.network_id.slice(0, 12)}</code>{network.published ? <Tag color="green">已发布</Tag> : <span>使用</span>}</span>
+            </button>)}
+          </div>}
+          <FieldHelp>候选来自节点内核的直连路由；短标识用于区分接口变化。选择后仍需保存确认，Cloud 不会自动暴露本地网络。</FieldHelp>
+        </Form.Item>
         <Form.Item label="可访问网段" required><Input className="mono-input" value={getValue(spec, 'cidr')} onChange={(value) => update('cidr', value)} placeholder="10.10.0.0/16" /><FieldHelp>填写本站希望向该网络分段发布的规范 IPv4 CIDR，不能与隧道地址池或其他已发布网段重叠。</FieldHelp></Form.Item>
         <Collapse className="advanced-collapse"><Collapse.Item name="source" header="高级：网段来源"><Form.Item label="来源" required><Select value={getValue(spec, 'source') || undefined} onChange={(value) => update('source', value)} options={[{ label: '手动配置', value: 'CONFIGURED' }, { label: '节点直连上报', value: 'CONNECTED' }, { label: '已批准学习', value: 'APPROVED_LEARNED' }]} /></Form.Item><FieldHelp>通过控制台创建时通常保持“手动配置”；另外两种来源用于节点上报和审批流程。</FieldHelp></Collapse.Item></Collapse>
       </>;
@@ -402,7 +461,7 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
     }
   // Functions are stable for the lifetime of a render; spec and references intentionally drive this projection.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [definition.kind, loadingReferences, references, spec]);
+  }, [definition.kind, discoveredNetworks, loadingNetworks, loadingReferences, references, spec]);
 
   const editorContent = (
     <>

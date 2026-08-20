@@ -72,6 +72,7 @@ describe('operational topology', () => {
       prefixes: [...fixture().prefixes, resource('prefix-c', 'PREFIX', { segment_id: 'segment-2', site_id: 'site-c', prefix: { network: '10.20.0.0', prefix_len: 16 } })],
     }, [], {}, '');
     expect(global.segment?.name).toBe('全部网络');
+    expect(global.segment?.aggregate).toBe(true);
     const unassignedSite = resource('site-unassigned', 'SITE', { name: '北京待配置', kind: 'EDGE' });
     const withUnassigned = buildOperationalTopology({ ...fixture(), sites: [...fixture().sites, unassignedSite], nodes: [...fixture().nodes, resource('node-unassigned', 'NODE', { display_name: '待接入节点', site_id: 'site-unassigned', device_id: 'device-unassigned', device_key_id: 'key-unassigned' })] }, [], {}, '');
     expect(global.sites.map((site) => site.name)).toEqual(['东京', '上海', '深圳']);
@@ -97,6 +98,7 @@ describe('operational topology', () => {
       last_error_code: null, rtt_ms: 42, jitter_ms: 7, packet_loss_ppm: 12_500,
       rx_bps: 20_000_000, tx_bps: 10_000_000, reconnects: 2, path_changes: 1,
       paths: [{ peer_attachment_id: 'attachment-b', candidate_id: null, path_kind: 'direct', transport: 'quic_udp', connection_epoch: 3, rtt_ms: 42, jitter_ms: 7, packet_loss_ppm: 12_500, rx_bps: 20_000_000, tx_bps: 10_000_000, reconnects: 2, path_changes: 1 }],
+      local_networks: [{ network_id: '30bfd718e3f4b79faf151e52915f15928bf9c63b57a7963b807c8c1f7f502ae5', interface_name: 'br-lan', cidr: '192.168.10.0/24', address: '192.168.10.1', kind: 'direct_ipv4' }],
       reported_at: '2026-08-18T09:59:40Z',
     };
     const stale = { ...active, device_id: 'device-b', device_key_id: 'key-b', reported_at: '2026-08-18T09:57:00Z' };

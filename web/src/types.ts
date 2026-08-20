@@ -161,7 +161,16 @@ export type RuntimeTelemetry = {
   reconnects: number | null;
   path_changes: number | null;
   paths: RuntimePathTelemetry[];
+  local_networks: RuntimeLocalNetworkTelemetry[];
   reported_at: string;
+};
+
+export type RuntimeLocalNetworkTelemetry = {
+  network_id: string;
+  interface_name: string;
+  cidr: string;
+  address: string;
+  kind: string;
 };
 
 export type RuntimePathTelemetry = {

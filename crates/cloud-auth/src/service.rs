@@ -9,8 +9,8 @@ use cloud_db::{
         RuntimeConfigurationApplyState as DbRuntimeConfigurationApplyState,
         RuntimeConfigurationError, RuntimeConfigurationLookup, RuntimeConfigurationState,
         RuntimeConfigurationStatusWrite, RuntimeLifecycle as DbRuntimeLifecycle,
-        RuntimePathKind as DbRuntimePathKind, RuntimePathTelemetryWrite, RuntimeTelemetryWrite,
-        SdwanRepository,
+        RuntimeLocalNetworkTelemetryWrite, RuntimePathKind as DbRuntimePathKind,
+        RuntimePathTelemetryWrite, RuntimeTelemetryWrite, SdwanRepository,
     },
 };
 use sha2::{Digest, Sha256};
@@ -347,6 +347,18 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                             path_changes: path.path_changes,
                         })
                         .collect(),
+                    local_networks: command.local_networks.map(|networks| {
+                        networks
+                            .into_iter()
+                            .map(|network| RuntimeLocalNetworkTelemetryWrite {
+                                network_id: network.network_id,
+                                interface_name: network.interface_name,
+                                cidr: network.cidr,
+                                address: network.address,
+                                kind: network.kind,
+                            })
+                            .collect()
+                    }),
                 })
                 .await
                 .map_err(|error| match error {

@@ -218,6 +218,13 @@ reported Peer attachment against the device's current Segment and, when a
 candidate identifier is present, against the currently active signed path
 candidate. The complete path set is replaced atomically; no unbounded history
 is retained.
+Newer Runtime clients may also send `local_networks`, capped at 64 canonical
+directly connected IPv4 records. Each record contains a stable `network_id`,
+interface name, CIDR, address, and `kind=direct_ipv4`. If local network
+discovery is temporarily unavailable, Runtime omits this field and Cloud
+preserves the last successful inventory; an explicit empty array means
+discovery succeeded and found no publishable networks. Older clients may omit
+the field.
 
 ### Profile and fetch
 

@@ -2,6 +2,18 @@ name: release-arm64-images
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - crates/**
+      - web/**
+      - docker/**
+      - rust-toolchain.toml
+      - .cargo/**
+      - keys/**
+      - .github/workflows/release-arm64-images.yml
 
 permissions:
   contents: write
@@ -124,7 +136,11 @@ jobs:
             test "$(docker image inspect "candy-cloud-$image:arm64-$revision" --format '{{.Architecture}}')" = arm64
             image_refs+=("candy-cloud-$image:arm64-$revision")
           done
-          docker run --rm "candy-cloud-cloud-api:arm64-$revision" --help >/dev/null 2>&1 || test $? -ne 139
+          set +e
+          docker run --rm "candy-cloud-cloud-api:arm64-$revision" --help >/dev/null 2>&1
+          rc=$?
+          set -e
+          test "$rc" -ne 132 -a "$rc" -ne 139
           archive="candy-cloud-arm64-$revision.tar.gz"
           docker save "${image_refs[@]}" | gzip -1 > "$archive"
           sha256sum "$archive" > "$archive.sha256"
