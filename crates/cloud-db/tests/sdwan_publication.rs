@@ -206,6 +206,20 @@ async fn control_snapshot_materializes_empty_route_contract_idempotently() {
             .unwrap();
     assert_eq!(state, "DISABLED");
 
+    resources[3].metadata.state = ResourceState::Deleted;
+    repository
+        .ensure_control_topology(tenant_id, segment_id, &resources)
+        .await
+        .unwrap();
+    let state: String =
+        sqlx::query_scalar("SELECT state FROM segment_attachments WHERE tenant_id = ? AND id = ?")
+            .bind(tenant_id)
+            .bind(attachment_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(state, "REVOKED");
+
     let replacement_attachment_id = Uuid::new_v4();
     resources.pop();
     resources.push(control_resource(
