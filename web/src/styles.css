@@ -393,7 +393,17 @@ button, input, textarea { font: inherit; }
 .log-event-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .log-event-cell strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-event-cell small { color: var(--muted); font-size: 11px; }
+.log-event-cell code, .log-object-cell small { color: var(--muted); font: 11px/1.4 "SFMono-Regular", Consolas, monospace; }
+.log-object-cell { display: flex; flex-direction: column; gap: 4px; }
+.log-row-clickable { cursor: pointer; }
+.log-row-clickable:hover td { background: #f4f7ff !important; }
 .log-details { max-height: 180px; overflow: auto; margin: 0; padding: 12px 18px; color: #4e5969; background: #f7f8fa; border-radius: 4px; font: 11px/1.6 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-detail-drawer { display: grid; gap: 20px; }
+.log-detail-summary { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 12px; padding: 14px; background: #f7f8fa; border-radius: 6px; }
+.log-detail-summary > div { display: grid; gap: 5px; }
+.log-detail-summary span { color: var(--muted); font-size: 12px; }
+.log-detail-summary code { margin-left: 8px; color: var(--muted); font: 11px monospace; }
+.log-detail-full { max-height: 420px; }
 .detail-surface { padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
 .detail-surface h5 { margin-top: 0; }
 .health-detail { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
