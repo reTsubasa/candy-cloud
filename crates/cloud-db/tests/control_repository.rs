@@ -201,11 +201,12 @@ async fn repository_enforces_tenant_revision_idempotency_and_lease_recovery() {
         &recovered,
         now + ChronoDuration::seconds(2),
         &JobFailure::Permanent {
-            code: "PREFIX_OVERLAP".into(),
+            code: "ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD".into(),
         },
     )
     .await
     .unwrap();
+    assert_eq!(jobs.recover_route_input_head_failures().await.unwrap(), 0);
     let next = jobs
         .claim_next(
             "worker-c",

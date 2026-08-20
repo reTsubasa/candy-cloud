@@ -1922,12 +1922,13 @@ impl GenerationJobRepository {
         Ok(Some(job))
     }
 
-    /// Requeue only the newest failed revision for failures fixed by a Cloud or
-    /// Core upgrade. Desired revisions track configuration changes; successful
-    /// publication generations remain an independent contiguous sequence.
+    /// Requeue only the currently desired revision after a Cloud or Core upgrade.
+    /// Older terminal jobs are historical records and must never overwrite the
+    /// current publication. A desired job whose publication was superseded by an
+    /// older recovered job is also requeued so the control plane converges again.
     pub async fn recover_route_input_head_failures(&self) -> Result<u64, ControlStoreError> {
         let result = sqlx::query(
-            "UPDATE segment_generation_jobs candidate JOIN (SELECT jobs.tenant_id, jobs.segment_id, MAX(jobs.desired_revision) AS desired_revision FROM segment_generation_jobs jobs JOIN sdwan_control_resources segment ON segment.tenant_id = jobs.tenant_id AND segment.resource_kind = 'SEGMENT' AND segment.id = jobs.segment_id AND segment.state = 'ACTIVE' WHERE jobs.state = 'PERMANENT_FAILURE' AND (jobs.last_error_code IN ('ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD', 'ROUTE_DB_PRINCIPAL_MISMATCH', 'ROUTE_DB_SCOPE_MISMATCH') OR jobs.last_error_code LIKE 'ROUTE_INPUT_ROUTE_PUBLICATION_REVISION_%_IS_NOT_ADJACENT_TO_CURRENT_HEAD_%' OR jobs.last_error_code LIKE 'ROUTE_BUILD_CORE_MODULE_ROUTE_OPERATION_FAILED_CORE_PREPARE_FAILED_WITH_ABI_STAT%') GROUP BY jobs.tenant_id, jobs.segment_id) recoverable ON recoverable.tenant_id = candidate.tenant_id AND recoverable.segment_id = candidate.segment_id AND recoverable.desired_revision = candidate.desired_revision SET candidate.state = 'RETRY', candidate.lease_owner = NULL, candidate.lease_until = NULL, candidate.next_attempt_at = CURRENT_TIMESTAMP(6), candidate.last_error_code = 'ROUTE_RETRY_AFTER_RUNTIME_UPGRADE'",
+            "UPDATE segment_generation_jobs candidate JOIN segment_generation_heads head ON head.tenant_id = candidate.tenant_id AND head.segment_id = candidate.segment_id AND head.desired_revision = candidate.desired_revision JOIN sdwan_control_resources control_segment ON control_segment.tenant_id = candidate.tenant_id AND control_segment.resource_kind = 'SEGMENT' AND control_segment.id = candidate.segment_id AND control_segment.state = 'ACTIVE' LEFT JOIN segments publication ON publication.tenant_id = candidate.tenant_id AND publication.id = candidate.segment_id AND publication.state = 'ACTIVE' SET candidate.state = 'RETRY', candidate.lease_owner = NULL, candidate.lease_until = NULL, candidate.next_attempt_at = CURRENT_TIMESTAMP(6), candidate.published_generation = NULL, candidate.published_content_hash = NULL, candidate.last_error_code = 'ROUTE_RETRY_AFTER_RUNTIME_UPGRADE' WHERE (candidate.state = 'PERMANENT_FAILURE' AND (candidate.last_error_code IN ('ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD', 'ROUTE_DB_PRINCIPAL_MISMATCH', 'ROUTE_DB_SCOPE_MISMATCH') OR candidate.last_error_code LIKE 'ROUTE_INPUT_ROUTE_PUBLICATION_REVISION_%_IS_NOT_ADJACENT_TO_CURRENT_HEAD_%' OR candidate.last_error_code LIKE 'ROUTE_BUILD_CORE_MODULE_ROUTE_OPERATION_FAILED_CORE_PREPARE_FAILED_WITH_ABI_STAT%')) OR (candidate.state = 'PUBLISHED' AND (publication.current_generation IS NULL OR publication.current_generation <> candidate.published_generation OR publication.current_content_hash <> candidate.published_content_hash))",
         )
         .execute(&self.pool)
         .await?;
