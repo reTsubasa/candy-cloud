@@ -251,7 +251,7 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT id, actor_type, actor_id, action, object_type, object_id, metadata_json, created_at FROM audit_events WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            "SELECT id, actor_type, actor_id, action, object_type, object_id, CAST(metadata_json AS CHAR) AS metadata_json, created_at FROM audit_events WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
         )
         .bind(tenant_id)
         .bind(limit.min(500) as u32)

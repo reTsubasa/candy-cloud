@@ -78,6 +78,34 @@ fn mutation(
 }
 
 #[tokio::test]
+async fn audit_events_decode_mysql_json_as_api_text() {
+    let Some((pool, tenant)) = fixture().await else {
+        return;
+    };
+    let repository = ControlRepository::new(pool.clone());
+    let event_id = Uuid::new_v4();
+
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'USER', NULL, 'TEST_ACTION', 'TEST_OBJECT', NULL, JSON_OBJECT('result', 'ok'))",
+    )
+    .bind(event_id)
+    .bind(tenant)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let events = repository.audit_events(tenant, 10).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].id, event_id);
+    assert_eq!(events[0].actor_type, "USER");
+    assert_eq!(events[0].actor_id, None);
+    assert_eq!(events[0].action, "TEST_ACTION");
+    assert_eq!(events[0].object_type, "TEST_OBJECT");
+    assert_eq!(events[0].object_id, None);
+    assert_eq!(events[0].metadata_json, r#"{"result": "ok"}"#);
+}
+
+#[tokio::test]
 async fn repository_enforces_tenant_revision_idempotency_and_lease_recovery() {
     let Some((pool, tenant)) = fixture().await else {
         return;
