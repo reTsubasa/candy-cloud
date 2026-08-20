@@ -204,7 +204,8 @@ export function Overview({ session, onOpenLogs }: Props) {
         </div>
 
         <div className="operational-layout">
-          <section className="topology-workspace">
+          <div className="operational-main-column">
+            <section className="topology-workspace">
             <header className="topology-toolbar">
               <div>
                 <Typography.Title heading={5}>实时网络拓扑</Typography.Title>
@@ -224,7 +225,20 @@ export function Overview({ session, onOpenLogs }: Props) {
             {topology.segment ? <TopologyCanvas snapshot={topology} controlReady={controlReady} /> : (
               <div className="topology-empty"><Empty description="尚未建立可展示的网络分段" /><Button type="primary" onClick={() => setSetupVisible(true)}>开始配置</Button></div>
             )}
-          </section>
+            </section>
+
+            {topology.segment && <section className="resource-observability">
+              <header><div><Typography.Title heading={5}>资源与路由状态</Typography.Title><Typography.Text type="secondary">{selectedSegmentId ? '当前网络分段的实际配置关系' : '所有网络分段的实际配置关系'}</Typography.Text></div><Tag color={topology.readiness?.ready ? 'green' : 'orange'}>{topology.readinessLabel}</Tag></header>
+              <div className="resource-observability-grid">
+                <ResourceSignal label="站点" value={topology.sites.length} detail={topology.sites.map((site) => site.name).join('、') || '未接入'} />
+                <ResourceSignal label="节点" value={topology.nodes.length} detail={`${topology.onlineNodeCount} 个在线 · ${topology.activeNodeCount} 个配置已生效`} />
+                <ResourceSignal label="路由前缀" value={topology.routeCount} detail={topology.routeLabels.join('、') || '未发布'} mono />
+                <ResourceSignal label="互联网出口" value={topology.egressCount} detail={topology.egressLabels.join('、') || '未配置'} />
+                <ResourceSignal label="流量策略" value={topology.policyRuleCount} detail={`${topology.policyRuleCount > 0 ? topology.policyRuleCount : 0} 条规则`} />
+                <ResourceSignal label="DNS" value={topology.dnsRecordCount} detail={`${topology.dnsZoneCount} 个内部区域`} />
+              </div>
+            </section>}
+          </div>
 
           <aside className="telemetry-rail">
             <section>
@@ -252,18 +266,6 @@ export function Overview({ session, onOpenLogs }: Props) {
             </section>
           </aside>
         </div>
-
-        {topology.segment && <section className="resource-observability">
-          <header><div><Typography.Title heading={5}>资源与路由状态</Typography.Title><Typography.Text type="secondary">{selectedSegmentId ? '当前网络分段的实际配置关系' : '所有网络分段的实际配置关系'}</Typography.Text></div><Tag color={topology.readiness?.ready ? 'green' : 'orange'}>{topology.readinessLabel}</Tag></header>
-          <div className="resource-observability-grid">
-            <ResourceSignal label="站点" value={topology.sites.length} detail={topology.sites.map((site) => site.name).join('、') || '未接入'} />
-            <ResourceSignal label="节点" value={topology.nodes.length} detail={`${topology.onlineNodeCount} 个在线 · ${topology.activeNodeCount} 个配置已生效`} />
-            <ResourceSignal label="路由前缀" value={topology.routeCount} detail={topology.routeLabels.join('、') || '未发布'} mono />
-            <ResourceSignal label="互联网出口" value={topology.egressCount} detail={topology.egressLabels.join('、') || '未配置'} />
-            <ResourceSignal label="流量策略" value={topology.policyRuleCount} detail={`${topology.policyRuleCount > 0 ? topology.policyRuleCount : 0} 条规则`} />
-            <ResourceSignal label="DNS" value={topology.dnsRecordCount} detail={`${topology.dnsZoneCount} 个内部区域`} />
-          </div>
-        </section>}
       </Spin>
       <QuickSetupWizard visible={setupVisible} session={session} onClose={() => { setSetupVisible(false); void load(); }} onChanged={() => void load()} />
     </section>
