@@ -123,7 +123,10 @@ export type RuntimeActivationReadiness = {
   candidate_count: number;
   ready_candidate_count: number;
   missing_transport_count: number;
-  reason_codes: ('node_offline' | 'service_not_enabled' | 'config_pending')[];
+  pending_apply_count: number;
+  failed_apply_count: number;
+  apply_error_codes: string[];
+  reason_codes: ('node_offline' | 'service_not_enabled' | 'config_pending' | 'node_apply_pending' | 'node_apply_failed')[];
 };
 
 export type RuntimeConfigurationStatus = {

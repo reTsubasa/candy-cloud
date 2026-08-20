@@ -67,6 +67,9 @@ describe('quick setup orchestration helpers', () => {
       candidate_count: 2,
       ready_candidate_count: 0,
       missing_transport_count: 2,
+      pending_apply_count: 0,
+      failed_apply_count: 0,
+      apply_error_codes: [],
       reason_codes: ['node_offline', 'service_not_enabled'],
     };
     expect(activationMessage(readiness)).toContain('SD-WAN 服务尚未开通');

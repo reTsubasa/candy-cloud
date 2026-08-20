@@ -102,8 +102,10 @@ function readinessLabel(readiness: RuntimeActivationReadiness | null): string {
   if (!readiness) return '等待 Cloud 生成配置';
   if (readiness.ready) return '数据面已就绪';
   if (readiness.reason_codes.includes('service_not_enabled')) return '服务尚未开通';
+  if (readiness.reason_codes.includes('node_apply_failed')) return '节点应用失败';
   if (readiness.reason_codes.includes('node_offline')) return '等待节点端点';
   if (readiness.reason_codes.includes('config_pending')) return '配置发布中';
+  if (readiness.reason_codes.includes('node_apply_pending')) return '等待节点应用';
   return '等待激活';
 }
 
@@ -196,6 +198,9 @@ export function buildOperationalTopology(
           candidate_count: summary.candidate_count + item.candidate_count,
           ready_candidate_count: summary.ready_candidate_count + item.ready_candidate_count,
           missing_transport_count: summary.missing_transport_count + item.missing_transport_count,
+          pending_apply_count: summary.pending_apply_count + item.pending_apply_count,
+          failed_apply_count: summary.failed_apply_count + item.failed_apply_count,
+          apply_error_codes: [...new Set([...summary.apply_error_codes, ...item.apply_error_codes])],
           reason_codes: [...new Set([...summary.reason_codes, ...item.reason_codes])],
         };
       }, readinessBySegment[resources.segments[0].metadata.id])

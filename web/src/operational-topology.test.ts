@@ -39,7 +39,7 @@ describe('operational topology', () => {
     };
     const readiness: RuntimeActivationReadiness = {
       schema_version: 1, segment_id: 'segment', ready: true, candidate_count: 2,
-      ready_candidate_count: 2, missing_transport_count: 0, reason_codes: [],
+      ready_candidate_count: 2, missing_transport_count: 0, pending_apply_count: 0, failed_apply_count: 0, apply_error_codes: [], reason_codes: [],
     };
     const snapshot = buildOperationalTopology(fixture(), [status], { segment: readiness }, 'segment');
     expect(snapshot.segment?.overlayCidr).toBe('100.64.0.0/24');
@@ -83,7 +83,7 @@ describe('operational topology', () => {
   it('explains why an aggregate network is not ready', () => {
     const readiness: RuntimeActivationReadiness = {
       schema_version: 1, segment_id: 'segment', ready: false, candidate_count: 2,
-      ready_candidate_count: 0, missing_transport_count: 0, reason_codes: ['config_pending'],
+      ready_candidate_count: 0, missing_transport_count: 0, pending_apply_count: 0, failed_apply_count: 0, apply_error_codes: [], reason_codes: ['config_pending'],
     };
     const snapshot = buildOperationalTopology(fixture(), [], { segment: readiness }, '');
     expect(snapshot.readinessLabel).toBe('0/1 个网络已就绪 · 配置发布中');

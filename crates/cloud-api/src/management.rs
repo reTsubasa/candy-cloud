@@ -227,6 +227,9 @@ pub struct RuntimeActivationReadinessResponse {
     pub candidate_count: usize,
     pub ready_candidate_count: usize,
     pub missing_transport_count: usize,
+    pub pending_apply_count: usize,
+    pub failed_apply_count: usize,
+    pub apply_error_codes: Vec<String>,
     pub reason_codes: Vec<&'static str>,
 }
 
@@ -500,6 +503,9 @@ pub async fn runtime_activation_readiness(
         candidate_count: result.candidate_count,
         ready_candidate_count: result.ready_candidate_count,
         missing_transport_count,
+        pending_apply_count: result.pending_apply_count,
+        failed_apply_count: result.failed_apply_count,
+        apply_error_codes: result.apply_error_codes,
         reason_codes: result.reason_codes,
     }))
 }

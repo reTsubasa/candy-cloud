@@ -234,6 +234,9 @@ pub struct RuntimeActivationReadiness {
     pub candidate_count: usize,
     pub ready_candidate_count: usize,
     pub missing_candidate_ids: Vec<Uuid>,
+    pub pending_apply_count: usize,
+    pub failed_apply_count: usize,
+    pub apply_error_codes: Vec<String>,
     pub reason_codes: Vec<&'static str>,
 }
 
@@ -339,30 +342,75 @@ impl ControlRepository {
         .bind(segment_id)
         .fetch_optional(&self.pool)
         .await?;
-        let publication_current = published
-            .as_ref()
-            .is_some_and(|(generation, hash)| *generation == desired_revision && hash.len() == 32);
+        // The desired revision and publication generation use different sequences.
+        // The generation job records which publication materialized this revision.
+        let published_job: Option<(u64, Vec<u8>)> = sqlx::query_as(
+            "SELECT published_generation, published_content_hash FROM segment_generation_jobs WHERE tenant_id = ? AND segment_id = ? AND desired_revision = ? AND state = 'PUBLISHED'",
+        )
+        .bind(tenant_id)
+        .bind(segment_id)
+        .bind(desired_revision)
+        .fetch_optional(&self.pool)
+        .await?;
+        let publication_current = publication_matches(published.as_ref(), published_job.as_ref());
+        let mut pending_apply_count = 0;
+        let mut failed_apply_count = 0;
+        let mut apply_error_codes = Vec::new();
         if !publication_current {
             reason_codes.push("config_pending");
-        } else if !snapshot.transport_bindings.is_empty() {
+        } else {
             let generation = published.as_ref().map(|value| value.0).unwrap_or_default();
-            for binding in snapshot.transport_bindings.values().flatten() {
-                let catalog_count: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM runtime_projection_transport_catalog WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND transport_node_id = ? AND transport_node_key_id = ?",
-                )
-                .bind(tenant_id)
-                .bind(segment_id)
-                .bind(generation)
-                .bind(binding.service_node_id)
-                .bind(binding.service_node_key_id)
-                .fetch_one(&self.pool)
-                .await?;
-                if catalog_count == 0 {
-                    reason_codes.push("config_pending");
-                    break;
+            if !snapshot.transport_bindings.is_empty() {
+                for binding in snapshot.transport_bindings.values().flatten() {
+                    let catalog_count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM runtime_projection_transport_catalog WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND transport_node_id = ? AND transport_node_key_id = ?",
+                    )
+                    .bind(tenant_id)
+                    .bind(segment_id)
+                    .bind(generation)
+                    .bind(binding.service_node_id)
+                    .bind(binding.service_node_key_id)
+                    .fetch_one(&self.pool)
+                    .await?;
+                    if catalog_count == 0 {
+                        reason_codes.push("config_pending");
+                        break;
+                    }
+                }
+            }
+            let application_rows = sqlx::query(
+                "SELECT status.apply_state, status.error_code FROM site_route_projection_publications projection JOIN segment_attachments attachment ON attachment.id = projection.attachment_id AND attachment.tenant_id = projection.tenant_id AND attachment.segment_id = projection.segment_id AND attachment.device_id = projection.device_id AND attachment.device_key_id = projection.device_key_id AND attachment.principal_kind = 'DEVICE' AND attachment.state IN ('ACTIVE','STANDBY') LEFT JOIN runtime_configuration_status status ON status.tenant_id = projection.tenant_id AND status.device_id = projection.device_id AND status.device_key_id = projection.device_key_id AND status.projection_publication_id = projection.id WHERE projection.tenant_id = ? AND projection.segment_id = ? AND projection.segment_generation = ?",
+            )
+            .bind(tenant_id)
+            .bind(segment_id)
+            .bind(generation)
+            .fetch_all(&self.pool)
+            .await?;
+            if application_rows.is_empty() {
+                reason_codes.push("config_pending");
+            } else {
+                for row in application_rows {
+                    match row.try_get::<Option<String>, _>("apply_state")? {
+                        Some(state) if state == "ACTIVE" => {}
+                        Some(state) if state == "REJECTED" => {
+                            failed_apply_count += 1;
+                            if let Some(code) = row.try_get::<Option<String>, _>("error_code")? {
+                                apply_error_codes.push(code);
+                            }
+                        }
+                        _ => pending_apply_count += 1,
+                    }
+                }
+                if failed_apply_count > 0 {
+                    reason_codes.push("node_apply_failed");
+                }
+                if pending_apply_count > 0 {
+                    reason_codes.push("node_apply_pending");
                 }
             }
         }
+        apply_error_codes.sort_unstable();
+        apply_error_codes.dedup();
         reason_codes.sort_unstable();
         reason_codes.dedup();
         Ok(RuntimeActivationReadiness {
@@ -370,6 +418,9 @@ impl ControlRepository {
             candidate_count: candidate_ids.len(),
             ready_candidate_count: candidate_ids.len() - missing_candidate_ids.len(),
             missing_candidate_ids,
+            pending_apply_count,
+            failed_apply_count,
+            apply_error_codes,
             reason_codes,
         })
     }
@@ -1987,6 +2038,20 @@ fn validate_scope(tenant_id: Uuid, id: Uuid) -> Result<(), ControlStoreError> {
     }
 }
 
+fn publication_matches(
+    published: Option<&(u64, Vec<u8>)>,
+    published_job: Option<&(u64, Vec<u8>)>,
+) -> bool {
+    published
+        .zip(published_job)
+        .is_some_and(|((generation, hash), (job_generation, job_hash))| {
+            *generation > 0
+                && *generation == *job_generation
+                && hash.len() == 32
+                && hash == job_hash
+        })
+}
+
 fn resource_state(state: ResourceState) -> &'static str {
     match state {
         ResourceState::Active => "ACTIVE",
@@ -2047,5 +2112,23 @@ mod tests {
     fn lease_is_bounded() {
         assert!(validate_lease("worker-a", StdDuration::from_secs(30)).is_ok());
         assert!(validate_lease("worker-a", StdDuration::from_secs(301)).is_err());
+    }
+
+    #[test]
+    fn publication_readiness_compares_materialized_generation_not_resource_revision() {
+        let published = (5, vec![7; 32]);
+        let job_for_resource_revision_15 = (5, vec![7; 32]);
+        assert!(publication_matches(
+            Some(&published),
+            Some(&job_for_resource_revision_15)
+        ));
+        assert!(!publication_matches(
+            Some(&published),
+            Some(&(4, vec![7; 32]))
+        ));
+        assert!(!publication_matches(
+            Some(&published),
+            Some(&(5, vec![8; 32]))
+        ));
     }
 }
