@@ -212,7 +212,10 @@ export function Overview({ session }: Props) {
             <header className="topology-toolbar">
               <div>
                 <Typography.Title heading={5}>实时网络拓扑</Typography.Title>
-                <span className="topology-update-state"><i className={autoRefresh ? 'active' : ''} />{relativeTime(lastUpdated)}{refreshing ? ' · 同步中' : ''}</span>
+                <div className="topology-toolbar-meta">
+                  <span className="topology-update-state"><i className={autoRefresh ? 'active' : ''} />{relativeTime(lastUpdated)}{refreshing ? ' · 同步中' : ''}</span>
+                  <span className="topology-scope">{selectedSegmentId ? `${topology.segment?.name ?? '当前网络'} · ${topology.segment?.overlayCidr ?? ''}` : `全部网络 · ${topology.sites.length} 个站点`}</span>
+                </div>
               </div>
               <Select
                 value={selectedSegmentId || 'all'}
@@ -282,28 +285,37 @@ function ResourceSignal({ label, value, detail, mono = false }: { label: string;
 function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopologySnapshot; controlReady: boolean }) {
   const siteCount = snapshot.sites.length;
   const width = Math.max(900, siteCount * 230 + 120);
-  const height = 470;
   const center = width / 2;
+  const aggregate = snapshot.segment?.aggregate ?? false;
+  const siteY = aggregate ? 142 : 190;
+  const siteBottom = siteY + 152;
+  const linkLaneGap = 28;
+  const linkLaneCount = Math.min(snapshot.links.length, 8);
+  const height = Math.max(470, siteBottom + 42 + linkLaneCount * linkLaneGap + 32);
   const siteX = (index: number) => siteCount <= 1 ? center : 100 + index * ((width - 200) / (siteCount - 1));
   const siteById = Object.fromEntries(snapshot.sites.map((site, index) => [site.id, { ...site, x: siteX(index) }]));
   return <div className="topology-canvas" aria-label="SD-WAN 运行拓扑">
-    <svg viewBox={`0 0 ${width} ${height}`} role="img" style={{ minWidth: width }}>
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" style={{ minWidth: width, height }}>
       <defs>
         <marker id="topology-arrow-ok" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#00a870" /></marker>
         <marker id="topology-arrow-warn" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#d97706" /></marker>
       </defs>
-      <line className="topology-control-link" x1={center} y1="67" x2={center} y2="112" />
       <g className={`topology-control-node ${controlReady ? 'ok' : 'error'}`} transform={`translate(${center - 98} 20)`}>
         <rect width="196" height="48" rx="6" /><circle cx="20" cy="24" r="5" /><text x="34" y="21">Candy Cloud</text><text className="sub" x="34" y="36">控制面 · {controlReady ? '正常' : '异常'}</text>
       </g>
-      <g className={`topology-segment-node ${snapshot.readiness?.ready ? 'ok' : 'warn'}`} transform={`translate(${center - 120} 112)`}>
-        <rect width="240" height="58" rx="7" /><text x="120" y="24" textAnchor="middle">{ellipsis(snapshot.segment?.name ?? '网络分段', 24)}</text><text className="sub" x="120" y="42" textAnchor="middle">{snapshot.segment?.overlayCidr} · {snapshot.readinessLabel}</text>
-      </g>
+      {!aggregate && <>
+        <line className="topology-control-link" x1={center} y1="68" x2={center} y2="92" />
+        <g className={`topology-segment-node ${snapshot.readiness?.ready ? 'ok' : 'warn'}`} transform={`translate(${center - 120} 92)`}>
+          <rect width="240" height="58" rx="7" /><text x="120" y="24" textAnchor="middle">{ellipsis(snapshot.segment?.name ?? '网络分段', 24)}</text><text className="sub" x="120" y="42" textAnchor="middle">{snapshot.segment?.overlayCidr} · {snapshot.readinessLabel}</text>
+        </g>
+      </>}
       {snapshot.sites.map((site, index) => {
         const x = siteX(index);
         return <g key={site.id}>
-          <path className="topology-site-link" d={`M ${center} 170 C ${center} 205, ${x} 190, ${x} 236`} />
-          <g className={`topology-site-node ${site.failOpenNodeCount > 0 || site.hasRejectedNode ? 'error' : site.dataPlaneActiveNodeCount > 0 ? 'ok' : 'pending'}`} transform={`translate(${x - 90} 236)`}>
+          <path className="topology-site-link" d={aggregate
+            ? `M ${center} 68 C ${center} 105, ${x} 105, ${x} ${siteY}`
+            : `M ${center} 150 C ${center} 174, ${x} 166, ${x} ${siteY}`} />
+          <g className={`topology-site-node ${site.failOpenNodeCount > 0 || site.hasRejectedNode ? 'error' : site.dataPlaneActiveNodeCount > 0 ? 'ok' : 'pending'}`} transform={`translate(${x - 90} ${siteY})`}>
             <rect width="180" height="152" rx="7" />
             <circle cx="18" cy="22" r="5" />
             <text className="site-name" x="31" y="26">{ellipsis(site.name, 19)}</text>
@@ -315,13 +327,14 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
           </g>
         </g>;
       })}
-      {snapshot.links.map((link) => {
+      {snapshot.links.map((link, linkIndex) => {
         const source = siteById[link.siteAId];
         const target = siteById[link.siteBId];
         if (!source || !target) return null;
         const left = source.x < target.x ? source : target;
         const right = source.x < target.x ? target : source;
-        const y = 220 - Math.min(36, Math.abs(right.x - left.x) / 12);
+        const lane = Math.min(linkIndex, 7);
+        const y = siteBottom + 28 + lane * linkLaneGap;
         const tone = link.state === 'active' ? 'ok' : 'warn';
         const activePath = link.activePaths[0];
         const pathDetail = activePath
@@ -329,12 +342,12 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
           : '';
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
           <title>{link.activePathCount > 0 ? `数据面活跃 · ${link.activePathCount} 条路径 · ${link.kindLabel}${pathDetail}` : '已编排，等待节点数据面遥测'}</title>
-          <path d={`M ${left.x} 236 C ${left.x} ${y}, ${right.x} ${y}, ${right.x} 236`} markerEnd={`url(#topology-arrow-${tone})`} />
+          <path d={`M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`} markerEnd={`url(#topology-arrow-${tone})`} />
           <rect x={(left.x + right.x) / 2 - 52} y={y - 13} width="104" height="24" rx="12" />
           <text x={(left.x + right.x) / 2} y={y + 4} textAnchor="middle">{link.activePathCount > 0 ? `${link.activePathCount} 条活跃` : `${link.directionCount}/2 · ${link.kindLabel}`}</text>
         </g>;
       })}
-      <g className="topology-legend" transform={`translate(${center - 225} 430)`}>
+      <g className="topology-legend" transform={`translate(${center - 225} ${height - 24})`}>
         <circle className="ok" cx="6" cy="6" r="5" /><text x="17" y="10">数据面活跃</text>
         <circle className="warn" cx="126" cy="6" r="5" /><text x="137" y="10">等待或遥测中断</text>
         <circle className="error" cx="286" cy="6" r="5" /><text x="297" y="10">故障开放或配置拒绝</text>

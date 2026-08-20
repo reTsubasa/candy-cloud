@@ -1780,6 +1780,21 @@ components:
           type: array
           maxItems: 256
           items: { $ref: "#/components/schemas/RuntimePathTelemetry" }
+        local_networks:
+          type: array
+          maxItems: 64
+          default: []
+          items: { $ref: "#/components/schemas/RuntimeLocalNetworkTelemetry" }
+    RuntimeLocalNetworkTelemetry:
+      type: object
+      additionalProperties: false
+      required: [network_id, interface_name, cidr, address, kind]
+      properties:
+        network_id: { type: string, minLength: 64, maxLength: 64, pattern: '^[0-9a-f]{64}$' }
+        interface_name: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_.:@-]+$' }
+        cidr: { type: string, minLength: 9, maxLength: 18, description: Canonical directly connected IPv4 CIDR. }
+        address: { type: string, format: ipv4, minLength: 7, maxLength: 15, description: Interface IPv4 address within cidr. }
+        kind: { type: string, const: direct_ipv4 }
     RuntimePathTelemetry:
       type: object
       additionalProperties: false
@@ -1811,7 +1826,7 @@ components:
     RuntimeTelemetryItem:
       type: object
       additionalProperties: false
-      required: [device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, paths, reported_at]
+      required: [device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, paths, local_networks, reported_at]
       properties:
         device_id: { $ref: "#/components/schemas/Uuid" }
         device_key_id: { $ref: "#/components/schemas/Uuid" }
@@ -1835,6 +1850,10 @@ components:
           type: array
           maxItems: 256
           items: { $ref: "#/components/schemas/RuntimePathTelemetry" }
+        local_networks:
+          type: array
+          maxItems: 64
+          items: { $ref: "#/components/schemas/RuntimeLocalNetworkTelemetry" }
         reported_at: { type: string, format: date-time }
     DeviceProblem:
       type: object

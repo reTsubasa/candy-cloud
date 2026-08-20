@@ -275,7 +275,17 @@ pub struct RuntimeTelemetryItem {
     pub reconnects: Option<u64>,
     pub path_changes: Option<u64>,
     pub paths: Vec<RuntimePathTelemetryItem>,
+    pub local_networks: Vec<RuntimeLocalNetworkTelemetryItem>,
     pub reported_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeLocalNetworkTelemetryItem {
+    pub network_id: String,
+    pub interface_name: String,
+    pub cidr: String,
+    pub address: String,
+    pub kind: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -349,6 +359,17 @@ pub async fn runtime_telemetry(
                     tx_bps: path.tx_bps,
                     reconnects: path.reconnects,
                     path_changes: path.path_changes,
+                })
+                .collect(),
+            local_networks: record
+                .local_networks
+                .into_iter()
+                .map(|network| RuntimeLocalNetworkTelemetryItem {
+                    network_id: network.network_id,
+                    interface_name: network.interface_name,
+                    cidr: network.cidr,
+                    address: network.address,
+                    kind: network.kind,
                 })
                 .collect(),
             reported_at: record.reported_at,

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashSet, future::Future, net::Ipv4Addr, pin::Pin, sync::Arc};
 
 use axum::{
     body::Body,
@@ -291,6 +291,16 @@ pub struct RuntimeTelemetryCommand {
     pub reconnects: Option<u64>,
     pub path_changes: Option<u64>,
     pub paths: Vec<RuntimePathTelemetryCommand>,
+    pub local_networks: Option<Vec<RuntimeLocalNetworkTelemetryCommand>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeLocalNetworkTelemetryCommand {
+    pub network_id: String,
+    pub interface_name: String,
+    pub cidr: String,
+    pub address: String,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -962,6 +972,7 @@ where
 {
     let error_code = request.last_error_code;
     let mut peer_attachments = HashSet::with_capacity(request.paths.len());
+    let mut network_ids = HashSet::new();
     if request.schema_version != 1
         || request.boot_id.is_nil()
         || request.sequence == 0
@@ -976,6 +987,10 @@ where
             .is_some_and(|value| !valid_runtime_error_code(value))
         || matches!(request.lifecycle, RuntimeLifecycleHttp::FailOpen) != request.fail_open_required
         || request.paths.len() > 256
+        || request
+            .local_networks
+            .as_ref()
+            .is_some_and(|networks| networks.len() > 64)
         || request.paths.iter().any(|path| {
             path.peer_attachment_id.is_nil()
                 || path.candidate_id.is_some_and(|value| value.is_nil())
@@ -983,6 +998,19 @@ where
                 || path.connection_epoch == 0
                 || path.packet_loss_ppm.is_some_and(|value| value > 1_000_000)
                 || !peer_attachments.insert(path.peer_attachment_id)
+        })
+        || request.local_networks.as_ref().is_some_and(|networks| {
+            networks.iter().any(|network| {
+                network.network_id.len() != 64
+                    || !network
+                        .network_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    || !valid_runtime_token(&network.interface_name, 64, b"_.:-@")
+                    || network.kind != "direct_ipv4"
+                    || !valid_runtime_network(&network.cidr, &network.address)
+                    || !network_ids.insert(network.network_id.as_str())
+            })
         })
     {
         return Err(ApiError::InvalidRuntimeTelemetry);
@@ -1034,6 +1062,18 @@ where
                     path_changes: path.path_changes,
                 })
                 .collect(),
+            local_networks: request.local_networks.map(|networks| {
+                networks
+                    .into_iter()
+                    .map(|network| RuntimeLocalNetworkTelemetryCommand {
+                        network_id: network.network_id,
+                        interface_name: network.interface_name,
+                        cidr: network.cidr,
+                        address: network.address,
+                        kind: network.kind,
+                    })
+                    .collect()
+            }),
         })
         .await
         .map_err(ApiError::RuntimeConfiguration)?;
@@ -1142,6 +1182,45 @@ fn valid_runtime_error_code(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn valid_runtime_token(value: &str, maximum: usize, punctuation: &[u8]) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || punctuation.contains(&byte))
+}
+
+fn valid_runtime_network(cidr: &str, address: &str) -> bool {
+    if cidr.is_empty() || cidr.len() > 18 || address.is_empty() || address.len() > 15 {
+        return false;
+    }
+    let Some((network, prefix)) = cidr.split_once('/') else {
+        return false;
+    };
+    if prefix.is_empty() || prefix.bytes().any(|byte| !byte.is_ascii_digit()) {
+        return false;
+    }
+    let Ok(network) = network.parse::<Ipv4Addr>() else {
+        return false;
+    };
+    let Ok(address) = address.parse::<Ipv4Addr>() else {
+        return false;
+    };
+    let Ok(prefix) = prefix.parse::<u8>() else {
+        return false;
+    };
+    if prefix > 32 {
+        return false;
+    }
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    let network = u32::from(network);
+    network == (u32::from(address) & mask) && network == (network & mask)
 }
 
 fn valid_installation_instance_id(value: &str) -> bool {
@@ -1361,6 +1440,18 @@ struct RuntimeTelemetryHttpRequest {
     path_changes: Option<u64>,
     #[serde(default)]
     paths: Vec<RuntimePathTelemetryHttpRequest>,
+    #[serde(default)]
+    local_networks: Option<Vec<RuntimeLocalNetworkTelemetryHttpRequest>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeLocalNetworkTelemetryHttpRequest {
+    network_id: String,
+    interface_name: String,
+    cidr: String,
+    address: String,
+    kind: String,
 }
 
 #[derive(Debug, Deserialize)]

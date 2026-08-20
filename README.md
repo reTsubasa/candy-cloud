@@ -5,8 +5,8 @@ The authoritative product and CPU support status is maintained in
 
 独立的 Candy Cloud 控制面，产品版本 `0.1.0`。控制面负责 AAA、租户、设备、订阅、权益和 Grant 签发，不承载客户数据面流量。
 
-- Candy Core Cloud ABI profile: `0.3.12` from revision
-  `d2f3d90`
+- Candy Core Cloud ABI profile: `0.3.14` from the unified signed release
+  `core-v0.3.14`
 - wire line: `0.3`
 - auth profile: `cloud_grant_v1`
 - runtime: Rust + Axum + Tokio + SQLx/MySQL
@@ -127,18 +127,20 @@ slice is kept under [`openwrt-sdwan/`](openwrt-sdwan/); it contains the package,
 procd, LuCI, and focused productization checks without copying the Core
 protocol implementation.
 
-The project is pinned to the signed Candy Core Cloud ABI profile `0.3.12` from
-Core revision `388c72d9601d7bd681974c5aa9004be2317cb1c6` and wire line `0.3`.
+The project is pinned to the signed Candy Core Cloud ABI profile `0.3.14` from
+the unified `core-v0.3.14` release (source revision
+`d49ebed945c2d3b4f2701148dc126e556bb04620`) and wire line `0.3`.
 Cloud never checks out or compiles the private Core repository. Service images
 load the signed, versioned `libcandy_core_cloud.so` module only from the formal
 `candy-release` `core-v<version>` release. Cloud ABI profiles do not form a
 separate Core product line.
 
 The supported production Cloud bundle is native Linux x86-64. A native ARM64
-workflow is retained for the aarch64 control-plane target, but is deliberately
-manual-only until the central release repository publishes a matching signed
-`core-v0.3.13` with the aarch64 Cloud ABI. It never checks out or builds Core,
-and it cannot publish a Cloud bundle containing a standalone Core artifact.
+workflow is retained for the aarch64 control-plane target and consumes the
+same signed `core-v0.3.14` Cloud ABI release. It runs automatically for
+relevant changes on `main` and can also be started manually; it never checks
+out or builds the private Core repository and cannot publish a Cloud bundle
+containing a standalone Core artifact.
 
 After that central release exists, an immutable ARM64 bundle can be deployed
 from a prepared directory containing `compose.arm64.yml`, `deploy.env`, and

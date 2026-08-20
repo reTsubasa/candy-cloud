@@ -8,6 +8,7 @@ use cloud_db::sdwan::{
     RuntimeConfigurationState, RuntimeConfigurationStatusWrite, SdwanError, SdwanRepository,
     SegmentPublicationWrite, SignedObjectWrite, SiteProjectionPublicationWrite,
 };
+use sqlx::Row;
 use std::net::Ipv4Addr;
 use uuid::Uuid;
 
@@ -204,6 +205,46 @@ async fn control_snapshot_materializes_empty_route_contract_idempotently() {
             .await
             .unwrap();
     assert_eq!(state, "DISABLED");
+
+    let replacement_attachment_id = Uuid::new_v4();
+    resources.pop();
+    resources.push(control_resource(
+        tenant_id,
+        replacement_attachment_id,
+        ResourceState::Active,
+        ResourceSpecV1::Attachment(AttachmentV1 {
+            segment_id,
+            site_id,
+            node_id: control_node_id,
+            overlay_router_ipv4: Ipv4Addr::new(100, 64, 0, 2),
+            epoch_floor: 1,
+        }),
+    ));
+    repository
+        .ensure_control_topology(tenant_id, segment_id, &resources)
+        .await
+        .unwrap();
+    let rows = sqlx::query(
+        "SELECT id, state FROM segment_attachments WHERE tenant_id = ? AND segment_id = ? ORDER BY id",
+    )
+    .bind(tenant_id)
+    .bind(segment_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    let states = rows
+        .into_iter()
+        .map(|row| (row.get::<Uuid, _>("id"), row.get::<String, _>("state")))
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        states.get(&attachment_id).map(String::as_str),
+        Some("REVOKED")
+    );
+    assert_eq!(
+        states.get(&replacement_attachment_id).map(String::as_str),
+        Some("ACTIVE")
+    );
 }
 
 #[test]

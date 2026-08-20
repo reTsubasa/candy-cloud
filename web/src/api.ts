@@ -345,7 +345,11 @@ export async function fetchRuntimeTelemetry(
   );
   return {
     ...response,
-    items: response.items.map((item) => ({ ...item, paths: item.paths ?? [] })),
+    items: response.items.map((item) => ({
+      ...item,
+      paths: item.paths ?? [],
+      local_networks: item.local_networks ?? [],
+    })),
   };
 }
 

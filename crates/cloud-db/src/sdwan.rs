@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, net::Ipv4Addr};
 
 use chrono::Utc;
 use cloud_control::{
@@ -16,6 +16,7 @@ const MAX_ACTOR_ID_LEN: usize = 120;
 const MAX_PROJECTIONS: usize = 4096;
 const MAX_EXPANSION_OBJECTS: usize = 4096;
 const MAX_RUNTIME_PATHS: usize = 256;
+const MAX_RUNTIME_LOCAL_NETWORKS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfigurationLookup {
@@ -240,6 +241,16 @@ pub struct RuntimeTelemetryWrite {
     pub reconnects: Option<u64>,
     pub path_changes: Option<u64>,
     pub paths: Vec<RuntimePathTelemetryWrite>,
+    pub local_networks: Option<Vec<RuntimeLocalNetworkTelemetryWrite>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeLocalNetworkTelemetryWrite {
+    pub network_id: String,
+    pub interface_name: String,
+    pub cidr: String,
+    pub address: String,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -284,6 +295,10 @@ impl RuntimeTelemetryWrite {
             || matches!(self.lifecycle, RuntimeLifecycle::FailOpen) != self.fail_open_required
             || !error_is_valid
             || self.paths.len() > MAX_RUNTIME_PATHS
+            || self
+                .local_networks
+                .as_ref()
+                .is_some_and(|networks| networks.len() > MAX_RUNTIME_LOCAL_NETWORKS)
         {
             return Err(RuntimeConfigurationError::InvalidScope);
         }
@@ -298,8 +313,74 @@ impl RuntimeTelemetryWrite {
         }) {
             return Err(RuntimeConfigurationError::InvalidScope);
         }
+        if self
+            .local_networks
+            .as_ref()
+            .is_some_and(|networks| !validate_runtime_local_networks(networks))
+        {
+            return Err(RuntimeConfigurationError::InvalidScope);
+        }
         Ok(())
     }
+}
+
+pub(crate) fn validate_runtime_local_networks(
+    networks: &[RuntimeLocalNetworkTelemetryWrite],
+) -> bool {
+    if networks.len() > MAX_RUNTIME_LOCAL_NETWORKS {
+        return false;
+    }
+    let mut network_ids = HashSet::with_capacity(networks.len());
+    !networks.iter().any(|network| {
+        network.network_id.len() != 64
+            || !network
+                .network_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !valid_runtime_token(&network.interface_name, 64, b"_.:-@")
+            || network.kind != "direct_ipv4"
+            || !valid_runtime_network(&network.cidr, &network.address)
+            || !network_ids.insert(network.network_id.as_str())
+    })
+}
+
+fn valid_runtime_token(value: &str, maximum: usize, punctuation: &[u8]) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || punctuation.contains(&byte))
+}
+
+fn valid_runtime_network(cidr: &str, address: &str) -> bool {
+    if cidr.is_empty() || cidr.len() > 64 || address.is_empty() || address.len() > 45 {
+        return false;
+    }
+    let Some((network, prefix)) = cidr.split_once('/') else {
+        return false;
+    };
+    if prefix.is_empty() || prefix.bytes().any(|byte| !byte.is_ascii_digit()) {
+        return false;
+    }
+    let Ok(network) = network.parse::<Ipv4Addr>() else {
+        return false;
+    };
+    let Ok(address) = address.parse::<Ipv4Addr>() else {
+        return false;
+    };
+    let Ok(prefix) = prefix.parse::<u8>() else {
+        return false;
+    };
+    if prefix > 32 {
+        return false;
+    }
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    let network = u32::from(network);
+    network == (u32::from(address) & mask) && network == (network & mask)
 }
 
 impl RuntimeConfigurationStatusWrite {
@@ -995,8 +1076,12 @@ impl SdwanRepository {
         let now = Utc::now();
         let paths_json = serde_json::to_string(&telemetry.paths)
             .map_err(|_| RuntimeConfigurationError::InvalidScope)?;
+        let local_networks_present = telemetry.local_networks.is_some();
+        let local_networks_json =
+            serde_json::to_string(telemetry.local_networks.as_deref().unwrap_or(&[]))
+                .map_err(|_| RuntimeConfigurationError::InvalidScope)?;
         sqlx::query(
-            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, paths_json, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), paths_json = VALUES(paths_json), reported_at = VALUES(reported_at)",
+            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, paths_json, local_networks_json, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), IF(? = 1, CAST(? AS JSON), JSON_ARRAY()), ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), paths_json = VALUES(paths_json), local_networks_json = IF(? = 1, VALUES(local_networks_json), local_networks_json), reported_at = VALUES(reported_at)",
         )
         .bind(telemetry.lookup.tenant_id)
         .bind(telemetry.lookup.device_id)
@@ -1018,7 +1103,10 @@ impl SdwanRepository {
         .bind(telemetry.reconnects)
         .bind(telemetry.path_changes)
         .bind(paths_json)
+        .bind(local_networks_present)
+        .bind(local_networks_json)
         .bind(now)
+        .bind(local_networks_present)
         .execute(&mut *transaction)
         .await?;
         sqlx::query(

@@ -14,7 +14,9 @@ use sqlx::{MySql, Row, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::sdwan::RuntimePathTelemetryWrite;
+use crate::sdwan::{
+    validate_runtime_local_networks, RuntimeLocalNetworkTelemetryWrite, RuntimePathTelemetryWrite,
+};
 use crate::DbPool;
 
 const MAX_ACTOR_LEN: usize = 120;
@@ -122,6 +124,7 @@ pub struct RuntimeTelemetryRecord {
     pub reconnects: Option<u64>,
     pub path_changes: Option<u64>,
     pub paths: Vec<RuntimePathTelemetryWrite>,
+    pub local_networks: Vec<RuntimeLocalNetworkTelemetryWrite>,
     pub reported_at: DateTime<Utc>,
 }
 
@@ -367,7 +370,7 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, CAST(paths_json AS CHAR) AS paths_json, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
+            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, CAST(paths_json AS CHAR) AS paths_json, CAST(local_networks_json AS CHAR) AS local_networks_json, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -384,6 +387,13 @@ impl ControlRepository {
                 let paths_json: String = row.try_get("paths_json")?;
                 let paths = serde_json::from_str(&paths_json)
                     .map_err(|_| ControlStoreError::InvalidTransition)?;
+                let local_networks_json: String = row.try_get("local_networks_json")?;
+                let local_networks: Vec<RuntimeLocalNetworkTelemetryWrite> =
+                    serde_json::from_str(&local_networks_json)
+                        .map_err(|_| ControlStoreError::InvalidTransition)?;
+                if !validate_runtime_local_networks(&local_networks) {
+                    return Err(ControlStoreError::InvalidTransition);
+                }
                 Ok(RuntimeTelemetryRecord {
                     device_id: row.try_get("device_id")?,
                     device_key_id: row.try_get("device_key_id")?,
@@ -404,6 +414,7 @@ impl ControlRepository {
                     reconnects: row.try_get("reconnects")?,
                     path_changes: row.try_get("path_changes")?,
                     paths,
+                    local_networks,
                     reported_at: row.try_get("reported_at")?,
                 })
             })
@@ -1821,7 +1832,7 @@ impl GenerationJobRepository {
     /// publication generations remain an independent contiguous sequence.
     pub async fn recover_route_input_head_failures(&self) -> Result<u64, ControlStoreError> {
         let result = sqlx::query(
-            "UPDATE segment_generation_jobs candidate JOIN (SELECT jobs.tenant_id, jobs.segment_id, MAX(jobs.desired_revision) AS desired_revision FROM segment_generation_jobs jobs JOIN sdwan_control_resources segment ON segment.tenant_id = jobs.tenant_id AND segment.resource_kind = 'SEGMENT' AND segment.id = jobs.segment_id AND segment.state = 'ACTIVE' WHERE jobs.state = 'PERMANENT_FAILURE' AND (jobs.last_error_code IN ('ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD', 'ROUTE_DB_PRINCIPAL_MISMATCH') OR jobs.last_error_code LIKE 'ROUTE_INPUT_ROUTE_PUBLICATION_REVISION_%_IS_NOT_ADJACENT_TO_CURRENT_HEAD_%' OR jobs.last_error_code LIKE 'ROUTE_BUILD_CORE_MODULE_ROUTE_OPERATION_FAILED_CORE_PREPARE_FAILED_WITH_ABI_STAT%') GROUP BY jobs.tenant_id, jobs.segment_id) recoverable ON recoverable.tenant_id = candidate.tenant_id AND recoverable.segment_id = candidate.segment_id AND recoverable.desired_revision = candidate.desired_revision SET candidate.state = 'RETRY', candidate.lease_owner = NULL, candidate.lease_until = NULL, candidate.next_attempt_at = CURRENT_TIMESTAMP(6), candidate.last_error_code = 'ROUTE_RETRY_AFTER_RUNTIME_UPGRADE'",
+            "UPDATE segment_generation_jobs candidate JOIN (SELECT jobs.tenant_id, jobs.segment_id, MAX(jobs.desired_revision) AS desired_revision FROM segment_generation_jobs jobs JOIN sdwan_control_resources segment ON segment.tenant_id = jobs.tenant_id AND segment.resource_kind = 'SEGMENT' AND segment.id = jobs.segment_id AND segment.state = 'ACTIVE' WHERE jobs.state = 'PERMANENT_FAILURE' AND (jobs.last_error_code IN ('ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD', 'ROUTE_DB_PRINCIPAL_MISMATCH', 'ROUTE_DB_SCOPE_MISMATCH') OR jobs.last_error_code LIKE 'ROUTE_INPUT_ROUTE_PUBLICATION_REVISION_%_IS_NOT_ADJACENT_TO_CURRENT_HEAD_%' OR jobs.last_error_code LIKE 'ROUTE_BUILD_CORE_MODULE_ROUTE_OPERATION_FAILED_CORE_PREPARE_FAILED_WITH_ABI_STAT%') GROUP BY jobs.tenant_id, jobs.segment_id) recoverable ON recoverable.tenant_id = candidate.tenant_id AND recoverable.segment_id = candidate.segment_id AND recoverable.desired_revision = candidate.desired_revision SET candidate.state = 'RETRY', candidate.lease_owner = NULL, candidate.lease_until = NULL, candidate.next_attempt_at = CURRENT_TIMESTAMP(6), candidate.last_error_code = 'ROUTE_RETRY_AFTER_RUNTIME_UPGRADE'",
         )
         .execute(&self.pool)
         .await?;

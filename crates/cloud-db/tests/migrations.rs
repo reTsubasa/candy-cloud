@@ -81,10 +81,28 @@ fn runtime_path_telemetry_is_bounded_latest_state() {
 }
 
 #[test]
+fn runtime_local_network_telemetry_is_non_null_bounded_latest_state() {
+    let migration = include_str!("../migrations/0020_runtime_local_network_telemetry.sql");
+    assert!(migration.contains("local_networks_json JSON NOT NULL DEFAULT (JSON_ARRAY())"));
+    assert!(migration.contains("JSON_TYPE(local_networks_json) = 'ARRAY'"));
+    assert!(migration.contains("JSON_LENGTH(local_networks_json) <= 64"));
+}
+
+#[test]
 fn node_reenrollment_is_explicitly_bound_to_one_control_node() {
     let migration = include_str!("../migrations/0018_node_reenrollment.sql");
     assert!(migration.contains("replace_node_id BINARY(16) NULL"));
     assert!(migration.contains("idx_enrollment_activation_replacement"));
+}
+
+#[test]
+fn revoked_attachment_does_not_reserve_overlay_address_forever() {
+    let migration = include_str!("../migrations/0019_reusable_segment_router_address.sql");
+    assert!(migration.contains("DROP INDEX uq_segment_router_address"));
+    assert!(migration.contains("active_overlay_router_ipv4"));
+    assert!(migration.contains("state IN ('ACTIVE', 'STANDBY')"));
+    assert!(migration.contains("ADD UNIQUE KEY uq_active_segment_router_address"));
+    assert!(migration.contains("ADD INDEX idx_segment_router_address"));
 }
 
 #[test]

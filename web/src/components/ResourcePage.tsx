@@ -13,7 +13,7 @@ import {
   Tooltip,
   Typography,
 } from '@arco-design/web-react';
-import { IconBranch, IconDelete, IconEdit, IconLocation, IconLock, IconPlus, IconRefresh, IconRight, IconSafe, IconSearch, IconSync } from '@arco-design/web-react/icon';
+import { IconDelete, IconEdit, IconPlus, IconRefresh, IconRight, IconSafe, IconSearch, IconSync } from '@arco-design/web-react/icon';
 import { CloudApiError, deleteResource, fetchRuntimeConfigurationStatuses, getResource, listAllResources, listResourceReferences, listResources } from '../api';
 import type { ControlResource, ResourceDefinition, ResourceReference, RuntimeConfigurationStatus, Session } from '../types';
 import { attachmentTableValues } from '../resource-table';
@@ -68,34 +68,29 @@ const kindLabels: Record<string, string> = {
   DNS_INTENT: 'DNS', RELAY: '中继',
 };
 
-function SegmentGuide() {
-  return (
-    <section className="segment-guide" aria-label="网络分段配置说明">
-      <div className="segment-guide-copy">
-        <span className="segment-guide-icon"><IconBranch /></span>
-        <div>
-          <strong>一个分段，是一组共享路由与策略的站点网络</strong>
-          <p>分段不是地理区域。杭州、香港、美国需要互通时，通常加入同一个分段；业务必须隔离、地址空间重叠或安全边界不同时，才创建不同分段。</p>
-        </div>
-      </div>
-      <div className="segment-guide-example" aria-label="三个站点加入同一个办公网络分段的示例">
-        <div className="segment-example-sites">
-          <span><IconLocation />杭州</span>
-          <span><IconLocation />香港</span>
-          <span><IconLocation />美国</span>
-        </div>
-        <span className="segment-example-link" aria-hidden="true" />
-        <div className="segment-example-network">
-          <IconBranch />
-          <span><strong>办公网络</strong><small>100.64.10.0/24</small></span>
-        </div>
-      </div>
-      <div className="segment-guide-rules">
-        <span><IconBranch /><span><strong>需要互通</strong><small>放在同一分段</small></span></span>
-        <span><IconLock /><span><strong>需要隔离</strong><small>创建不同分段</small></span></span>
-      </div>
-    </section>
-  );
+type ResourceGuideContent = { title: string; description: string; relation: [string, string, string]; relationLabel: string };
+
+const resourceGuides: Record<string, ResourceGuideContent> = {
+  SITE: { title: '站点代表一个真实的网络位置', description: '办公室、门店、家庭、机房或云区域各自是一个站点。先按现实网络边界创建站点，再把运行 Candy 的设备加入对应站点。', relation: ['创建真实位置', '加入本地节点', '接入站点网络'], relationLabel: '配置顺序' },
+  NODE: { title: '节点是实际运行 Candy 的设备', description: 'OpenWrt 网关或 Linux Server 加入 Cloud 后成为节点。节点必须归属一个站点，后续才能接入网络分段并承载站点间流量。', relation: ['安装并加入', '归属一个站点', '添加网络接入'], relationLabel: '启用顺序' },
+  SEGMENT: { title: '一个分段，是一组共享路由与策略的站点网络', description: '分段不是地理区域。需要互通的站点通常加入同一个分段；只有业务必须隔离、地址空间重叠或安全边界不同时，才创建不同分段。', relation: ['杭州、香港、美国', '加入办公网络', '共享路由与策略'], relationLabel: '需要互通时' },
+  ATTACHMENT: { title: '网络接入把节点连接到一个网络分段', description: '它明确“哪个站点的哪台节点参加哪个网络”，并为节点分配唯一隧道 IP。每台参与 SD-WAN 的节点都需要一条接入。', relation: ['选择站点和节点', '加入网络分段', '获得隧道 IP'], relationLabel: '接入关系' },
+  PREFIX: { title: '网段声明哪些本地地址允许被其他站点访问', description: '优先选择节点自动发现的直连网段并确认发布，也可以手动填写。保存前不会向其他站点暴露任何本地网络。', relation: ['节点发现网段', '用户确认发布', '其他站点可路由'], relationLabel: '发布过程' },
+  PEER: { title: '站点互联定义两个站点需要双向通信', description: '互联只表达通信关系和路径偏好，不等于实际线路。两个站点必须先接入同一个网络分段，才能建立互联。', relation: ['站点 A', '建立双向互联', '站点 B'], relationLabel: '逻辑关系' },
+  PATH_CANDIDATE: { title: '线路配置定义数据实际从哪里连接到哪里', description: '一组站点互联通常需要两个方向的线路。选择直连或中继，并指定提供公网传输端点的节点。', relation: ['A 到 B 一条线路', 'B 到 A 一条线路', '双向数据可用'], relationLabel: '完整线路' },
+  EGRESS: { title: '出口是可被策略选择的互联网访问能力', description: '出口绑定到具体站点和承载节点。创建出口不会自动改变流量，只有策略明确选择它时才会生效。', relation: ['发布站点出口', '策略选择出口', '匹配流量使用'], relationLabel: '生效条件' },
+  SERVICE_POLICY: { title: '策略决定特定流量使用本站还是远端出口', description: '规则只在所选网络分段内生效，按优先级匹配来源、目标或业务类型；未命中的流量保持本站出口。', relation: ['选择来源与目标', '按优先级匹配', '使用指定出口'], relationLabel: '决策过程' },
+  DNS_INTENT: { title: 'DNS 为站点间服务发布统一的内部名称', description: '记录可以发布到网络分段内全部站点，也可以只发布到指定站点。DNS 只负责名称解析，不会自动创建路由。', relation: ['定义内部记录', '选择发布站点', '节点获得解析'], relationLabel: '发布过程' },
+  RELAY: { title: '中继是在无法稳定直连时使用的可选转发节点', description: '中继只转发站点间数据，不是 Cloud 控制面，也不会成为默认互联网出口。需要固定路径或 NAT 无法穿透时再配置。', relation: ['直连不可用', '线路选择中继', '转发站点流量'], relationLabel: '适用场景' },
+};
+
+function ResourceGuide({ kind }: { kind: string }) {
+  const guide = resourceGuides[kind];
+  if (!guide) return null;
+  return <section className="resource-guide" aria-label={`${kindLabels[kind] ?? kind}配置说明`}>
+    <div className="resource-guide-copy"><strong>{guide.title}</strong><p>{guide.description}</p></div>
+    <div className="resource-guide-relation"><span>{guide.relationLabel}</span><div><strong>{guide.relation[0]}</strong><i>→</i><strong>{guide.relation[1]}</strong><i>→</i><strong>{guide.relation[2]}</strong></div></div>
+  </section>;
 }
 
 function label(value: unknown): string {
@@ -392,7 +387,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
           )}
         </Space>
       </header>
-      {definition.kind === 'SEGMENT' && <SegmentGuide />}
+      <ResourceGuide kind={definition.kind} />
       {(definition.kind === 'PEER' || definition.kind === 'PATH_CANDIDATE') && <ActivationStatusBar resources={items} session={session} />}
       <div className="toolbar-row">
         <Input
