@@ -15,6 +15,7 @@ import {
 } from '@arco-design/web-react';
 import { IconDelete, IconEdit, IconPlus, IconRefresh, IconSafe, IconSearch } from '@arco-design/web-react/icon';
 import { deleteResource, fetchRuntimeConfigurationStatuses, listResources } from '../api';
+import { capabilitiesForRole } from '../authorization';
 import type { ControlResource, ResourceDefinition, RuntimeConfigurationStatus, Session } from '../types';
 import { ResourceEditor } from './ResourceEditor';
 
@@ -108,6 +109,10 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
   const [relatedNames, setRelatedNames] = useState<Record<string, string>>({});
   const [runtimeStatuses, setRuntimeStatuses] = useState<Record<string, RuntimeConfigurationStatus>>({});
   const tenantId = session.claims.tenant_id;
+  const capabilities = capabilitiesForRole(session.membership?.role ?? session.claims.role);
+  const canManage = definition.kind === 'NODE'
+    ? capabilities.manageDevices
+    : capabilities.writeConfiguration;
 
   const load = useCallback(async () => {
     if (!tenantId) {
@@ -194,7 +199,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
         );
       },
     }] : []),
-    {
+    ...(canManage ? [{
       title: '',
       width: 92,
       align: 'right' as const,
@@ -204,7 +209,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
           <Tooltip content="删除"><Button type="text" size="small" status="danger" icon={<IconDelete />} aria-label="删除" loading={deletingId === record.metadata.id} disabled={deletingId !== null} onClick={() => setDeleteTarget(record)} /></Tooltip>
         </Space>
       ),
-    },
+    }] : []),
   ];
 
   return (
@@ -217,13 +222,14 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
         </div>
         <Space>
           <Button icon={<IconRefresh />} onClick={() => void load()} loading={loading}>刷新</Button>
-          {definition.kind === 'NODE' ? (
+          {canManage && (definition.kind === 'NODE' ? (
             <Button type="primary" icon={<IconSafe />} onClick={onEnrollNode}>添加节点</Button>
           ) : (
             <Button type="primary" icon={<IconPlus />} onClick={() => setEditor({ visible: true, resource: null })}>{createLabels[definition.kind] ?? '新建'}</Button>
-          )}
+          ))}
         </Space>
       </header>
+      {!canManage && <Alert type="info" showIcon content="当前角色为只读访问。你可以查看资源与运行状态，但不能更改网络配置。" />}
       <div className="toolbar-row">
         <Input
           allowClear
@@ -253,7 +259,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
           )}
         </Spin>
       </div>
-      <ResourceEditor
+      {canManage && <ResourceEditor
         visible={editor.visible}
         definition={definition}
         session={session}
@@ -264,8 +270,8 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
           message.success?.(editor.resource ? '资源已更新' : '资源已创建');
           void load();
         }}
-      />
-      <Modal
+      />}
+      {canManage && <Modal
         visible={deleteTarget !== null}
         title={deleteTarget ? `删除“${resourceName(deleteTarget, relatedNames)}”？` : '删除资源'}
         okText="确认删除"
@@ -277,7 +283,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
         unmountOnExit
       >
         <Typography.Paragraph>删除后，该资源将不再参与控制面编排。后端会检查引用关系和修订版本；仍被使用的资源不会被删除。</Typography.Paragraph>
-      </Modal>
+      </Modal>}
     </section>
   );
 }

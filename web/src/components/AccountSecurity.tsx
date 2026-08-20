@@ -12,7 +12,8 @@ function formatDate(value: string): string {
 }
 
 function sessionLabel(item: HumanSession, currentId?: string): string {
-  return item.id === currentId ? '当前设备' : '已登录设备';
+  const device = item.device_label || '未命名设备';
+  return item.id === currentId ? `${device}（当前）` : device;
 }
 
 export function AccountSecurity({ session, onDisconnect }: Props) {

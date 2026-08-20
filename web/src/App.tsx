@@ -18,9 +18,10 @@ import {
   IconUser,
   IconWifi,
 } from '@arco-design/web-react/icon';
-import { acceptOrganizationInvitation, listAccountMemberships, logoutAccount, refreshStoredSession, switchAccountContext } from './api';
-import { clearSession, isSessionExpiringSoon, loadRefreshToken, loadSession, saveIdentitySession } from './session';
-import type { IdentityMembership, ResourceDefinition, Session } from './types';
+import { acceptOrganizationInvitation, fetchCloudVersion, listAccountMemberships, logoutAccount, refreshStoredSession, switchAccountContext } from './api';
+import { capabilitiesForRole, roleLabel } from './authorization';
+import { clearSession, currentDeviceLabel, isSessionExpiringSoon, loadRefreshToken, loadSession, saveIdentitySession } from './session';
+import type { CloudVersionInfo, IdentityMembership, ResourceDefinition, Session } from './types';
 import { resourceDefinitions, pathDefinition } from './resource-definitions';
 import { SessionGate } from './components/SessionGate';
 import { Overview } from './components/Overview';
@@ -59,9 +60,17 @@ export default function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [createRequest, setCreateRequest] = useState<{ key: string; nonce: number }>({ key: '', nonce: 0 });
   const [memberships, setMemberships] = useState<IdentityMembership[]>([]);
+  const [productVersion, setProductVersion] = useState<CloudVersionInfo | null>(null);
 
   const selectedDefinition = useMemo(() => pageDefinition(selected), [selected]);
+  const capabilities = capabilitiesForRole(session?.membership?.role ?? session?.claims.role);
   const connect = useCallback((next: Session) => { setSession(next); }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchCloudVersion().then((version) => { if (!cancelled) setProductVersion(version); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -109,7 +118,7 @@ export default function App() {
   }, [session]);
 
   if (restoring || !session) {
-    return <SessionGate loading={restoring} onConnect={connect} />;
+    return <SessionGate loading={restoring} onConnect={connect} productVersion={productVersion} />;
   }
 
   const clearLocalSession = () => {
@@ -126,13 +135,13 @@ export default function App() {
   const accountMenu = (
     <Menu>
       <Menu.Item key="account" onClick={() => setSelected('account')}><IconSafe /> 账户与安全</Menu.Item>
-      <Menu.Item key="disconnect" onClick={disconnect}><IconPoweroff /> 断开会话</Menu.Item>
+      <Menu.Item key="disconnect" onClick={disconnect}><IconPoweroff /> 退出登录</Menu.Item>
     </Menu>
   );
 
   const switchContext = async (organizationId: string) => {
     if (organizationId === session.membership?.organization_id) return;
-    const next = saveIdentitySession(await switchAccountContext(session.token, organizationId));
+    const next = saveIdentitySession(await switchAccountContext(session.token, organizationId, currentDeviceLabel()));
     setSession(next);
     setSelected('overview');
   };
@@ -156,8 +165,9 @@ export default function App() {
           {resourceDefinitions.filter((item) => ['segments', 'attachments', 'prefixes'].includes(item.key)).map((item) => <Menu.Item key={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
           <Menu.Item key="peers"><IconWifi />站点互联</Menu.Item>
           {resourceDefinitions.filter((item) => ['egress', 'policies', 'dns', 'relays'].includes(item.key)).map((item) => <Menu.Item key={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
+          <Menu.Item key="logs"><IconStorage />日志</Menu.Item>
           <Menu.Item key="system"><IconSettings />系统</Menu.Item>
-          {['ORGANIZATION_OWNER', 'TENANT_ADMIN', 'AUDITOR'].includes(session.membership?.role ?? session.claims.role ?? '') && <Menu.Item key="access"><IconSafe />成员与权限</Menu.Item>}
+          {capabilities.readMembers && <Menu.Item key="access"><IconSafe />成员与权限</Menu.Item>}
           <Menu.Item key="account"><IconUser />账户与安全</Menu.Item>
         </Menu>
         <div className="sidebar-foot">
@@ -177,7 +187,7 @@ export default function App() {
           <Dropdown trigger="click" droplist={accountMenu} position="br">
             <button className="account-button" type="button" aria-label="打开账户菜单">
               <Avatar size={30}><IconUser /></Avatar>
-              <span className="account-copy"><strong>{session.user?.display_name ?? session.claims.sub ?? 'Cloud Operator'}</strong><small>{session.membership?.role ?? session.claims.role ?? 'role unavailable'}</small></span>
+              <span className="account-copy"><strong>{session.user?.display_name ?? session.claims.sub ?? 'Cloud Operator'}</strong><small>{roleLabel(session.membership?.role ?? session.claims.role)}</small></span>
               <IconDown />
             </button>
           </Dropdown>
@@ -193,11 +203,12 @@ export default function App() {
             </Tabs>
           )}
           {selected === 'system' && <SystemPage session={session} />}
+          {selected === 'logs' && <SystemPage session={session} initialTab="logs" />}
           {selected === 'account' && <AccountSecurity session={session} onDisconnect={clearLocalSession} />}
           {selected === 'access' && <OrganizationAccess session={session} onSessionInvalidated={clearLocalSession} />}
         </Layout.Content>
         <footer className="workspace-footer">
-          <Space size={6}><span className="secure-dot" /><Typography.Text type="secondary">Cloud API · same-origin /api</Typography.Text></Space>
+          <Space size={6}><span className="secure-dot" /><Typography.Text type="secondary">Candy Cloud {productVersion?.cloud_version ?? '—'}{productVersion?.cloud_revision && productVersion.cloud_revision !== 'development' ? ` · ${productVersion.cloud_revision.slice(0, 12)}` : ''} · Core {productVersion?.core_version ?? '—'}</Typography.Text></Space>
         </footer>
       </Layout>
     </Layout>

@@ -4,6 +4,21 @@ export const SESSION_KEY = 'candy.cloud.management.session.v1';
 export const REFRESH_SESSION_KEY = 'candy.cloud.management.refresh.v1';
 export const IDENTITY_CONTEXT_KEY = 'candy.cloud.management.identity.v1';
 
+export function currentDeviceLabel(userAgent = navigator.userAgent): string {
+  const browser = /Edg\//.test(userAgent) ? 'Edge'
+    : /Firefox\//.test(userAgent) ? 'Firefox'
+      : /Chrome\//.test(userAgent) ? 'Chrome'
+        : /Safari\//.test(userAgent) ? 'Safari'
+          : '浏览器';
+  const platform = /Windows/.test(userAgent) ? 'Windows'
+    : /Android/.test(userAgent) ? 'Android'
+      : /iPhone|iPad/.test(userAgent) ? 'iOS'
+        : /Macintosh/.test(userAgent) ? 'macOS'
+          : /Linux/.test(userAgent) ? 'Linux'
+            : '未知设备';
+  return `${browser} · ${platform}`;
+}
+
 type IdentityContext = Pick<IdentitySessionResponse, 'user' | 'membership'>;
 
 function decodeBase64Url(value: string): string {

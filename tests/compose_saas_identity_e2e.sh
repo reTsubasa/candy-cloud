@@ -20,7 +20,9 @@ chmod 0755 "$work"
 secrets="$work/secrets"
 mkdir -m 0700 "$secrets"
 project="candy-cloud-saas-e2e-$$"
-export COMPOSE_PARALLEL_LIMIT=${COMPOSE_PARALLEL_LIMIT:-2}
+export COMPOSE_PARALLEL_LIMIT=${COMPOSE_PARALLEL_LIMIT:-1}
+export CANDY_CLOUD_MYSQL_VOLUME="${project}_candy-cloud-mysql-data"
+export CANDY_CLOUD_WEB_VOLUME="${project}_candy-cloud-web-assets"
 available_port() {
   python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
 }
@@ -124,9 +126,10 @@ MYSQL_AUTH_PASSWORD=e2e-auth-password
 MYSQL_WORKER_PASSWORD=e2e-worker-password
 CANDY_ROUTE_SIGNING_KEY_ID=e2e-route
 CANDY_ROUTE_SIGNING_KEY_HEX=0000000000000000000000000000000000000000000000000000000000000001
-CORE_MODULE_VERSION=0.3.10
-CORE_MODULE_BUNDLE_SHA256=b41806ff17359a9ec8151deb61b206403ec01b14aaffd8f7d456111ab0cc042d
-CORE_MODULE_SHA256=54c1e6a1f61ef0b28208d5dec13ce7b1351922478987b5eac3ac9a06f183c478
+CANDY_ROUTE_SIGNING_PUBLIC_KEY_HEX=8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c
+CORE_MODULE_VERSION=0.3.12
+CORE_MODULE_BUNDLE_SHA256=95e8fbefc3a3f17d2443db13d12fa78b11f21114b47c49610ae913e7c615fa93
+CORE_MODULE_SHA256=892d8ac2432af15609b33da8b616ddcc7e1c47821e3d5fbad5941342caef37ec
 CLOUD_SIGNING_KEY_FILE=$secrets/cloud-signing.key
 CLOUD_SIGNING_KEY_ID=e2e-grant
 CLOUD_ISSUER_ID=00000000-0000-0000-0000-000000000001
@@ -173,13 +176,10 @@ services:
     image: candy-cloud-saas-e2e-cloud-web:local
 EOF
 
-# Compose Bake may compile every Rust service concurrently and exhaust a
-# developer workstation. Build explicitly in dependency order, then start the
-# exact same images without allowing Compose to trigger a parallel rebuild.
+# Submit one BuildKit graph so the shared Rust workspace stage is compiled once.
+# The parallel limit keeps memory bounded on developer workstations.
 if test "${CANDY_CLOUD_E2E_SKIP_BUILD:-0}" != 1; then
-  for service in cloud-web migrate cloud-api cloud-identity cloud-auth; do
-    compose build "$service"
-  done
+  compose build cloud-web migrate cloud-api cloud-identity cloud-auth
 fi
 compose up -d --no-build reverse-proxy
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Empty, Progress, Space, Spin, Tag, Typography } from '@arco-design/web-react';
 import { IconCheckCircle, IconExclamationCircle, IconRefresh, IconRight } from '@arco-design/web-react/icon';
 import { fetchHealth, listResources } from '../api';
+import { capabilitiesForRole } from '../authorization';
 import { pathDefinition, resourceDefinitions } from '../resource-definitions';
 import type { HealthState, Session } from '../types';
 import { QuickSetupWizard } from './QuickSetupWizard';
@@ -39,6 +40,7 @@ export function Overview({ session }: Props) {
   const [loading, setLoading] = useState(true);
   const [setupVisible, setSetupVisible] = useState(false);
   const tenantId = session.claims.tenant_id;
+  const capabilities = capabilitiesForRole(session.membership?.role ?? session.claims.role);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -87,7 +89,7 @@ export function Overview({ session }: Props) {
           <Typography.Title heading={4}>运营概览</Typography.Title>
           <Typography.Text type="secondary">租户资源与控制面实时状态</Typography.Text>
         </div>
-        <Space><Button icon={<IconRefresh />} loading={loading} onClick={() => void load()}>刷新</Button><Button type="primary" icon={<IconRight />} onClick={() => setSetupVisible(true)}>{requiredDone > 0 ? '继续配置' : '开始配置'}</Button></Space>
+        <Space><Button icon={<IconRefresh />} loading={loading} onClick={() => void load()}>刷新</Button>{capabilities.writeConfiguration && <Button type="primary" icon={<IconRight />} onClick={() => setSetupVisible(true)}>{requiredDone > 0 ? '继续配置' : '开始配置'}</Button>}</Space>
       </header>
       {!tenantId && <Alert type="error" showIcon content="JWT 中缺少 tenant_id，资源概览不可用。" />}
       <Spin loading={loading} block>
@@ -144,7 +146,7 @@ export function Overview({ session }: Props) {
           </div>
         )}
       </Spin>
-      <QuickSetupWizard visible={setupVisible} session={session} onClose={() => { setSetupVisible(false); void load(); }} onChanged={() => void load()} />
+      {capabilities.writeConfiguration && <QuickSetupWizard visible={setupVisible} session={session} onClose={() => { setSetupVisible(false); void load(); }} onChanged={() => void load()} />}
     </section>
   );
 }

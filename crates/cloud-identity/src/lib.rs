@@ -563,6 +563,7 @@ struct TransferOwnershipRequest {
 #[serde(deny_unknown_fields)]
 struct SwitchContextRequest {
     organization_id: Uuid,
+    device_label: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -599,6 +600,7 @@ struct SessionResponse {
     organization_id: Uuid,
     tenant_id: Uuid,
     role: &'static str,
+    device_label: Option<String>,
     expires_at: DateTime<Utc>,
     revoked_at: Option<DateTime<Utc>>,
 }
@@ -749,6 +751,7 @@ async fn login(
     let email = canonical_email(&req.email)?;
     enforce_public_limit(&state, &headers, PublicOperation::Login, email.as_bytes()).await?;
     validate_password(&req.password)?;
+    validate_device_label(req.device_label.as_deref())?;
     let user = state
         .repository
         .find_user_by_email(&email)
@@ -1366,6 +1369,7 @@ async fn switch_context(
     access: AccessContext,
     Json(req): Json<SwitchContextRequest>,
 ) -> Result<Json<AuthResponse>, ApiError> {
+    validate_device_label(req.device_label.as_deref())?;
     let user = state
         .repository
         .find_user_by_session_id(access.session_id)
@@ -1378,7 +1382,14 @@ async fn switch_context(
         .await
         .map_err(ApiError::Repository)?
         .ok_or(ApiError::Forbidden)?;
-    issue_replacement_session(&state, access.session_id, user, membership).await
+    issue_replacement_session(
+        &state,
+        access.session_id,
+        user,
+        membership,
+        req.device_label.as_deref(),
+    )
+    .await
 }
 
 async fn revoke_session(
@@ -1448,6 +1459,7 @@ async fn issue_session(
         organization_id: membership.organization_id,
         tenant_id: membership.tenant_id,
         role: membership.role,
+        device_label: device_label.map(str::to_owned),
         expires_at: Utc::now() + chrono_duration(state.refresh_ttl),
         revoked_at: None,
     };
@@ -1491,6 +1503,7 @@ async fn issue_replacement_session(
     previous_session_id: Uuid,
     user: cloud_db::identity::HumanUser,
     membership: cloud_db::identity::Membership,
+    device_label: Option<&str>,
 ) -> Result<Json<AuthResponse>, ApiError> {
     let now = Utc::now();
     let session = SessionRecord {
@@ -1500,6 +1513,7 @@ async fn issue_replacement_session(
         organization_id: membership.organization_id,
         tenant_id: membership.tenant_id,
         role: membership.role,
+        device_label: device_label.map(str::to_owned),
         expires_at: now + chrono_duration(state.refresh_ttl),
         revoked_at: None,
     };
@@ -1512,7 +1526,7 @@ async fn issue_replacement_session(
             token_id: Uuid::now_v7(),
             token_hash: &hash_token(&refresh),
             token_expires_at: session.expires_at,
-            device_label: Some("context switch"),
+            device_label,
             now,
         })
         .await
@@ -1595,6 +1609,7 @@ fn session_response(record: SessionRecord) -> SessionResponse {
         organization_id: record.organization_id,
         tenant_id: record.tenant_id,
         role: role_string(record.role),
+        device_label: record.device_label,
         expires_at: record.expires_at,
         revoked_at: record.revoked_at,
     }
@@ -1661,6 +1676,13 @@ fn validate_password(password: &str) -> Result<(), ApiError> {
     } else {
         Ok(())
     }
+}
+
+fn validate_device_label(device_label: Option<&str>) -> Result<(), ApiError> {
+    if device_label.is_some_and(|label| label.trim().is_empty() || label.len() > 200) {
+        return Err(ApiError::InvalidRequest);
+    }
+    Ok(())
 }
 fn hash_password(password: &str) -> Result<String, ApiError> {
     let salt = SaltString::generate(&mut OsRng);

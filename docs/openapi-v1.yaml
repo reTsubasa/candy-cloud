@@ -953,6 +953,7 @@ components:
       properties:
         email: { type: string, format: email, minLength: 3, maxLength: 254 }
         password: { type: string, format: password, minLength: 12, maxLength: 1024 }
+        device_label: { type: string, minLength: 1, maxLength: 200 }
     ActivationCreateRequest:
       type: object
       additionalProperties: false
@@ -1049,7 +1050,9 @@ components:
       type: object
       additionalProperties: false
       required: [organization_id]
-      properties: { organization_id: { $ref: "#/components/schemas/Uuid" } }
+      properties:
+        organization_id: { $ref: "#/components/schemas/Uuid" }
+        device_label: { type: string, minLength: 1, maxLength: 200 }
     InviteMemberRequest:
       type: object
       additionalProperties: false
@@ -1124,12 +1127,13 @@ components:
     HumanSession:
       type: object
       additionalProperties: false
-      required: [id, organization_id, tenant_id, role, expires_at, revoked_at]
+      required: [id, organization_id, tenant_id, role, device_label, expires_at, revoked_at]
       properties:
         id: { $ref: "#/components/schemas/Uuid" }
         organization_id: { $ref: "#/components/schemas/Uuid" }
         tenant_id: { $ref: "#/components/schemas/Uuid" }
         role: { $ref: "#/components/schemas/IdentityRole" }
+        device_label: { type: [string, "null"], minLength: 1, maxLength: 200 }
         expires_at: { type: string, format: date-time }
         revoked_at: { type: [string, "null"], format: date-time }
     IdentityProblem:

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { clearSession, createSession, IDENTITY_CONTEXT_KEY, isSessionExpiringSoon, loadRefreshToken, loadSession, parseJwtClaims, saveIdentitySession, saveSession, SESSION_KEY } from './session';
+import { clearSession, createSession, currentDeviceLabel, IDENTITY_CONTEXT_KEY, isSessionExpiringSoon, loadRefreshToken, loadSession, parseJwtClaims, saveIdentitySession, saveSession, SESSION_KEY } from './session';
 
 function encode(value: unknown): string {
   return btoa(JSON.stringify(value)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -11,6 +11,11 @@ function token(claims: Record<string, unknown>): string {
 
 describe('management session', () => {
   beforeEach(() => sessionStorage.clear());
+
+  it('creates a bounded, low-detail device label', () => {
+    expect(currentDeviceLabel('Mozilla/5.0 (Macintosh) AppleWebKit Safari/605.1')).toBe('Safari · macOS');
+    expect(currentDeviceLabel('Mozilla/5.0 (Windows NT 10.0) Firefox/126.0')).toBe('Firefox · Windows');
+  });
 
   it('parses display claims without treating them as authorization', () => {
     const claims = parseJwtClaims(token({ sub: 'operator-1', tenant_id: 'tenant-1', role: 'TENANT_ADMIN' }));

@@ -83,6 +83,7 @@ fn app_with_state(state: Arc<ManagementState>) -> Router {
 
 fn health_routes() -> Router<Arc<ManagementState>> {
     Router::new()
+        .route("/version", get(health::version))
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
         .route("/health/degraded", get(health::degraded))
@@ -105,6 +106,10 @@ fn management_routes() -> Router<Arc<ManagementState>> {
         .route(
             "/v1/tenants/{tenant_id}/runtime-configuration-status",
             get(management::runtime_configuration_statuses),
+        )
+        .route(
+            "/v1/tenants/{tenant_id}/audit-events",
+            get(management::audit_events),
         )
         .route(
             "/v1/tenants/{tenant_id}/{collection}",

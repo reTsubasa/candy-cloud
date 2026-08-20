@@ -53,6 +53,7 @@ export type HumanSession = {
   organization_id: string;
   tenant_id: string;
   role: string;
+  device_label: string | null;
   expires_at: string;
   revoked_at: string | null;
 };
@@ -77,6 +78,13 @@ export type EndpointHealth = {
   text: string;
   loading: boolean;
   checkedAt: number | null;
+};
+
+export type CloudVersionInfo = {
+  schema_version: number;
+  cloud_version: string;
+  cloud_revision: string;
+  core_version: string;
 };
 
 export type ResourceMetadata = {
@@ -132,6 +140,22 @@ export type RuntimeConfigurationStatus = {
 export type RuntimeConfigurationStatusResponse = {
   schema_version: number;
   items: RuntimeConfigurationStatus[];
+};
+
+export type AuditEvent = {
+  id: string;
+  actor_type: string;
+  actor_id: string | null;
+  action: string;
+  object_type: string;
+  object_id: string | null;
+  metadata_json: string;
+  created_at: string;
+};
+
+export type AuditEventResponse = {
+  schema_version: number;
+  items: AuditEvent[];
 };
 
 export type EnrollmentActivation = {

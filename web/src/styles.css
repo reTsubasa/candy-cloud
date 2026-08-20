@@ -173,6 +173,8 @@ button, input, textarea { font: inherit; }
 .record-constraint .arco-form-item { margin: 10px 0 0; }
 
 .overview-grid { display: grid; grid-template-columns: minmax(340px, 1.6fr) minmax(210px, .7fr) minmax(210px, .7fr); gap: 12px; margin-bottom: 28px; }
+.overview-page > .page-header { min-height: 36px; justify-content: flex-end; margin-bottom: 12px; }
+.overview-page > .page-header > div:first-child { display: none; }
 .summary-band { min-height: 154px; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
 .primary-summary { display: flex; justify-content: space-between; gap: 28px; border-top: 3px solid var(--blue); }
 .compact-summary { display: flex; flex-direction: column; justify-content: space-between; }
@@ -243,6 +245,15 @@ button, input, textarea { font: inherit; }
 .inventory-row div { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .inventory-row strong { font-size: 23px; font-variant-numeric: tabular-nums; }
 .system-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.log-toolbar { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--line); border-bottom: 0; border-radius: 6px 6px 0 0; }
+.log-toolbar > div { display: flex; flex-direction: column; gap: 3px; }
+.log-toolbar > div > span:last-child { color: var(--muted); font-size: 12px; }
+.log-filters { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px; background: #f7f8fa; border: 1px solid var(--line); border-bottom: 0; }
+.log-warning { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: #fff7e8; border: 1px solid #ffcf8b; border-bottom: 0; }
+.log-event-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.log-event-cell strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-event-cell small { color: var(--muted); font-size: 11px; }
+.log-details { max-height: 180px; overflow: auto; margin: 0; padding: 12px 18px; color: #4e5969; background: #f7f8fa; border-radius: 4px; font: 11px/1.6 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .detail-surface { padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
 .detail-surface h5 { margin-top: 0; }
 .health-detail { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

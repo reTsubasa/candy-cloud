@@ -101,6 +101,18 @@ pub struct RuntimeConfigurationStatusRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditEventRecord {
+    pub id: Uuid,
+    pub actor_type: String,
+    pub actor_id: Option<String>,
+    pub action: String,
+    pub object_type: String,
+    pub object_id: Option<String>,
+    pub metadata_json: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationOutcome {
     Applied(ControlResourceV1),
     Replayed(ControlResourceV1),
@@ -195,6 +207,39 @@ pub struct RuntimeActivationReadiness {
 impl ControlRepository {
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
+    }
+
+    pub async fn audit_events(
+        &self,
+        tenant_id: Uuid,
+        limit: u16,
+    ) -> Result<Vec<AuditEventRecord>, ControlStoreError> {
+        if tenant_id.is_nil() || limit == 0 {
+            return Err(ControlStoreError::InvalidRequest);
+        }
+        let limit = limit.min(500) as u32;
+        let rows = sqlx::query(
+            "SELECT id, actor_type, actor_id, action, object_type, object_id, metadata_json, created_at FROM audit_events WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+        )
+        .bind(tenant_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AuditEventRecord {
+                    id: row.try_get("id")?,
+                    actor_type: row.try_get("actor_type")?,
+                    actor_id: row.try_get("actor_id")?,
+                    action: row.try_get("action")?,
+                    object_type: row.try_get("object_type")?,
+                    object_id: row.try_get("object_id")?,
+                    metadata_json: row.try_get("metadata_json")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(ControlStoreError::from)
     }
 
     pub async fn readiness_check(&self) -> Result<(), ControlStoreError> {

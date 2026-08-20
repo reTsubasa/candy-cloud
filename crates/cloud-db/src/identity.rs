@@ -133,6 +133,7 @@ pub struct SessionRecord {
     pub organization_id: Uuid,
     pub tenant_id: Uuid,
     pub role: MembershipRole,
+    pub device_label: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
@@ -1057,7 +1058,7 @@ impl IdentityRepository {
             return Err(IdentityRepositoryError::InvalidInput);
         }
         let mut tx = self.pool.begin().await?;
-        let token = sqlx::query("SELECT refresh.id, refresh.session_id, refresh.expires_at, refresh.used_at, refresh.revoked_at, session.user_id, session.session_family_id, session.organization_id, session.tenant_id, session.expires_at AS session_expires_at, session.revoked_at AS session_revoked_at, membership.role FROM human_refresh_tokens refresh JOIN human_sessions session ON session.id = refresh.session_id JOIN organization_memberships membership ON membership.organization_id = session.organization_id AND membership.user_id = session.user_id AND membership.status = 'ACTIVE' WHERE refresh.token_hash = ? FOR UPDATE")
+        let token = sqlx::query("SELECT refresh.id, refresh.session_id, refresh.expires_at, refresh.used_at, refresh.revoked_at, session.user_id, session.session_family_id, session.organization_id, session.tenant_id, session.device_label, session.expires_at AS session_expires_at, session.revoked_at AS session_revoked_at, membership.role FROM human_refresh_tokens refresh JOIN human_sessions session ON session.id = refresh.session_id JOIN organization_memberships membership ON membership.organization_id = session.organization_id AND membership.user_id = session.user_id AND membership.status = 'ACTIVE' WHERE refresh.token_hash = ? FOR UPDATE")
             .bind(token_hash).fetch_optional(&mut *tx).await?;
         let Some(token) = token else {
             tx.commit().await?;
@@ -1103,6 +1104,7 @@ impl IdentityRepository {
             organization_id: token.try_get("organization_id")?,
             tenant_id: token.try_get("tenant_id")?,
             role: MembershipRole::parse(&token.try_get::<String, _>("role")?)?,
+            device_label: token.try_get("device_label")?,
             expires_at: token.try_get("session_expires_at")?,
             revoked_at: None,
         };
@@ -1142,7 +1144,7 @@ impl IdentityRepository {
         if user_id.is_nil() {
             return Err(IdentityRepositoryError::InvalidInput);
         }
-        let rows = sqlx::query("SELECT session.id, session.session_family_id, session.user_id, session.organization_id, session.tenant_id, session.expires_at, session.revoked_at, membership.role FROM human_sessions session JOIN organization_memberships membership ON membership.organization_id = session.organization_id AND membership.user_id = session.user_id AND membership.status = 'ACTIVE' WHERE session.user_id = ? AND session.expires_at > ? ORDER BY session.last_seen_at DESC")
+        let rows = sqlx::query("SELECT session.id, session.session_family_id, session.user_id, session.organization_id, session.tenant_id, session.device_label, session.expires_at, session.revoked_at, membership.role FROM human_sessions session JOIN organization_memberships membership ON membership.organization_id = session.organization_id AND membership.user_id = session.user_id AND membership.status = 'ACTIVE' WHERE session.user_id = ? AND session.expires_at > ? ORDER BY session.last_seen_at DESC")
             .bind(user_id).bind(now).fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|row| {
@@ -1153,6 +1155,7 @@ impl IdentityRepository {
                     organization_id: row.try_get("organization_id")?,
                     tenant_id: row.try_get("tenant_id")?,
                     role: MembershipRole::parse(&row.try_get::<String, _>("role")?)?,
+                    device_label: row.try_get("device_label")?,
                     expires_at: row.try_get("expires_at")?,
                     revoked_at: row.try_get("revoked_at")?,
                 })

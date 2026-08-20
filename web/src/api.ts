@@ -16,6 +16,8 @@ import type {
   EnrollmentActivationSecret,
   RuntimeActivationReadiness,
   RuntimeConfigurationStatusResponse,
+  CloudVersionInfo,
+  AuditEventResponse,
 } from './types';
 
 export class CloudApiError extends Error {
@@ -26,6 +28,18 @@ export class CloudApiError extends Error {
   ) {
     super(message);
   }
+}
+
+export async function fetchCloudVersion(): Promise<CloudVersionInfo> {
+  const response = await fetch('/api/version', {
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) throw await responseError(response);
+  if (!(response.headers.get('content-type') ?? '').includes('application/json')) {
+    throw new CloudApiError('无法读取产品版本信息', response.status, 'INVALID_RESPONSE_FORMAT');
+  }
+  return response.json() as Promise<CloudVersionInfo>;
 }
 
 async function identityRequest<T>(path: string, init: RequestInit): Promise<T> {
@@ -51,8 +65,11 @@ export function registerAccount(input: {
   return identityRequest('/v1/auth/register', { method: 'POST', body: JSON.stringify(input) });
 }
 
-export function loginAccount(email: string, password: string): Promise<IdentitySessionResponse> {
-  return identityRequest('/v1/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+export function loginAccount(email: string, password: string, deviceLabel?: string): Promise<IdentitySessionResponse> {
+  return identityRequest('/v1/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, ...(deviceLabel ? { device_label: deviceLabel } : {}) }),
+  });
 }
 
 export function verifyAccountEmail(token: string): Promise<IdentitySessionResponse> {
@@ -95,10 +112,10 @@ export function listAccountMemberships(accessToken: string): Promise<IdentityMem
   return authenticatedIdentityRequest('/v1/auth/memberships', accessToken);
 }
 
-export function switchAccountContext(accessToken: string, organizationId: string): Promise<IdentitySessionResponse> {
+export function switchAccountContext(accessToken: string, organizationId: string, deviceLabel?: string): Promise<IdentitySessionResponse> {
   return authenticatedIdentityRequest('/v1/auth/switch-context', accessToken, {
     method: 'POST',
-    body: JSON.stringify({ organization_id: organizationId }),
+    body: JSON.stringify({ organization_id: organizationId, ...(deviceLabel ? { device_label: deviceLabel } : {}) }),
   });
 }
 
@@ -332,6 +349,10 @@ export function deleteResource(
 
 export function listNodeJoinCodes(token: string, tenantId: string): Promise<EnrollmentActivation[]> {
   return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/enrollment/activations`, token);
+}
+
+export function listAuditEvents(token: string, tenantId: string, limit = 200): Promise<AuditEventResponse> {
+  return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/audit-events?limit=${limit}`, token);
 }
 
 export function createNodeJoinCode(

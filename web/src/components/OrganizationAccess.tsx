@@ -9,6 +9,7 @@ import {
   updateOrganizationMemberRole,
   updateOrganizationMemberStatus,
 } from '../api';
+import { capabilitiesForRole, roleLabel } from '../authorization';
 import type { OrganizationMember, Session } from '../types';
 
 type Props = { session: Session; onSessionInvalidated: () => void };
@@ -20,11 +21,6 @@ const roles = [
   { value: 'AUDITOR', label: '审计员' },
 ];
 
-function roleLabel(role: string): string {
-  if (role === 'ORGANIZATION_OWNER') return '组织所有者';
-  return roles.find((item) => item.value === role)?.label ?? role;
-}
-
 export function OrganizationAccess({ session, onSessionInvalidated }: Props) {
   const [members, setMembers] = useState<OrganizationMember[]>([]);
   const [loading, setLoading] = useState(true);
@@ -34,8 +30,9 @@ export function OrganizationAccess({ session, onSessionInvalidated }: Props) {
   const [role, setRole] = useState('OPERATOR');
   const [busy, setBusy] = useState<string | null>(null);
   const currentRole = session.membership?.role ?? session.claims.role;
-  const canRead = ['ORGANIZATION_OWNER', 'TENANT_ADMIN', 'AUDITOR'].includes(currentRole ?? '');
-  const canManage = currentRole === 'ORGANIZATION_OWNER';
+  const capabilities = capabilitiesForRole(currentRole);
+  const canRead = capabilities.readMembers;
+  const canManage = capabilities.manageMembers;
 
   const load = useCallback(async () => {
     if (!canRead) { setLoading(false); return; }

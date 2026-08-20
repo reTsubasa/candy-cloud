@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createNodeJoinCode, createResource, fetchHealth, fetchRuntimeConfigurationStatuses, listAccountSessions, listResources, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
+import { createNodeJoinCode, createResource, fetchCloudVersion, fetchHealth, fetchRuntimeConfigurationStatuses, listAccountSessions, listResources, loginAccount, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
 import { saveIdentitySession } from './session';
 
 describe('same-origin Cloud API client', () => {
@@ -48,6 +48,13 @@ describe('same-origin Cloud API client', () => {
     expect(state.text).toBe('database schema unavailable');
   });
 
+  it('reads public product versions from the Cloud API', async () => {
+    const body = { schema_version: 1, cloud_version: '0.1.0', cloud_revision: 'abc123', core_version: '0.3.11' };
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await expect(fetchCloudVersion()).resolves.toEqual(body);
+    expect(fetchMock).toHaveBeenCalledWith('/api/version', expect.objectContaining({ credentials: 'same-origin' }));
+  });
+
   it('turns a non-JSON management response into a user-facing service error', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } }));
     await expect(listResources('token', 'tenant', 'sites')).rejects.toMatchObject({
@@ -60,6 +67,14 @@ describe('same-origin Cloud API client', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } }));
     await verifyAccountEmail('one-time-token');
     expect(fetchMock).toHaveBeenCalledWith('/identity/v1/auth/verify-email', expect.objectContaining({ method: 'POST', body: JSON.stringify({ token: 'one-time-token' }) }));
+  });
+
+  it('labels a login session without sending a full user agent', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await loginAccount('name@example.test', 'long-enough-password', 'Chrome · macOS');
+    expect(fetchMock).toHaveBeenCalledWith('/identity/v1/auth/login', expect.objectContaining({
+      body: JSON.stringify({ email: 'name@example.test', password: 'long-enough-password', device_label: 'Chrome · macOS' }),
+    }));
   });
 
   it('uses non-enumerating identity recovery endpoints', async () => {

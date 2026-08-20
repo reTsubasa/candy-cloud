@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Button, Descriptions, Empty, Spin, Table, Tabs, Tag, Typography } from '@arco-design/web-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Button, Descriptions, Empty, Input, Select, Spin, Table, Tabs, Tag, Typography } from '@arco-design/web-react';
 import { IconRefresh } from '@arco-design/web-react/icon';
-import { fetchHealth, listNodeJoinCodes } from '../api';
-import type { EnrollmentActivation, HealthState, Session } from '../types';
+import { fetchHealth, listAuditEvents } from '../api';
+import type { AuditEvent, HealthState, Session } from '../types';
 
 const healthMeta = {
   live: { label: '服务进程', endpoint: '/api/health/live' },
@@ -16,21 +16,55 @@ const emptyHealth: HealthState = {
   degraded: { status: null, text: '', loading: true, checkedAt: null },
 };
 
-export function SystemPage({ session }: { session: Session }) {
+type Props = { session: Session; initialTab?: 'status' | 'logs' };
+
+function eventLevel(action: string): 'error' | 'warning' | 'info' {
+  const normalized = action.toUpperCase();
+  if (/(FAILED|FAILURE|REJECTED|ERROR|DENIED)/.test(normalized)) return 'error';
+  if (/(REVOKED|EXPIRED|DEGRADED|DISABLED)/.test(normalized)) return 'warning';
+  return 'info';
+}
+
+const levelMeta = {
+  error: { label: '错误', color: 'red' },
+  warning: { label: '警告', color: 'orange' },
+  info: { label: '信息', color: 'arcoblue' },
+} as const;
+
+export function SystemPage({ session, initialTab = 'status' }: Props) {
   const [health, setHealth] = useState(emptyHealth);
-  const [enrollmentEvents, setEnrollmentEvents] = useState<EnrollmentActivation[]>([]);
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [levelFilter, setLevelFilter] = useState<'all' | 'error' | 'warning' | 'info'>('all');
+  const [actionFilter, setActionFilter] = useState('');
+  const [textFilter, setTextFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const load = useCallback(async () => {
     setLoading(true);
-    const [live, ready, degraded, events] = await Promise.all([
+    const [live, ready, degraded, audit] = await Promise.all([
       fetchHealth('live'), fetchHealth('ready'), fetchHealth('degraded'),
-      session.claims.tenant_id ? listNodeJoinCodes(session.token, session.claims.tenant_id).catch(() => []) : Promise.resolve([]),
+      session.claims.tenant_id ? listAuditEvents(session.token, session.claims.tenant_id).catch((error) => {
+        setAuditError(error instanceof Error ? error.message : '统一日志暂不可用');
+        return { schema_version: 1, items: [] };
+      }) : Promise.resolve({ schema_version: 1, items: [] }),
     ]);
     setHealth({ live, ready, degraded });
-    setEnrollmentEvents(events);
+    setAuditEvents(audit.items);
     setLoading(false);
   }, [session.claims.tenant_id, session.token]);
   useEffect(() => { void load(); }, [load]);
+
+  const actionOptions = useMemo(() => Array.from(new Set(auditEvents.map((event) => event.action))).sort(), [auditEvents]);
+  const filteredAuditEvents = useMemo(() => auditEvents.filter((event) => {
+    const level = eventLevel(event.action);
+    if (levelFilter !== 'all' && level !== levelFilter) return false;
+    if (actionFilter && event.action !== actionFilter) return false;
+    if (textFilter) {
+      const haystack = `${event.action} ${event.object_type} ${event.actor_type} ${event.metadata_json}`.toLowerCase();
+      if (!haystack.includes(textFilter.toLowerCase())) return false;
+    }
+    return true;
+  }), [actionFilter, auditEvents, levelFilter, textFilter]);
 
   return (
     <section className="workspace-section">
@@ -38,7 +72,7 @@ export function SystemPage({ session }: { session: Session }) {
         <div><Typography.Title heading={4}>系统</Typography.Title><Typography.Text type="secondary">控制面状态、管理会话与操作日志</Typography.Text></div>
         <Button icon={<IconRefresh />} loading={loading} onClick={() => void load()}>刷新</Button>
       </header>
-      <Tabs defaultActiveTab="status" className="system-tabs">
+      <Tabs defaultActiveTab={initialTab} className="system-tabs">
         <Tabs.TabPane key="status" title="运行状态"><Spin loading={loading} block>
           <div className="system-grid">
           <section className="detail-surface">
@@ -63,13 +97,26 @@ export function SystemPage({ session }: { session: Session }) {
           </section>
           </div>
         </Spin></Tabs.TabPane>
-        <Tabs.TabPane key="logs" title="日志">
-          <div className="toolbar-row"><div><Typography.Text bold>节点加入</Typography.Text><Typography.Text type="secondary">节点注册、使用、撤销和过期记录</Typography.Text></div><Typography.Text type="secondary">{enrollmentEvents.length} 条</Typography.Text></div>
-          <div className="table-surface operation-log-table">{enrollmentEvents.length === 0 && !loading ? <Empty description="暂无节点加入记录" /> : <Table rowKey="id" loading={loading} data={enrollmentEvents} pagination={enrollmentEvents.length > 20 ? { pageSize: 20, sizeCanChange: false } : false} columns={[
-            { title: '类型', width: 120, render: () => <Tag color="arcoblue">节点加入</Tag> },
-            { title: '设备', render: (_: unknown, item: EnrollmentActivation) => item.display_name ?? '未完成注册的设备' },
-            { title: '结果', width: 120, render: (_: unknown, item: EnrollmentActivation) => <Tag color={item.status === 'CONSUMED' ? 'green' : item.status === 'ACTIVE' || item.status === 'RESERVED' ? 'orange' : 'gray'}>{({ ACTIVE: '等待设备', RESERVED: '注册中', CONSUMED: '已完成', REVOKED: '已撤销', EXPIRED: '已过期' } as const)[item.status]}</Tag> },
-            { title: '发生时间', width: 200, render: (_: unknown, item: EnrollmentActivation) => new Date(item.consumed_at ?? item.reserved_at ?? item.created_at).toLocaleString() },
+        <Tabs.TabPane key="logs" title="统一日志">
+          <div className="log-toolbar">
+            <div><Typography.Text bold>运行日志</Typography.Text><Typography.Text type="secondary">控制面、节点、配置和数据面事件统一记录，默认保留最近 200 条</Typography.Text></div>
+            <Typography.Text type="secondary">{filteredAuditEvents.length} / {auditEvents.length} 条</Typography.Text>
+          </div>
+          <div className="log-filters">
+            <Select value={levelFilter} onChange={(value) => setLevelFilter(value as typeof levelFilter)} aria-label="日志级别" style={{ width: 140 }}>
+              <Select.Option value="all">全部级别</Select.Option><Select.Option value="error">错误</Select.Option><Select.Option value="warning">警告</Select.Option><Select.Option value="info">信息</Select.Option>
+            </Select>
+            <Select value={actionFilter} onChange={setActionFilter} placeholder="全部事件" allowClear style={{ width: 240 }}>
+              {actionOptions.map((action) => <Select.Option key={action} value={action}>{action}</Select.Option>)}
+            </Select>
+            <Input.Search value={textFilter} onChange={setTextFilter} allowClear placeholder="搜索事件、对象或详情" style={{ width: 280 }} />
+          </div>
+          {auditError && <div className="log-warning"><Tag color="orange">读取异常</Tag><Typography.Text type="secondary">{auditError}。已保留当前页面可用信息。</Typography.Text></div>}
+          <div className="table-surface operation-log-table">{filteredAuditEvents.length === 0 && !loading ? <Empty description={auditEvents.length ? '没有符合筛选条件的日志' : '暂无运行日志'} /> : <Table rowKey="id" loading={loading} data={filteredAuditEvents} pagination={filteredAuditEvents.length > 50 ? { pageSize: 50, sizeCanChange: true } : false} expandedRowRender={(item: AuditEvent) => <pre className="log-details">{item.metadata_json || '{}'}</pre>} columns={[
+            { title: '级别', width: 88, render: (_: unknown, item: AuditEvent) => { const meta = levelMeta[eventLevel(item.action)]; return <Tag color={meta.color}>{meta.label}</Tag>; } },
+            { title: '事件', dataIndex: 'action', width: 270, render: (value: string, item: AuditEvent) => <div className="log-event-cell"><strong>{value}</strong><small>{item.object_type}{item.object_id ? ` · ${item.object_id.slice(0, 8)}…` : ''}</small></div> },
+            { title: '来源', width: 130, render: (_: unknown, item: AuditEvent) => item.actor_type },
+            { title: '发生时间', width: 200, render: (_: unknown, item: AuditEvent) => new Date(item.created_at).toLocaleString() },
           ]} />}</div>
         </Tabs.TabPane>
       </Tabs>
