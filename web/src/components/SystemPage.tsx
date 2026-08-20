@@ -16,7 +16,7 @@ const emptyHealth: HealthState = {
   degraded: { status: null, text: '', loading: true, checkedAt: null },
 };
 
-type Props = { session: Session; initialTab?: 'status' | 'logs' };
+type Props = { session: Session; view?: 'status' | 'logs' | 'both' };
 
 function eventLevel(action: string): 'error' | 'warning' | 'info' {
   const normalized = action.toUpperCase();
@@ -31,7 +31,7 @@ const levelMeta = {
   info: { label: '信息', color: 'arcoblue' },
 } as const;
 
-export function SystemPage({ session, initialTab = 'status' }: Props) {
+export function SystemPage({ session, view = 'status' }: Props) {
   const [health, setHealth] = useState(emptyHealth);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [auditError, setAuditError] = useState<string | null>(null);
@@ -66,14 +66,7 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
     return true;
   }), [actionFilter, auditEvents, levelFilter, textFilter]);
 
-  return (
-    <section className="workspace-section">
-      <header className="page-header">
-        <div><Typography.Title heading={4}>系统</Typography.Title><Typography.Text type="secondary">控制面状态、管理会话与操作日志</Typography.Text></div>
-        <Button icon={<IconRefresh />} loading={loading} onClick={() => void load()}>刷新</Button>
-      </header>
-      <Tabs defaultActiveTab={initialTab} className="system-tabs">
-        <Tabs.TabPane key="status" title="运行状态"><Spin loading={loading} block>
+  const statusContent = <Spin loading={loading} block>
           <div className="system-grid">
           <section className="detail-surface">
             <Typography.Title heading={5}>控制面健康</Typography.Title>
@@ -96,8 +89,8 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
             ]} />
           </section>
           </div>
-        </Spin></Tabs.TabPane>
-        <Tabs.TabPane key="logs" title="统一日志">
+        </Spin>;
+  const logsContent = <>
           <div className="log-toolbar">
             <div><Typography.Text bold>运行日志</Typography.Text><Typography.Text type="secondary">控制面、节点、配置和数据面事件统一记录，默认保留最近 200 条</Typography.Text></div>
             <Typography.Text type="secondary">{filteredAuditEvents.length} / {auditEvents.length} 条</Typography.Text>
@@ -118,8 +111,16 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
             { title: '来源', width: 130, render: (_: unknown, item: AuditEvent) => item.actor_type },
             { title: '发生时间', width: 200, render: (_: unknown, item: AuditEvent) => new Date(item.created_at).toLocaleString() },
           ]} />}</div>
-        </Tabs.TabPane>
-      </Tabs>
+        </>;
+  const title = view === 'logs' ? '日志' : '系统';
+  const subtitle = view === 'logs' ? '控制面、配置与节点事件的统一记录' : '控制面状态与管理会话';
+  return (
+    <section className="workspace-section">
+      <header className="page-header">
+        <div><Typography.Title heading={4}>{title}</Typography.Title><Typography.Text type="secondary">{subtitle}</Typography.Text></div>
+        <Button icon={<IconRefresh />} loading={loading} onClick={() => void load()}>刷新</Button>
+      </header>
+      {view === 'both' ? <Tabs defaultActiveTab="status" className="system-tabs"><Tabs.TabPane key="status" title="运行状态">{statusContent}</Tabs.TabPane><Tabs.TabPane key="logs" title="统一日志">{logsContent}</Tabs.TabPane></Tabs> : view === 'logs' ? logsContent : statusContent}
     </section>
   );
 }

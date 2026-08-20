@@ -202,8 +202,8 @@ export default function App() {
               <Tabs.TabPane key="candidates" title="线路配置"><ResourcePage definition={pathDefinition} session={session} /></Tabs.TabPane>
             </Tabs>
           )}
-          {selected === 'system' && <SystemPage session={session} />}
-          {selected === 'logs' && <SystemPage session={session} initialTab="logs" />}
+          {selected === 'system' && <SystemPage session={session} view="status" />}
+          {selected === 'logs' && <SystemPage session={session} view="logs" />}
           {selected === 'account' && <AccountSecurity session={session} onDisconnect={clearLocalSession} />}
           {selected === 'access' && <OrganizationAccess session={session} onSessionInvalidated={clearLocalSession} />}
         </Layout.Content>
