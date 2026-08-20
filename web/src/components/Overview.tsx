@@ -45,9 +45,9 @@ function healthLabel(status: number | null): { label: string; tone: 'ok' | 'warn
   return { label: '异常', tone: 'warn' };
 }
 
-function relativeTime(value: Date | null): string {
+function relativeTime(value: Date | null, now = Date.now()): string {
   if (!value) return '尚未更新';
-  const seconds = Math.max(0, Math.floor((Date.now() - value.getTime()) / 1000));
+  const seconds = Math.max(0, Math.floor((now - value.getTime()) / 1000));
   if (seconds < 5) return '刚刚更新';
   if (seconds < 60) return `${seconds} 秒前更新`;
   return `${Math.floor(seconds / 60)} 分钟前更新`;
@@ -83,6 +83,7 @@ export function Overview({ session, onOpenLogs }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [clock, setClock] = useState(() => Date.now());
   const [selectedSegmentId, setSelectedSegmentId] = useState('');
   const [setupVisible, setSetupVisible] = useState(false);
   const tenantId = session.claims.tenant_id;
@@ -144,6 +145,10 @@ export function Overview({ session, onOpenLogs }: Props) {
   }, [session.token, tenantId]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
   useEffect(() => {
     if (!autoRefresh) return undefined;
     const timer = window.setInterval(() => void load(true), 10_000);
@@ -210,7 +215,7 @@ export function Overview({ session, onOpenLogs }: Props) {
               <div>
                 <Typography.Title heading={5}>实时网络拓扑</Typography.Title>
                 <div className="topology-toolbar-meta">
-                  <span className="topology-update-state"><i className={autoRefresh ? 'active' : ''} />{relativeTime(lastUpdated)}{refreshing ? ' · 同步中' : ''}</span>
+                  <span className="topology-update-state"><i className={autoRefresh ? 'active' : ''} />{relativeTime(lastUpdated, clock)}{refreshing ? ' · 同步中' : ''}</span>
                   <span className="topology-scope">{selectedSegmentId ? `${topology.segment?.name ?? '当前网络'} · ${topology.segment?.overlayCidr ?? ''}` : `全部网络 · ${topology.sites.length} 个站点`}</span>
                 </div>
               </div>
@@ -258,7 +263,7 @@ export function Overview({ session, onOpenLogs }: Props) {
               <p className="telemetry-source-note">在线、故障开放、Peer 与路由状态来自 Runtime 心跳；时延、丢包和速率仅在 Core 提供真实采样时显示。</p>
             </section>
             <section>
-              <header><strong>控制面探针</strong><span className="probe-time">{relativeTime(lastUpdated)}</span></header>
+              <header><strong>控制面探针</strong><span className="probe-time">{relativeTime(lastUpdated, clock)}</span></header>
               <div className="probe-list">{(['live', 'ready', 'degraded'] as const).map((key) => {
                 const meta = healthLabel(health[key].status);
                 return <div key={key}><span><i className={meta.tone} />{key}</span><strong>{meta.label}</strong></div>;
