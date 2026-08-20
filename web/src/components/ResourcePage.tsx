@@ -302,8 +302,11 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
   };
 
   const actionColumn = {
-    title: '',
-    width: 92,
+    title: '操作',
+    width: 124,
+    className: 'resource-actions',
+    headerCellStyle: { paddingRight: 12 },
+    bodyCellStyle: { paddingRight: 12 },
     align: 'right' as const,
     render: (_: unknown, record: ControlResource) => (
       <Space size={4}>
@@ -414,7 +417,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
               columns={columns}
               data={filtered}
               pagination={filtered.length > 20 ? { pageSize: 20, sizeCanChange: true } : false}
-              scroll={{ x: 780 }}
+              scroll={{ x: 820 }}
             />
           )}
         </Spin>

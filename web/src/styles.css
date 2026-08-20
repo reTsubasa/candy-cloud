@@ -113,6 +113,8 @@ button, input, textarea { font: inherit; }
 .table-surface .arco-empty { padding: 72px 20px; }
 .table-surface .arco-table-th { background: #f7f8fa; color: #4e5969; font-weight: 600; }
 .table-surface .arco-table-td { border-bottom-color: #edf0f4; }
+.table-surface .arco-table-cell-fixed-right, .table-surface .arco-table-cell-fixed-left { background: var(--surface); }
+.table-surface .resource-actions { min-width: 124px; padding-right: 12px; }
 .resource-primary { display: flex; flex-direction: column; gap: 4px; min-width: 180px; }
 .policy-network { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .policy-network strong { overflow: hidden; color: #1d2129; text-overflow: ellipsis; white-space: nowrap; }
