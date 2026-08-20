@@ -1925,14 +1925,88 @@ impl GenerationJobRepository {
     /// Requeue only the currently desired revision after a Cloud or Core upgrade.
     /// Older terminal jobs are historical records and must never overwrite the
     /// current publication. A desired job whose publication was superseded by an
-    /// older recovered job is also requeued so the control plane converges again.
+    /// older recovered job gets a new reconciliation revision because publication
+    /// IDs are intentionally immutable for an existing desired revision.
     pub async fn recover_route_input_head_failures(&self) -> Result<u64, ControlStoreError> {
-        let result = sqlx::query(
-            "UPDATE segment_generation_jobs candidate JOIN segment_generation_heads head ON head.tenant_id = candidate.tenant_id AND head.segment_id = candidate.segment_id AND head.desired_revision = candidate.desired_revision JOIN sdwan_control_resources control_segment ON control_segment.tenant_id = candidate.tenant_id AND control_segment.resource_kind = 'SEGMENT' AND control_segment.id = candidate.segment_id AND control_segment.state = 'ACTIVE' LEFT JOIN segments publication ON publication.tenant_id = candidate.tenant_id AND publication.id = candidate.segment_id AND publication.state = 'ACTIVE' SET candidate.state = 'RETRY', candidate.lease_owner = NULL, candidate.lease_until = NULL, candidate.next_attempt_at = CURRENT_TIMESTAMP(6), candidate.published_generation = NULL, candidate.published_content_hash = NULL, candidate.last_error_code = 'ROUTE_RETRY_AFTER_RUNTIME_UPGRADE' WHERE (candidate.state = 'PERMANENT_FAILURE' AND (candidate.last_error_code IN ('ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD', 'ROUTE_DB_PRINCIPAL_MISMATCH', 'ROUTE_DB_SCOPE_MISMATCH') OR candidate.last_error_code LIKE 'ROUTE_INPUT_ROUTE_PUBLICATION_REVISION_%_IS_NOT_ADJACENT_TO_CURRENT_HEAD_%' OR candidate.last_error_code LIKE 'ROUTE_BUILD_CORE_MODULE_ROUTE_OPERATION_FAILED_CORE_PREPARE_FAILED_WITH_ABI_STAT%')) OR (candidate.state = 'PUBLISHED' AND (publication.current_generation IS NULL OR publication.current_generation <> candidate.published_generation OR publication.current_content_hash <> candidate.published_content_hash))",
+        let mut transaction = self.pool.begin().await?;
+        let rows = sqlx::query(
+            "SELECT candidate.id, candidate.tenant_id, candidate.segment_id, candidate.desired_revision, candidate.state, candidate.last_error_code, candidate.published_generation, candidate.published_content_hash, publication.current_generation, publication.current_content_hash FROM segment_generation_heads head JOIN segment_generation_jobs candidate ON candidate.tenant_id = head.tenant_id AND candidate.segment_id = head.segment_id AND candidate.desired_revision = head.desired_revision JOIN sdwan_control_resources control_segment ON control_segment.tenant_id = candidate.tenant_id AND control_segment.resource_kind = 'SEGMENT' AND control_segment.id = candidate.segment_id AND control_segment.state = 'ACTIVE' LEFT JOIN segments publication ON publication.tenant_id = candidate.tenant_id AND publication.id = candidate.segment_id AND publication.state = 'ACTIVE' FOR UPDATE",
         )
-        .execute(&self.pool)
+        .fetch_all(&mut *transaction)
         .await?;
-        Ok(result.rows_affected())
+        let mut recovered = 0_u64;
+        for row in rows {
+            let id: Uuid = row.try_get("id")?;
+            let tenant_id: Uuid = row.try_get("tenant_id")?;
+            let segment_id: Uuid = row.try_get("segment_id")?;
+            let desired_revision: u64 = row.try_get("desired_revision")?;
+            let state: String = row.try_get("state")?;
+            let last_error_code: Option<String> = row.try_get("last_error_code")?;
+            if state == "PERMANENT_FAILURE"
+                && last_error_code
+                    .as_deref()
+                    .is_some_and(recoverable_route_error)
+            {
+                let changed = sqlx::query(
+                    "UPDATE segment_generation_jobs SET state = 'RETRY', lease_owner = NULL, lease_until = NULL, next_attempt_at = CURRENT_TIMESTAMP(6), last_error_code = 'ROUTE_RETRY_AFTER_RUNTIME_UPGRADE' WHERE id = ? AND state = 'PERMANENT_FAILURE'",
+                )
+                .bind(id)
+                .execute(&mut *transaction)
+                .await?;
+                recovered += changed.rows_affected();
+                continue;
+            }
+            if state != "PUBLISHED" {
+                continue;
+            }
+            let job_generation: Option<u64> = row.try_get("published_generation")?;
+            let job_hash: Option<Vec<u8>> = row.try_get("published_content_hash")?;
+            let current_generation: Option<u64> = row.try_get("current_generation")?;
+            let current_hash: Option<Vec<u8>> = row.try_get("current_content_hash")?;
+            if job_generation == current_generation && job_hash == current_hash {
+                continue;
+            }
+            let reconciliation_revision = desired_revision
+                .checked_add(1)
+                .ok_or(ControlStoreError::InvalidTransition)?;
+            let mut hash = Sha256::new();
+            hash.update(b"candy/route-reconciliation/v1\0");
+            hash.update(tenant_id.as_bytes());
+            hash.update(segment_id.as_bytes());
+            hash.update(reconciliation_revision.to_be_bytes());
+            if let Some(generation) = current_generation {
+                hash.update(generation.to_be_bytes());
+            }
+            if let Some(content_hash) = current_hash.as_deref() {
+                hash.update(content_hash);
+            }
+            let idempotency_hash: [u8; 32] = hash.finalize().into();
+            let advanced = sqlx::query(
+                "UPDATE segment_generation_heads SET desired_revision = ? WHERE tenant_id = ? AND segment_id = ? AND desired_revision = ?",
+            )
+            .bind(reconciliation_revision)
+            .bind(tenant_id)
+            .bind(segment_id)
+            .bind(desired_revision)
+            .execute(&mut *transaction)
+            .await?;
+            if advanced.rows_affected() != 1 {
+                return Err(ControlStoreError::InvalidTransition);
+            }
+            sqlx::query(
+                "INSERT INTO segment_generation_jobs (id, tenant_id, segment_id, desired_revision, idempotency_hash) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(tenant_id)
+            .bind(segment_id)
+            .bind(reconciliation_revision)
+            .bind(idempotency_hash.as_slice())
+            .execute(&mut *transaction)
+            .await?;
+            recovered += 1;
+        }
+        transaction.commit().await?;
+        Ok(recovered)
     }
 
     pub async fn renew(
@@ -2020,6 +2094,19 @@ fn validate_lease(owner: &str, ttl: StdDuration) -> Result<(), ControlStoreError
     } else {
         Ok(())
     }
+}
+
+fn recoverable_route_error(code: &str) -> bool {
+    matches!(
+        code,
+        "ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD"
+            | "ROUTE_DB_PRINCIPAL_MISMATCH"
+            | "ROUTE_DB_SCOPE_MISMATCH"
+    ) || (code.starts_with("ROUTE_INPUT_ROUTE_PUBLICATION_REVISION_")
+        && code.contains("_IS_NOT_ADJACENT_TO_CURRENT_HEAD_"))
+        || code.starts_with(
+            "ROUTE_BUILD_CORE_MODULE_ROUTE_OPERATION_FAILED_CORE_PREPARE_FAILED_WITH_ABI_STAT",
+        )
 }
 
 fn decode_resource(value: String) -> Result<ControlResourceV1, ControlStoreError> {
@@ -2131,5 +2218,19 @@ mod tests {
             Some(&published),
             Some(&(5, vec![8; 32]))
         ));
+    }
+
+    #[test]
+    fn route_recovery_is_limited_to_known_upgrade_failures() {
+        assert!(recoverable_route_error(
+            "ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD"
+        ));
+        assert!(recoverable_route_error(
+            "ROUTE_INPUT_ROUTE_PUBLICATION_REVISION_19_IS_NOT_ADJACENT_TO_CURRENT_HEAD_6"
+        ));
+        assert!(!recoverable_route_error(
+            "CONTROL_SNAPSHOT_INVALID_RESOURCE"
+        ));
+        assert!(!recoverable_route_error("PREFIX_OVERLAP"));
     }
 }
