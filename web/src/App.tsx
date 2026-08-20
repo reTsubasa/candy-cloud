@@ -214,7 +214,7 @@ export default function App() {
               <Tabs.TabPane key="candidates" title="线路配置"><ResourcePage definition={pathDefinition} session={session} focusRequest={focusRequest} onFocusHandled={() => setFocusRequest(undefined)} onLocateResource={locateResource} /></Tabs.TabPane>
             </Tabs>
           )}
-          {selected === 'system' && <SystemPage session={session} />}
+          {selected === 'system' && <SystemPage session={session} initialTab="status" />}
           {selected === 'logs' && <SystemPage session={session} initialTab="logs" />}
           {selected === 'account' && <AccountSecurity session={session} onDisconnect={clearLocalSession} />}
           {selected === 'access' && <OrganizationAccess session={session} onSessionInvalidated={clearLocalSession} />}

@@ -133,8 +133,8 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
         <div><Typography.Title heading={4}>{initialTab === 'logs' ? '日志' : '系统'}</Typography.Title><Typography.Text type="secondary">{initialTab === 'logs' ? '控制面、配置与节点事件的统一记录' : '控制面状态与管理会话'}</Typography.Text></div>
         <Button icon={<IconRefresh />} loading={loading} onClick={() => void load()}>刷新</Button>
       </header>
-      <Tabs defaultActiveTab={initialTab} className="system-tabs">
-        <Tabs.TabPane key="status" title="运行状态"><Spin loading={loading} block>
+      <Tabs defaultActiveTab={initialTab} className="system-tabs single-tab">
+        {initialTab !== 'logs' && <Tabs.TabPane key="status" title="运行状态"><Spin loading={loading} block>
           <div className="system-grid">
             <section className="detail-surface"><Typography.Title heading={5}>控制面健康</Typography.Title><Descriptions column={1} data={(['live', 'ready', 'degraded'] as const).map((key) => ({ label: healthMeta[key].label, value: <div className="health-detail"><span><Tag color={health[key].status === 200 ? 'green' : health[key].status === null ? 'red' : 'orange'}>{health[key].status === 200 ? '正常' : health[key].status === null ? '不可达' : '异常'}</Tag> {health[key].text || '—'}</span><code>{healthMeta[key].endpoint}</code></div> }))} /></section>
             <section className="detail-surface"><Typography.Title heading={5}>管理会话</Typography.Title><Descriptions column={1} data={[
@@ -145,8 +145,8 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
               { label: '会话到期', value: session.claims.exp ? new Date(session.claims.exp * 1000).toLocaleString() : '未提供' },
             ]} /></section>
           </div>
-        </Spin></Tabs.TabPane>
-        <Tabs.TabPane key="logs" title="统一日志">
+        </Spin></Tabs.TabPane>}
+        {initialTab !== 'status' && <Tabs.TabPane key="logs" title="统一日志">
           <div className="log-toolbar"><div><Typography.Text bold>运行日志</Typography.Text><Typography.Text type="secondary">点击任意记录查看完整内容 · 最近 {events.length} 条</Typography.Text></div><Typography.Text type="secondary">{filtered.length} / {events.length} 条</Typography.Text></div>
           <div className="log-filters">
             <Select value={levelFilter} onChange={(value) => setLevelFilter(value as typeof levelFilter)} aria-label="日志级别" style={{ width: 140 }}><Select.Option value="all">全部级别</Select.Option><Select.Option value="error">错误</Select.Option><Select.Option value="warning">警告</Select.Option><Select.Option value="info">信息</Select.Option></Select>
@@ -161,7 +161,7 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
             { title: '来源', width: 130, render: (_: unknown, item: AuditEvent) => actorLabel(item.actor_type) },
             { title: '发生时间', width: 180, render: (_: unknown, item: AuditEvent) => <Typography.Text>{formatEventTime(item.created_at)}</Typography.Text> },
           ]} />}</div>
-        </Tabs.TabPane>
+        </Tabs.TabPane>}
       </Tabs>
       <Drawer width={520} title={selectedEvent ? eventLabel(selectedEvent.action) : '日志详情'} visible={selectedEvent !== null} onCancel={() => setSelectedEvent(null)} footer={null}>
         {selectedEvent && <div className="log-detail-drawer">
