@@ -209,7 +209,7 @@ button, input, textarea { font: inherit; }
 .record-constraint { margin-bottom: 0; }
 .record-constraint .arco-form-item { margin: 10px 0 0; }
 
-.operational-header { margin-bottom: 16px; }
+.operational-header { min-height: 36px; justify-content: flex-end; margin-bottom: 12px; }
 .live-refresh-control { display: inline-flex; align-items: center; gap: 8px; color: #4e5969; font-size: 12px; white-space: nowrap; }
 .operational-status-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 16px; background: #fff; border: 1px solid var(--line); }
 .status-metric { min-width: 0; min-height: 104px; display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 11px; padding: 16px 18px; border-right: 1px solid var(--line); }
@@ -233,8 +233,8 @@ button, input, textarea { font: inherit; }
 .topology-update-state i { width: 7px; height: 7px; background: #c9cdd4; border-radius: 50%; }
 .topology-update-state i.active { background: #00a870; box-shadow: 0 0 0 3px rgba(0, 168, 112, .12); }
 .segment-selector { width: min(240px, 45%); }
-.topology-canvas { min-height: 470px; overflow-x: auto; overflow-y: hidden; background-color: #fbfcfe; background-image: linear-gradient(#edf0f4 1px, transparent 1px), linear-gradient(90deg, #edf0f4 1px, transparent 1px); background-size: 28px 28px; }
-.topology-canvas svg { display: block; width: 100%; height: auto; min-height: 470px; }
+.topology-canvas { overflow-x: auto; overflow-y: hidden; background-color: #fbfcfe; background-image: linear-gradient(#edf0f4 1px, transparent 1px), linear-gradient(90deg, #edf0f4 1px, transparent 1px); background-size: 28px 28px; }
+.topology-canvas svg { display: block; width: 100%; height: auto; }
 .topology-canvas text { fill: #1d2129; font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 12px; }
 .topology-canvas text.sub { fill: #7a8699; font-size: 10px; }
 .topology-control-link { stroke: #a9b5c7; stroke-dasharray: 4 4; }
@@ -260,6 +260,8 @@ button, input, textarea { font: inherit; }
 .quiet-state { min-height: 68px; display: flex; align-items: center; gap: 10px; color: #4e5969; font-size: 11px; line-height: 1.5; }
 .quiet-state svg { flex: 0 0 auto; color: #00a870; font-size: 20px; }
 .incident-list { display: grid; gap: 12px; }
+.incident-header-actions { display: inline-flex; align-items: center; gap: 5px; }
+.incident-header-actions .arco-btn { padding: 0 3px; }
 .incident-item { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 9px; }
 .incident-item > i { width: 7px; height: 7px; margin-top: 5px; background: #d97706; border-radius: 50%; }.incident-item.error > i { background: #d92d20; }
 .incident-item > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -380,6 +382,15 @@ button, input, textarea { font: inherit; }
 .inventory-row div { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .inventory-row strong { font-size: 23px; font-variant-numeric: tabular-nums; }
 .system-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.log-toolbar { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--line); border-bottom: 0; border-radius: 6px 6px 0 0; }
+.log-toolbar > div { display: flex; flex-direction: column; gap: 3px; }
+.log-toolbar > div > span:last-child { color: var(--muted); font-size: 12px; }
+.log-filters { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px; background: #f7f8fa; border: 1px solid var(--line); border-bottom: 0; }
+.log-warning { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: #fff7e8; border: 1px solid #ffcf8b; border-bottom: 0; }
+.log-event-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.log-event-cell strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-event-cell small { color: var(--muted); font-size: 11px; }
+.log-details { max-height: 180px; overflow: auto; margin: 0; padding: 12px 18px; color: #4e5969; background: #f7f8fa; border-radius: 4px; font: 11px/1.6 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .detail-surface { padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
 .detail-surface h5 { margin-top: 0; }
 .health-detail { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

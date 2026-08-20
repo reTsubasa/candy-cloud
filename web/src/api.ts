@@ -16,6 +16,7 @@ import type {
   EnrollmentActivationSecret,
   RuntimeActivationReadiness,
   RuntimeConfigurationStatusResponse,
+  AuditEventResponse,
   RuntimeTelemetryResponse,
   CloudVersionInfo,
   ResourceReferenceListResponse,
@@ -351,6 +352,10 @@ export async function fetchRuntimeTelemetry(
       local_networks: item.local_networks ?? [],
     })),
   };
+}
+
+export function listAuditEvents(token: string, tenantId: string, limit = 200): Promise<AuditEventResponse> {
+  return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/audit-events?limit=${limit}`, token);
 }
 
 export function getResource(token: string, tenantId: string, collection: string, id: string): Promise<ControlResource> {

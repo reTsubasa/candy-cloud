@@ -29,7 +29,7 @@ import { pathDefinition, resourceDefinitions } from '../resource-definitions';
 import type { ControlResource, HealthState, RuntimeActivationReadiness, RuntimeConfigurationStatus, RuntimeTelemetry, Session } from '../types';
 import { QuickSetupWizard } from './QuickSetupWizard';
 
-type Props = { session: Session };
+type Props = { session: Session; onOpenLogs?: () => void };
 
 const initialHealth: HealthState = {
   live: { status: null, text: '', loading: true, checkedAt: null },
@@ -70,7 +70,7 @@ function inactiveNodeDetail(node: OperationalTopologySnapshot['nodes'][number]):
   return 'Runtime 未提供可识别的运行状态，请检查节点服务和版本';
 }
 
-export function Overview({ session }: Props) {
+export function Overview({ session, onOpenLogs }: Props) {
   const [resources, setResources] = useState<OperationalResources>(emptyOperationalResources);
   const [resourceErrors, setResourceErrors] = useState<ResourceLoadErrors>({});
   const [statuses, setStatuses] = useState<RuntimeConfigurationStatus[]>([]);
@@ -187,10 +187,6 @@ export function Overview({ session }: Props) {
   return (
     <section className="workspace-section operational-overview">
       <header className="page-header operational-header">
-        <div>
-          <Typography.Title heading={4}>网络运营中心</Typography.Title>
-          <Typography.Text type="secondary">控制面与数据面运行拓扑</Typography.Text>
-        </div>
         <Space>
           <span className="live-refresh-control"><Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} /><span>实时更新</span></span>
           <Button icon={<IconRefresh />} loading={refreshing} onClick={() => void load(true)}>刷新</Button>
@@ -232,7 +228,7 @@ export function Overview({ session }: Props) {
 
           <aside className="telemetry-rail">
             <section>
-              <header><strong>运行事件</strong><Tag color={incidents.length > 0 ? 'orange' : 'green'}>{incidents.length > 0 ? `${incidents.length} 项关注` : '无异常'}</Tag></header>
+              <header><strong>运行事件</strong><span className="incident-header-actions"><Tag color={incidents.length > 0 ? 'orange' : 'green'}>{incidents.length > 0 ? `${incidents.length} 项关注` : '无异常'}</Tag>{onOpenLogs && <Button type="text" size="mini" onClick={onOpenLogs}>查看日志</Button>}</span></header>
               {incidents.length === 0 ? <div className="quiet-state"><IconCheckCircle /><span>当前未发现控制面或配置应用异常</span></div> : (
                 <div className="incident-list">{incidents.map((incident, index) => <div className={`incident-item ${incident.tone}`} key={`${incident.title}-${index}`}><i /><div><strong>{incident.title}</strong><span>{incident.detail}</span></div></div>)}</div>
               )}
@@ -291,7 +287,7 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
   const siteBottom = siteY + 152;
   const linkLaneGap = 28;
   const linkLaneCount = Math.min(snapshot.links.length, 8);
-  const height = Math.max(470, siteBottom + 42 + linkLaneCount * linkLaneGap + 32);
+  const height = siteBottom + 42 + linkLaneCount * linkLaneGap + 32;
   const siteX = (index: number) => siteCount <= 1 ? center : 100 + index * ((width - 200) / (siteCount - 1));
   const siteById = Object.fromEntries(snapshot.sites.map((site, index) => [site.id, { ...site, x: siteX(index) }]));
   return <div className="topology-canvas" aria-label="SD-WAN 运行拓扑">

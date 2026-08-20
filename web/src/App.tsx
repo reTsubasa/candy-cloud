@@ -177,6 +177,7 @@ export default function App() {
           {resourceDefinitions.filter((item) => ['segments', 'attachments', 'prefixes'].includes(item.key)).map((item) => <Menu.Item key={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
           <Menu.Item key="peers"><IconWifi />站点互联</Menu.Item>
           {resourceDefinitions.filter((item) => ['egress', 'policies', 'dns', 'relays'].includes(item.key)).map((item) => <Menu.Item key={item.key}>{iconByKey[item.key]}{item.label}</Menu.Item>)}
+          <Menu.Item key="logs"><IconStorage />日志</Menu.Item>
           <Menu.Item key="system"><IconSettings />系统</Menu.Item>
           {['ORGANIZATION_OWNER', 'TENANT_ADMIN', 'AUDITOR'].includes(session.membership?.role ?? session.claims.role ?? '') && <Menu.Item key="access"><IconSafe />成员与权限</Menu.Item>}
           <Menu.Item key="account"><IconUser />账户与安全</Menu.Item>
@@ -204,7 +205,7 @@ export default function App() {
           </Dropdown>
         </header>
         <Layout.Content className="workspace">
-          {selected === 'overview' && <Overview session={session} />}
+          {selected === 'overview' && <Overview session={session} onOpenLogs={() => setSelected('logs')} />}
           {selected === 'enrollment' && <NodeEnrollment session={session} recoveryNode={reenrollNode} onBack={() => { setReenrollNode(null); setSelected('nodes'); }} onCreateSite={() => { setReenrollNode(null); setSelected('sites'); setCreateRequest({ key: 'sites', nonce: Date.now() }); }} onFinished={() => { setReenrollNode(null); setSelected('nodes'); }} />}
           {selectedDefinition && selected !== 'peers' && <ResourcePage definition={selectedDefinition} session={session} createRequest={createRequest.key === selected ? createRequest.nonce : 0} focusRequest={focusRequest} onFocusHandled={() => setFocusRequest(undefined)} onLocateResource={locateResource} onEnrollNode={() => { setReenrollNode(null); setSelected('enrollment'); setCreateRequest({ key: '', nonce: 0 }); }} onReenrollNode={(node) => { setReenrollNode(node); setSelected('enrollment'); }} />}
           {selected === 'peers' && (
@@ -214,6 +215,7 @@ export default function App() {
             </Tabs>
           )}
           {selected === 'system' && <SystemPage session={session} />}
+          {selected === 'logs' && <SystemPage session={session} initialTab="logs" />}
           {selected === 'account' && <AccountSecurity session={session} onDisconnect={clearLocalSession} />}
           {selected === 'access' && <OrganizationAccess session={session} onSessionInvalidated={clearLocalSession} />}
         </Layout.Content>

@@ -248,6 +248,64 @@ pub struct RuntimeConfigurationStatusItem {
 }
 
 #[derive(Debug, Serialize)]
+pub struct AuditEventResponse {
+    pub schema_version: u16,
+    pub items: Vec<AuditEventItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuditEventItem {
+    pub id: Uuid,
+    pub actor_type: String,
+    pub actor_id: Option<String>,
+    pub action: String,
+    pub object_type: String,
+    pub object_id: Option<String>,
+    pub metadata_json: String,
+    pub created_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AuditEventQuery {
+    pub limit: Option<u16>,
+}
+
+pub async fn audit_events(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path(tenant_id): Path<Uuid>,
+    Query(query): Query<AuditEventQuery>,
+) -> Result<Json<AuditEventResponse>, ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::ReadAudit)?;
+    let repository = state.repository.as_ref().ok_or(ApiError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        code: "CONTROL_PLANE_UNAVAILABLE",
+        message: "control plane storage is not configured",
+    })?;
+    let items = repository
+        .audit_events(tenant_id, query.limit.unwrap_or(200))
+        .await
+        .map_err(ApiError::from_store)?
+        .into_iter()
+        .map(|event| AuditEventItem {
+            id: event.id,
+            actor_type: event.actor_type,
+            actor_id: event.actor_id,
+            action: event.action,
+            object_type: event.object_type,
+            object_id: event.object_id,
+            metadata_json: event.metadata_json,
+            created_at: event.created_at,
+        })
+        .collect();
+    Ok(Json(AuditEventResponse {
+        schema_version: CONTROL_SCHEMA_V1,
+        items,
+    }))
+}
+
+#[derive(Debug, Serialize)]
 pub struct RuntimeTelemetryResponse {
     pub schema_version: u16,
     pub stale_after_seconds: u16,

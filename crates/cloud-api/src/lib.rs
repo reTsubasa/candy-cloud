@@ -112,6 +112,10 @@ fn management_routes() -> Router<Arc<ManagementState>> {
             get(management::runtime_telemetry),
         )
         .route(
+            "/v1/tenants/{tenant_id}/audit-events",
+            get(management::audit_events),
+        )
+        .route(
             "/v1/tenants/{tenant_id}/{collection}",
             get(management::list).post(management::create),
         )

@@ -141,6 +141,22 @@ export type RuntimeConfigurationStatusResponse = {
   items: RuntimeConfigurationStatus[];
 };
 
+export type AuditEvent = {
+  id: string;
+  actor_type: string;
+  actor_id: string | null;
+  action: string;
+  object_type: string;
+  object_id: string | null;
+  metadata_json: string;
+  created_at: string;
+};
+
+export type AuditEventResponse = {
+  schema_version: number;
+  items: AuditEvent[];
+};
+
 export type RuntimeTelemetry = {
   device_id: string;
   device_key_id: string;
