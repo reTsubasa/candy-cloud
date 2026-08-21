@@ -7,8 +7,10 @@ use crate::{
     grants::{GrantIssueError, GrantSigner, IssuedGrant},
 };
 
-pub const PERMISSION_PRIVATE_CONNECT: u64 = 1 << 0;
-pub const PERMISSION_PRIVATE_TUN_CONNECT: u64 = 1 << 1;
+// These values are part of the Core Grant wire contract. Keep TUN on bit 0;
+// deployed Core versions reject transport Grants that do not carry that bit.
+pub const PERMISSION_PRIVATE_TUN_CONNECT: u64 = 1 << 0;
+pub const PERMISSION_PRIVATE_CONNECT: u64 = 1 << 1;
 const FEATURE_DATAGRAM: u64 = 1 << 0;
 const FEATURE_IP_PACKET_TUNNEL_V1: u64 = 1 << 10;
 const REQUIRED_TUN_FEATURES: u64 = FEATURE_DATAGRAM | FEATURE_IP_PACKET_TUNNEL_V1;
@@ -486,6 +488,10 @@ mod tests {
         assert_eq!(
             payload["allowed_features"].as_u64().unwrap() & REQUIRED_TUN_FEATURES,
             REQUIRED_TUN_FEATURES
+        );
+        assert_eq!(
+            payload["service_permissions"].as_u64().unwrap(),
+            PERMISSION_PRIVATE_TUN_CONNECT
         );
         assert_eq!(
             payload["route_policy"]["policy_id_hex"],
