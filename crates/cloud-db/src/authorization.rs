@@ -85,8 +85,8 @@ impl AuthorizationRepository {
                     np.id AS node_pool_id, np.service_class, \
                     e.id AS entitlement_id, e.service_permission, e.status AS entitlement_status, \
                     e.generation AS entitlement_generation, s.status AS subscription_status, \
-                    COALESCE(p.generation, 0) AS policy_generation, \
-                    COALESCE(r.generation, 0) AS revocation_generation, \
+                    CAST(COALESCE(p.generation, 0) AS UNSIGNED) AS policy_generation, \
+                    CAST(COALESCE(r.generation, 0) AS UNSIGNED) AS revocation_generation, \
                     ag.generation AS authorization_generation, \
                     CAST(e.quota_json AS CHAR) AS quota_json \
              FROM tenants t \

@@ -79,6 +79,25 @@ fn transport_activation_migration_is_identity_scoped_and_fail_closed() {
     assert!(!migration.contains("certificate_der"));
 }
 
+#[test]
+fn private_tun_quota_repair_is_scoped_and_explicit() {
+    let migration = include_str!("../migrations/0016_private_tun_entitlement_quota.sql");
+    assert!(migration.contains("service_permission = 'private.tun.connect'"));
+    assert!(migration.contains("JSON_LENGTH(quota_json) = 0"));
+    assert!(migration.contains("'allowed_features', 1025"));
+    assert!(migration.contains("'max_datagram_record', 1200"));
+    assert!(!migration.contains("UPDATE entitlements SET quota_json = JSON_OBJECT"));
+}
+
+#[test]
+fn authorization_generation_baseline_backfills_existing_tenants() {
+    let migration = include_str!("../migrations/0017_authorization_generation_baseline.sql");
+    assert!(migration.contains("INSERT INTO authorization_generations"));
+    assert!(migration.contains("INSERT INTO revocation_generations"));
+    assert!(migration.contains("INSERT INTO policies"));
+    assert!(migration.contains("LEFT JOIN authorization_generations"));
+}
+
 #[tokio::test]
 async fn database_connections_use_read_committed_isolation() {
     let Ok(url) = std::env::var("DATABASE_URL") else {

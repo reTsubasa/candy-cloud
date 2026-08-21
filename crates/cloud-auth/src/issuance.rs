@@ -7,8 +7,11 @@ use crate::{
     grants::{GrantIssueError, GrantSigner, IssuedGrant},
 };
 
-pub const PERMISSION_PRIVATE_CONNECT: u64 = 1 << 0;
-pub const PERMISSION_PRIVATE_TUN_CONNECT: u64 = 1 << 1;
+// Keep these wire values aligned with candy-proto::cloud_grant. Ordinary
+// private.connect has no transport permission bit; private.tun.connect is the
+// v1 TUN permission at bit zero.
+pub const PERMISSION_PRIVATE_CONNECT: u64 = 0;
+pub const PERMISSION_PRIVATE_TUN_CONNECT: u64 = 1 << 0;
 const FEATURE_DATAGRAM: u64 = 1 << 0;
 const FEATURE_IP_PACKET_TUNNEL_V1: u64 = 1 << 10;
 const REQUIRED_TUN_FEATURES: u64 = FEATURE_DATAGRAM | FEATURE_IP_PACKET_TUNNEL_V1;
@@ -488,6 +491,10 @@ mod tests {
             REQUIRED_TUN_FEATURES
         );
         assert_eq!(
+            payload["service_permissions"].as_u64().unwrap(),
+            PERMISSION_PRIVATE_TUN_CONNECT
+        );
+        assert_eq!(
             payload["route_policy"]["policy_id_hex"],
             encode_hex(projection_id.as_bytes())
         );
@@ -516,5 +523,6 @@ mod tests {
         .unwrap();
         let request = request_from_issued(&prepared.issued);
         assert!(request["object"]["route_policy"].is_null());
+        assert_eq!(request["object"]["service_permissions"], 0);
     }
 }

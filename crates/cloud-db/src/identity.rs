@@ -322,6 +322,7 @@ impl IdentityRepository {
             .bind(&registration.organization_name)
             .execute(&mut *tx)
             .await?;
+        initialize_tenant_authorization(&mut tx, registration.tenant_id).await?;
         sqlx::query("INSERT INTO organization_memberships (organization_id, user_id, role) VALUES (?, ?, 'ORGANIZATION_OWNER')")
             .bind(registration.organization_id).bind(registration.user_id).execute(&mut *tx).await?;
         tx.commit().await?;
@@ -406,6 +407,7 @@ impl IdentityRepository {
             .bind(&registration.organization_name)
             .execute(&mut *tx)
             .await?;
+        initialize_tenant_authorization(&mut tx, registration.tenant_id).await?;
         sqlx::query("INSERT INTO organization_memberships (organization_id, user_id, role, status) VALUES (?, ?, 'ORGANIZATION_OWNER', 'ACTIVE')")
             .bind(registration.organization_id)
             .bind(registration.user_id)
@@ -1191,6 +1193,27 @@ impl IdentityRepository {
         .await?;
         Ok(found)
     }
+}
+
+async fn initialize_tenant_authorization(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    tenant_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO authorization_generations (tenant_id, generation) VALUES (?, 1)")
+        .bind(tenant_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("INSERT INTO revocation_generations (tenant_id, generation) VALUES (?, 1)")
+        .bind(tenant_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO policies (tenant_id, generation, policy_json) VALUES (?, 1, JSON_OBJECT())",
+    )
+    .bind(tenant_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 async fn revoke_membership_sessions(
