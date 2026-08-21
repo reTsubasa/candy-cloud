@@ -344,7 +344,11 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     let attachment_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let device_key_id = Uuid::new_v4();
+    let peer_attachment_id = Uuid::new_v4();
+    let peer_device_id = Uuid::new_v4();
+    let peer_device_key_id = Uuid::new_v4();
     let service_node_id = Uuid::new_v4();
+    let peer_service_node_id = Uuid::new_v4();
     sqlx::query("INSERT INTO organizations (id, name) VALUES (?, ?)")
         .bind(organization_id)
         .bind(format!("org-{organization_id}"))
@@ -409,6 +413,23 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO devices (id, tenant_id, device_id, display_name, status) VALUES (?, ?, ?, ?, 'ACTIVE')")
+        .bind(peer_device_id)
+        .bind(tenant_id)
+        .bind(Uuid::new_v4().to_string())
+        .bind(format!("device-{peer_device_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO device_keys (id, tenant_id, device_id, key_id, public_key, status) VALUES (?, ?, ?, ?, ?, 'ACTIVE')")
+        .bind(peer_device_key_id)
+        .bind(tenant_id)
+        .bind(peer_device_id)
+        .bind(format!("key-{peer_device_key_id}"))
+        .bind([2_u8; 32].as_slice())
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO nodes (id, tenant_id, device_id, device_key_id, node_pool_id, node_id, status) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')")
         .bind(service_node_id)
         .bind(tenant_id)
@@ -416,6 +437,16 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         .bind(device_key_id)
         .bind(node_pool_id)
         .bind(format!("publication-node-{service_node_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO nodes (id, tenant_id, device_id, device_key_id, node_pool_id, node_id, status) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')")
+        .bind(peer_service_node_id)
+        .bind(tenant_id)
+        .bind(peer_device_id)
+        .bind(peer_device_key_id)
+        .bind(node_pool_id)
+        .bind(format!("publication-node-{peer_service_node_id}"))
         .execute(&pool)
         .await
         .unwrap();
@@ -443,6 +474,17 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO segment_attachments (id, tenant_id, segment_id, site_id, principal_kind, device_id, device_key_id, overlay_router_ipv4, state, epoch_floor) VALUES (?, ?, ?, ?, 'DEVICE', ?, ?, ?, 'ACTIVE', 1)")
+        .bind(peer_attachment_id)
+        .bind(tenant_id)
+        .bind(segment_id)
+        .bind(site_id)
+        .bind(peer_device_id)
+        .bind(peer_device_key_id)
+        .bind([100_u8, 64, 0, 2].as_slice())
+        .execute(&pool)
+        .await
+        .unwrap();
     assert!(matches!(
         repository
             .current_runtime_configuration(&runtime_lookup)
@@ -460,6 +502,19 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     write.projections[0].device_id = device_id;
     write.projections[0].device_key_id = device_key_id;
     write.projections[0].transport_nodes = vec![(service_node_id, device_key_id)];
+    let mut peer_projection = write.projections[0].clone();
+    peer_projection.publication_id = Uuid::new_v4();
+    peer_projection.projection_id = peer_attachment_id;
+    peer_projection.site_id = site_id;
+    peer_projection.attachment_id = peer_attachment_id;
+    peer_projection.device_id = peer_device_id;
+    peer_projection.device_key_id = peer_device_key_id;
+    peer_projection.object = signed(10);
+    peer_projection.transport_nodes = vec![
+        (service_node_id, device_key_id),
+        (peer_service_node_id, peer_device_key_id),
+    ];
+    write.projections.push(peer_projection);
     write.expansions.push(ExpansionObjectPublicationWrite {
         publication_id: Uuid::new_v4(),
         kind: ExpansionObjectKind::MeshMembership,
@@ -572,6 +627,12 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     second.projections[0].projection_generation = 2;
     second.projections[0].previous_hash = [8_u8; 32];
     second.projections[0].object = signed(18);
+    second.projections[1].publication_id = Uuid::new_v4();
+    second.projections[1].segment_generation = 2;
+    second.projections[1].segment_content_hash = second.snapshot.content_hash;
+    second.projections[1].projection_generation = 2;
+    second.projections[1].previous_hash = [10_u8; 32];
+    second.projections[1].object = signed(20);
     second.expansions[0].publication_id = Uuid::new_v4();
     second.expansions[0].generation = 2;
     second.expansions[0].segment_generation = 2;
@@ -614,7 +675,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     assert_eq!(compatible.peer_projection_catalog.len(), 1);
     assert_eq!(
         compatible.peer_projection_catalog[0].projection_id,
-        write.projections[0].projection_id
+        peer_attachment_id
     );
     assert_eq!(
         compatible.peer_projection_catalog[0].projection_generation,
@@ -622,8 +683,21 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     );
     assert_eq!(
         compatible.peer_projection_catalog[0].projection_content_hash,
-        [8_u8; 32]
+        [10_u8; 32]
     );
+    let peer_runtime_lookup = RuntimeConfigurationLookup {
+        tenant_id,
+        device_id: peer_device_id,
+        device_key_id: peer_device_key_id,
+    };
+    let RuntimeConfigurationState::Current(peer_runtime) = repository
+        .current_runtime_configuration(&peer_runtime_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("expected peer generation 2 Runtime configuration");
+    };
+    assert!(peer_runtime.compatibility_generations.is_empty());
     sqlx::query("UPDATE segment_route_publications SET expires_at = 0 WHERE id = ?")
         .bind(write.publication_id)
         .execute(&pool)
