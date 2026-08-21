@@ -320,6 +320,13 @@ pub trait RuntimeConfigurationService: Send + Sync + 'static {
         command: RuntimeConfigurationStatusCommand,
     ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>>;
 
+    fn record_telemetry(
+        &self,
+        _actor: AuthenticatedDevice,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async { Err(RuntimeConfigurationServiceError::Unavailable) })
+    }
+
     fn publish_transport_identity(
         &self,
         _command: RuntimeTransportIdentityCommand,
@@ -423,7 +430,28 @@ where
             "/v1/runtime/configuration/status",
             put(record_runtime_configuration_status::<S>),
         )
+        .route("/v1/runtime/telemetry", put(record_runtime_telemetry::<S>))
         .with_state(service)
+}
+
+/// Accept the Runtime telemetry contract even when a deployment has not yet
+/// enabled historical telemetry storage. Keeping this endpoint in the
+/// authenticated Runtime surface prevents a healthy node from reporting a
+/// misleading HTTP 404 and makes the wire contract forward compatible.
+async fn record_runtime_telemetry<S>(
+    actor: AuthenticatedDevice,
+    State(service): State<Arc<S>>,
+    Json(request): Json<RuntimeTelemetryHttpRequest>,
+) -> Result<StatusCode, ApiError>
+where
+    S: RuntimeConfigurationService,
+{
+    request.validate()?;
+    service
+        .record_telemetry(actor)
+        .await
+        .map_err(ApiError::RuntimeConfiguration)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn withdraw_runtime_transport_identity<S>(
@@ -1189,6 +1217,139 @@ struct RuntimeConfigurationStatusHttpRequest {
     projection_content_hash: String,
     state: RuntimeConfigurationApplyStateHttp,
     error_code: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeTelemetryHttpRequest {
+    schema_version: u8,
+    boot_id: Uuid,
+    sequence: u64,
+    lifecycle: String,
+    configured_peers: u32,
+    active_peers: u32,
+    required_route_owners: u32,
+    ready_route_owners: u32,
+    fail_open_required: bool,
+    last_error_code: Option<String>,
+    rtt_ms: Option<u32>,
+    jitter_ms: Option<u32>,
+    packet_loss_ppm: Option<u32>,
+    rx_bps: Option<u64>,
+    tx_bps: Option<u64>,
+    reconnects: Option<u64>,
+    path_changes: Option<u64>,
+    paths: Vec<RuntimeTelemetryPathHttpRequest>,
+    local_networks: Option<Vec<RuntimeTelemetryNetworkHttpRequest>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeTelemetryPathHttpRequest {
+    peer_attachment_id: String,
+    candidate_id: Option<String>,
+    path_kind: String,
+    transport: String,
+    connection_epoch: u64,
+    rtt_ms: Option<u32>,
+    jitter_ms: Option<u32>,
+    packet_loss_ppm: Option<u32>,
+    rx_bps: Option<u64>,
+    tx_bps: Option<u64>,
+    reconnects: u64,
+    path_changes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeTelemetryNetworkHttpRequest {
+    network_id: String,
+    interface_name: String,
+    cidr: String,
+    address: String,
+    kind: String,
+}
+
+impl RuntimeTelemetryHttpRequest {
+    fn validate(&self) -> Result<(), ApiError> {
+        let _ = (
+            self.fail_open_required,
+            self.rtt_ms,
+            self.jitter_ms,
+            self.packet_loss_ppm,
+            self.rx_bps,
+            self.tx_bps,
+            self.reconnects,
+            self.path_changes,
+        );
+        if self.schema_version != 1
+            || self.boot_id.is_nil()
+            || self.sequence == 0
+            || self.lifecycle.is_empty()
+            || self.lifecycle.len() > 32
+            || !self.lifecycle.is_ascii()
+            || self.active_peers > self.configured_peers
+            || self.ready_route_owners > self.required_route_owners
+            || self.ready_route_owners > self.active_peers
+            || self.paths.len() > 256
+            || self
+                .last_error_code
+                .as_deref()
+                .is_some_and(|value| value.len() > 120 || !value.is_ascii())
+            || self
+                .local_networks
+                .as_ref()
+                .is_some_and(|values| values.len() > 64)
+        {
+            return Err(ApiError::InvalidRuntimeConfigurationStatus);
+        }
+        if self.paths.iter().any(|path| {
+            let _ = (
+                &path.candidate_id,
+                path.rtt_ms,
+                path.jitter_ms,
+                path.packet_loss_ppm,
+                path.rx_bps,
+                path.tx_bps,
+                path.reconnects,
+                path.path_changes,
+            );
+            path.peer_attachment_id.is_empty()
+                || path.peer_attachment_id.len() > 128
+                || path.path_kind.is_empty()
+                || path.path_kind.len() > 32
+                || path.transport.is_empty()
+                || path.transport.len() > 32
+                || path.connection_epoch == 0
+                || path.peer_attachment_id.len() != 32
+                || !path
+                    .peer_attachment_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            return Err(ApiError::InvalidRuntimeConfigurationStatus);
+        }
+        if self.local_networks.as_ref().is_some_and(|values| {
+            values.iter().any(|network| {
+                network.network_id.len() != 64
+                    || !network
+                        .network_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit())
+                    || network.interface_name.is_empty()
+                    || network.interface_name.len() > 64
+                    || network.cidr.is_empty()
+                    || network.cidr.len() > 64
+                    || network.address.is_empty()
+                    || network.address.len() > 64
+                    || network.kind.is_empty()
+                    || network.kind.len() > 32
+            })
+        }) {
+            return Err(ApiError::InvalidRuntimeConfigurationStatus);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]

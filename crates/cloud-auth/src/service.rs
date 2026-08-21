@@ -301,6 +301,27 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
         })
     }
 
+    fn record_telemetry(
+        &self,
+        actor: crate::routes::AuthenticatedDevice,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async move {
+            self.repository
+                .record_runtime_telemetry_heartbeat(&RuntimeConfigurationLookup {
+                    tenant_id: actor.tenant_id(),
+                    device_id: actor.device_id(),
+                    device_key_id: actor.device_key_id(),
+                })
+                .await
+                .map_err(|error| match error {
+                    RuntimeConfigurationError::InvalidScope => {
+                        RuntimeConfigurationServiceError::Conflict
+                    }
+                    _ => RuntimeConfigurationServiceError::Unavailable,
+                })
+        })
+    }
+
     fn publish_transport_identity(
         &self,
         command: RuntimeTransportIdentityCommand,

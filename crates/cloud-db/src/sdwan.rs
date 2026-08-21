@@ -788,6 +788,27 @@ impl SdwanRepository {
         Ok(())
     }
 
+    pub async fn record_runtime_telemetry_heartbeat(
+        &self,
+        lookup: &RuntimeConfigurationLookup,
+    ) -> Result<(), RuntimeConfigurationError> {
+        lookup.validate()?;
+        let now = Utc::now();
+        let update = sqlx::query(
+            "UPDATE devices SET last_seen_at = ? WHERE tenant_id = ? AND id = ? AND status = 'ACTIVE' AND EXISTS (SELECT 1 FROM device_keys WHERE device_keys.tenant_id = devices.tenant_id AND device_keys.device_id = devices.id AND device_keys.id = ? AND device_keys.status = 'ACTIVE')",
+        )
+        .bind(now)
+        .bind(lookup.tenant_id)
+        .bind(lookup.device_id)
+        .bind(lookup.device_key_id)
+        .execute(&self.pool)
+        .await?;
+        if update.rows_affected() != 1 {
+            return Err(RuntimeConfigurationError::InvalidScope);
+        }
+        Ok(())
+    }
+
     pub async fn current_head(
         &self,
         tenant_id: Uuid,
