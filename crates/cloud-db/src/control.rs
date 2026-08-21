@@ -1888,7 +1888,7 @@ impl GenerationJobRepository {
         let threshold_unix = threshold.timestamp().max(0) as u64;
         let mut transaction = self.pool.begin().await?;
         let rows = sqlx::query(
-            "SELECT seg.tenant_id, seg.id AS segment_id, seg.current_generation FROM segments seg JOIN segment_generation_heads head ON head.tenant_id = seg.tenant_id AND head.segment_id = seg.id AND head.desired_revision = seg.current_generation JOIN segment_route_publications publication ON publication.tenant_id = seg.tenant_id AND publication.segment_id = seg.id AND publication.generation = seg.current_generation WHERE seg.state = 'ACTIVE' AND seg.current_generation > 0 AND publication.stale_until <= ? AND NOT EXISTS (SELECT 1 FROM segment_generation_jobs pending WHERE pending.tenant_id = seg.tenant_id AND pending.segment_id = seg.id AND pending.state IN ('PENDING','LEASED','RETRY')) ORDER BY publication.stale_until, seg.tenant_id, seg.id LIMIT ? FOR UPDATE SKIP LOCKED",
+            "SELECT seg.tenant_id, seg.id AS segment_id, seg.current_generation, head.desired_revision FROM segments seg JOIN segment_generation_heads head ON head.tenant_id = seg.tenant_id AND head.segment_id = seg.id JOIN segment_route_publications publication ON publication.tenant_id = seg.tenant_id AND publication.segment_id = seg.id AND publication.generation = seg.current_generation WHERE seg.state = 'ACTIVE' AND seg.current_generation > 0 AND publication.stale_until <= ? AND NOT EXISTS (SELECT 1 FROM segment_generation_jobs pending WHERE pending.tenant_id = seg.tenant_id AND pending.segment_id = seg.id AND pending.state IN ('PENDING','LEASED','RETRY')) ORDER BY publication.stale_until, seg.tenant_id, seg.id LIMIT ? FOR UPDATE SKIP LOCKED",
         )
         .bind(threshold_unix)
         .bind(limit as u32)
@@ -1898,8 +1898,8 @@ impl GenerationJobRepository {
         for row in rows {
             let tenant_id: Uuid = row.try_get("tenant_id")?;
             let segment_id: Uuid = row.try_get("segment_id")?;
-            let current_generation: u64 = row.try_get("current_generation")?;
-            let desired_revision = current_generation
+            let current_revision: u64 = row.try_get("desired_revision")?;
+            let desired_revision = current_revision
                 .checked_add(1)
                 .ok_or(ControlStoreError::InvalidTransition)?;
             let mut digest = Sha256::new();
@@ -1914,7 +1914,7 @@ impl GenerationJobRepository {
             .bind(desired_revision)
             .bind(tenant_id)
             .bind(segment_id)
-            .bind(current_generation)
+            .bind(current_revision)
             .execute(&mut *transaction)
             .await?;
             sqlx::query(
