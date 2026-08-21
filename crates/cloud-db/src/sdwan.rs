@@ -1197,6 +1197,28 @@ impl SdwanRepository {
             }
         }
 
+        for resource in resources {
+            let ResourceSpecV1::Prefix(prefix) = &resource.resource else {
+                continue;
+            };
+            let state = if resource.metadata.state == ResourceState::Active {
+                "ACTIVE"
+            } else {
+                "DISABLED"
+            };
+            sqlx::query(
+                "INSERT INTO site_prefixes (id, tenant_id, site_id, network, prefix_len, state) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE site_id = VALUES(site_id), network = VALUES(network), prefix_len = VALUES(prefix_len), state = VALUES(state)",
+            )
+            .bind(resource.metadata.id)
+            .bind(tenant_id)
+            .bind(prefix.site_id)
+            .bind(prefix.prefix.network.octets().as_slice())
+            .bind(prefix.prefix.prefix_len)
+            .bind(state)
+            .execute(&mut *transaction)
+            .await?;
+        }
+
         let hub_pool_id: Uuid = if let Some(pool_id) = sqlx::query_scalar(
             "SELECT id FROM node_pools WHERE tenant_id = ? AND status = 'ACTIVE' ORDER BY created_at, id LIMIT 1",
         )
@@ -1580,15 +1602,22 @@ async fn validate_projection_ownership(
     transaction: &mut Transaction<'_, MySql>,
     write: &SegmentPublicationWrite,
 ) -> Result<(), SdwanError> {
-    // MySQL returns COUNT(*) as signed BIGINT even when the counted keys are unsigned.
-    let expected_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM segment_attachments WHERE tenant_id = ? AND segment_id = ? AND principal_kind = 'DEVICE' AND state IN ('ACTIVE', 'STANDBY')",
+    let required_route_owners: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT a.id FROM segment_attachments a JOIN site_prefixes prefix ON prefix.tenant_id = a.tenant_id AND prefix.site_id = a.site_id AND prefix.state = 'ACTIVE' WHERE a.tenant_id = ? AND a.segment_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE', 'STANDBY') ORDER BY a.id",
     )
     .bind(write.tenant_id)
     .bind(write.segment_id)
-    .fetch_one(&mut **transaction)
+    .fetch_all(&mut **transaction)
     .await?;
-    if expected_count != write.projections.len() as i64 {
+    let projected_attachments = write
+        .projections
+        .iter()
+        .map(|projection| projection.attachment_id)
+        .collect::<HashSet<_>>();
+    if required_route_owners
+        .iter()
+        .any(|attachment_id| !projected_attachments.contains(attachment_id))
+    {
         return Err(SdwanError::MissingProjection);
     }
 
