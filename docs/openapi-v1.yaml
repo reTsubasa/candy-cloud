@@ -823,8 +823,11 @@ paths:
         "200":
           description: |-
             Current Core-signed Segment snapshot and device projection from one
-            coherent generation. Runtime MUST verify and compile both envelopes
-            before atomically replacing last-known-good state.
+            coherent generation, plus at most one bounded previous-generation
+            inbound verification catalog during rolling activation. Runtime MUST
+            verify each generation independently before atomically replacing
+            last-known-good state. Compatibility material MUST NOT authorize
+            local routes, outbound Grants, or generation rollback.
           headers:
             ETag: { $ref: "#/components/headers/ConfigurationETag" }
             X-Candy-Projection-Publication-Id:
@@ -1632,7 +1635,7 @@ components:
     RuntimeConfiguration:
       type: object
       additionalProperties: false
-      required: [schema_version, projection_publication_id, projection_id, segment_id, attachment_id, segment_generation, projection_generation, projection_content_hash, route_signing_key_id, route_signing_public_key, grant_verification_keys, segment_snapshot, site_projection, peer_projection_catalog]
+      required: [schema_version, projection_publication_id, projection_id, segment_id, attachment_id, segment_generation, projection_generation, projection_content_hash, route_signing_key_id, route_signing_public_key, grant_verification_keys, segment_snapshot, site_projection, peer_projection_catalog, compatibility_generations]
       properties:
         schema_version: { type: integer, const: 1 }
         projection_publication_id: { $ref: "#/components/schemas/Uuid" }
@@ -1653,6 +1656,27 @@ components:
         site_projection: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]+$' }
         peer_projection_catalog:
           type: array
+          maxItems: 4096
+          items: { $ref: "#/components/schemas/PeerProjectionCatalogEntry" }
+        compatibility_generations:
+          type: array
+          maxItems: 1
+          description: |-
+            Exact previous Segment generation retained only for inbound Grant
+            verification during its bounded signed validity and stale windows.
+            An empty array withdraws all prior-generation inbound compatibility.
+          items: { $ref: "#/components/schemas/RuntimeCompatibilityGeneration" }
+    RuntimeCompatibilityGeneration:
+      type: object
+      additionalProperties: false
+      required: [segment_generation, segment_content_hash, segment_snapshot, peer_projection_catalog]
+      properties:
+        segment_generation: { $ref: "#/components/schemas/PositiveInteger" }
+        segment_content_hash: { $ref: "#/components/schemas/Sha256Hex" }
+        segment_snapshot: { type: string, minLength: 1, pattern: '^[A-Za-z0-9_-]+$' }
+        peer_projection_catalog:
+          type: array
+          minItems: 1
           maxItems: 4096
           items: { $ref: "#/components/schemas/PeerProjectionCatalogEntry" }
     GrantVerificationKey:

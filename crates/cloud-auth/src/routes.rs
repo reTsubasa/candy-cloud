@@ -210,7 +210,16 @@ pub struct RuntimeConfigurationDelivery {
     pub route_signing_key_id: String,
     pub route_signing_public_key: [u8; 32],
     pub peer_projection_catalog: Vec<RuntimePeerProjectionDelivery>,
+    pub compatibility_generations: Vec<RuntimeCompatibilityGenerationDelivery>,
     pub grant_verification_keys: Vec<RuntimeGrantVerificationKeyDelivery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeCompatibilityGenerationDelivery {
+    pub segment_generation: u64,
+    pub segment_content_hash: [u8; 32],
+    pub signed_segment_envelope: Vec<u8>,
+    pub peer_projection_catalog: Vec<RuntimePeerProjectionDelivery>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -893,11 +902,20 @@ where
         peer_projection_catalog: delivery
             .peer_projection_catalog
             .iter()
-            .map(|projection| RuntimePeerProjectionHttpResponse {
-                projection_id: projection.projection_id,
-                projection_generation: projection.projection_generation,
-                projection_content_hash: hex(&projection.projection_content_hash),
-                site_projection: encode_base64(projection.signed_projection_envelope.clone()),
+            .map(runtime_peer_projection_http_response)
+            .collect(),
+        compatibility_generations: delivery
+            .compatibility_generations
+            .iter()
+            .map(|generation| RuntimeCompatibilityGenerationHttpResponse {
+                segment_generation: generation.segment_generation,
+                segment_content_hash: hex(&generation.segment_content_hash),
+                segment_snapshot: encode_base64(generation.signed_segment_envelope.clone()),
+                peer_projection_catalog: generation
+                    .peer_projection_catalog
+                    .iter()
+                    .map(runtime_peer_projection_http_response)
+                    .collect(),
             })
             .collect(),
         grant_verification_keys: delivery
@@ -1382,7 +1400,16 @@ struct RuntimeConfigurationHttpResponse {
     segment_snapshot: String,
     site_projection: String,
     peer_projection_catalog: Vec<RuntimePeerProjectionHttpResponse>,
+    compatibility_generations: Vec<RuntimeCompatibilityGenerationHttpResponse>,
     grant_verification_keys: Vec<RuntimeGrantVerificationKeyHttpResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeCompatibilityGenerationHttpResponse {
+    segment_generation: u64,
+    segment_content_hash: String,
+    segment_snapshot: String,
+    peer_projection_catalog: Vec<RuntimePeerProjectionHttpResponse>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1391,6 +1418,17 @@ struct RuntimePeerProjectionHttpResponse {
     projection_generation: u64,
     projection_content_hash: String,
     site_projection: String,
+}
+
+fn runtime_peer_projection_http_response(
+    projection: &RuntimePeerProjectionDelivery,
+) -> RuntimePeerProjectionHttpResponse {
+    RuntimePeerProjectionHttpResponse {
+        projection_id: projection.projection_id,
+        projection_generation: projection.projection_generation,
+        projection_content_hash: hex(&projection.projection_content_hash),
+        site_projection: encode_base64(projection.signed_projection_envelope.clone()),
+    }
 }
 
 #[derive(Debug, Serialize)]

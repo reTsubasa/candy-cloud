@@ -450,6 +450,11 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         Err(RuntimeConfigurationError::MissingCurrentProjection)
     ));
     let mut write = publication(tenant_id, segment_id);
+    // Keep generation 1 in its signed validity and bounded rollover windows
+    // while generation 2 is published so an inbound transport node can
+    // authenticate lagging peers.
+    write.expires_at = 4_102_441_200;
+    write.stale_until = 4_102_444_800;
     write.projections[0].site_id = site_id;
     write.projections[0].attachment_id = attachment_id;
     write.projections[0].device_id = device_id;
@@ -590,10 +595,58 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
             .unwrap(),
         Some((2, [18_u8; 32]))
     );
+    let RuntimeConfigurationState::Current(second_runtime) = repository
+        .current_runtime_configuration(&runtime_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("expected generation 2 Runtime configuration");
+    };
+    assert_eq!(second_runtime.segment_generation, 2);
+    assert_eq!(second_runtime.compatibility_generations.len(), 1);
+    let compatible = &second_runtime.compatibility_generations[0];
+    assert_eq!(compatible.segment_generation, 1);
+    assert_eq!(compatible.segment_content_hash, [7_u8; 32]);
+    assert_eq!(
+        compatible.signed_segment_envelope,
+        write.snapshot.signed_envelope
+    );
+    assert_eq!(compatible.peer_projection_catalog.len(), 1);
+    assert_eq!(
+        compatible.peer_projection_catalog[0].projection_id,
+        write.projections[0].projection_id
+    );
+    assert_eq!(
+        compatible.peer_projection_catalog[0].projection_generation,
+        1
+    );
+    assert_eq!(
+        compatible.peer_projection_catalog[0].projection_content_hash,
+        [8_u8; 32]
+    );
+    sqlx::query("UPDATE segment_route_publications SET expires_at = 0 WHERE id = ?")
+        .bind(write.publication_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let RuntimeConfigurationState::Current(after_signed_expiry) = repository
+        .current_runtime_configuration(&runtime_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("expected current Runtime configuration after compatibility expiry");
+    };
+    assert!(after_signed_expiry.compatibility_generations.is_empty());
+    sqlx::query("UPDATE segment_route_publications SET expires_at = ? WHERE id = ?")
+        .bind(write.expires_at)
+        .bind(write.publication_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     assert!(matches!(
         repository
             .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
-                lookup: runtime_lookup,
+                lookup: runtime_lookup.clone(),
                 projection_publication_id: first_runtime.projection_publication_id,
                 projection_content_hash: first_runtime.projection_content_hash,
                 envelope_sha256: first_runtime.envelope_sha256(),
@@ -603,6 +656,19 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
             .await,
         Err(RuntimeConfigurationError::StaleConfiguration)
     ));
+    sqlx::query("UPDATE segment_route_publications SET stale_until = 0 WHERE id = ?")
+        .bind(write.publication_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let RuntimeConfigurationState::Current(after_stale_window) = repository
+        .current_runtime_configuration(&runtime_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("expected current Runtime configuration after rollover expiry");
+    };
+    assert!(after_stale_window.compatibility_generations.is_empty());
 
     let mut gap = second.clone();
     gap.publication_id = Uuid::new_v4();

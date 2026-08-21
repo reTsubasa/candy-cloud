@@ -14,6 +14,7 @@ use crate::DbPool;
 const MAX_SIGNED_ENVELOPE_LEN: usize = 1024 * 1024;
 const MAX_ACTOR_ID_LEN: usize = 120;
 const MAX_PROJECTIONS: usize = 4096;
+const MAX_COMPATIBILITY_GENERATIONS: usize = 1;
 const MAX_EXPANSION_OBJECTS: usize = 4096;
 const MAX_RUNTIME_PATHS: usize = 256;
 const MAX_RUNTIME_LOCAL_NETWORKS: usize = 64;
@@ -67,6 +68,7 @@ pub struct RuntimeConfigurationRecord {
     pub signed_segment_envelope: Vec<u8>,
     pub signed_projection_envelope: Vec<u8>,
     pub peer_projection_catalog: Vec<RuntimePeerProjection>,
+    pub compatibility_generations: Vec<RuntimeCompatibilityGeneration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +77,14 @@ pub struct RuntimePeerProjection {
     pub projection_generation: u64,
     pub projection_content_hash: [u8; 32],
     pub signed_projection_envelope: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeCompatibilityGeneration {
+    pub segment_generation: u64,
+    pub segment_content_hash: [u8; 32],
+    pub signed_segment_envelope: Vec<u8>,
+    pub peer_projection_catalog: Vec<RuntimePeerProjection>,
 }
 
 impl RuntimeConfigurationRecord {
@@ -92,6 +102,21 @@ impl RuntimeConfigurationRecord {
             digest.update(projection.projection_content_hash);
             digest.update((projection.signed_projection_envelope.len() as u64).to_be_bytes());
             digest.update(&projection.signed_projection_envelope);
+        }
+        digest.update((self.compatibility_generations.len() as u64).to_be_bytes());
+        for generation in &self.compatibility_generations {
+            digest.update(generation.segment_generation.to_be_bytes());
+            digest.update(generation.segment_content_hash);
+            digest.update((generation.signed_segment_envelope.len() as u64).to_be_bytes());
+            digest.update(&generation.signed_segment_envelope);
+            digest.update((generation.peer_projection_catalog.len() as u64).to_be_bytes());
+            for projection in &generation.peer_projection_catalog {
+                digest.update(projection.projection_id.as_bytes());
+                digest.update(projection.projection_generation.to_be_bytes());
+                digest.update(projection.projection_content_hash);
+                digest.update((projection.signed_projection_envelope.len() as u64).to_be_bytes());
+                digest.update(&projection.signed_projection_envelope);
+            }
         }
         digest.finalize().into()
     }
@@ -117,12 +142,29 @@ impl RuntimeConfigurationRecord {
             || self.device_id != lookup.device_id
             || self.device_key_id != lookup.device_key_id
             || self.peer_projection_catalog.len() > MAX_PROJECTIONS
+            || self.compatibility_generations.len() > MAX_COMPATIBILITY_GENERATIONS
             || self.peer_projection_catalog.iter().any(|projection| {
                 projection.projection_id.is_nil()
                     || projection.projection_generation == 0
                     || projection.projection_content_hash == [0; 32]
                     || projection.signed_projection_envelope.is_empty()
                     || projection.signed_projection_envelope.len() > MAX_SIGNED_ENVELOPE_LEN
+            })
+            || self.compatibility_generations.iter().any(|generation| {
+                generation.segment_generation == 0
+                    || generation.segment_generation.checked_add(1) != Some(self.segment_generation)
+                    || generation.segment_content_hash == [0; 32]
+                    || generation.signed_segment_envelope.is_empty()
+                    || generation.signed_segment_envelope.len() > MAX_SIGNED_ENVELOPE_LEN
+                    || generation.peer_projection_catalog.is_empty()
+                    || generation.peer_projection_catalog.len() > MAX_PROJECTIONS
+                    || generation.peer_projection_catalog.iter().any(|projection| {
+                        projection.projection_id.is_nil()
+                            || projection.projection_generation == 0
+                            || projection.projection_content_hash == [0; 32]
+                            || projection.signed_projection_envelope.is_empty()
+                            || projection.signed_projection_envelope.len() > MAX_SIGNED_ENVELOPE_LEN
+                    })
             })
         {
             return Err(RuntimeConfigurationError::InvalidRecord);
@@ -152,6 +194,7 @@ mod runtime_configuration_tests {
             signed_segment_envelope: vec![11],
             signed_projection_envelope: vec![12],
             peer_projection_catalog: catalog,
+            compatibility_generations: Vec::new(),
         }
     }
 
@@ -173,6 +216,33 @@ mod runtime_configuration_tests {
         assert_ne!(empty, one);
         assert_ne!(one, two);
         assert_ne!(two, reordered);
+
+        let mut compatible = record(vec![peer(1)]);
+        compatible.segment_generation = 2;
+        compatible.compatibility_generations = vec![RuntimeCompatibilityGeneration {
+            segment_generation: 1,
+            segment_content_hash: [13; 32],
+            signed_segment_envelope: vec![14],
+            peer_projection_catalog: vec![peer(1)],
+        }];
+        assert_ne!(one, compatible.envelope_sha256());
+        assert!(compatible
+            .validate(&RuntimeConfigurationLookup {
+                tenant_id: compatible.tenant_id,
+                device_id: compatible.device_id,
+                device_key_id: compatible.device_key_id,
+            })
+            .is_ok());
+
+        compatible.segment_generation = 3;
+        assert!(matches!(
+            compatible.validate(&RuntimeConfigurationLookup {
+                tenant_id: compatible.tenant_id,
+                device_id: compatible.device_id,
+                device_key_id: compatible.device_key_id,
+            }),
+            Err(RuntimeConfigurationError::InvalidRecord)
+        ));
     }
 }
 
@@ -1573,6 +1643,60 @@ async fn load_current_runtime_configuration(
             signed_projection_envelope: catalog.try_get("signed_envelope")?,
         });
     }
+    let previous_generation = segment_generation.checked_sub(1);
+    let compatibility_publication = sqlx::query(
+        "SELECT publication.generation AS segment_generation, publication.content_hash AS segment_content_hash, publication.signed_envelope AS signed_segment_envelope FROM nodes n JOIN runtime_projection_transport_catalog catalog ON catalog.transport_node_id = n.id AND catalog.transport_node_key_id = n.device_key_id AND catalog.tenant_id = n.tenant_id JOIN segment_route_publications publication ON publication.tenant_id = catalog.tenant_id AND publication.segment_id = catalog.segment_id AND publication.generation = catalog.segment_generation WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' AND catalog.segment_id = ? AND catalog.segment_generation = ? AND publication.expires_at >= UNIX_TIMESTAMP() AND publication.stale_until >= UNIX_TIMESTAMP() LIMIT 1",
+    )
+    .bind(lookup.tenant_id)
+    .bind(lookup.device_id)
+    .bind(lookup.device_key_id)
+    .bind(segment_id)
+    .bind(previous_generation.unwrap_or_default())
+    .fetch_optional(&mut **transaction)
+    .await?;
+    let mut compatibility_generations = Vec::new();
+    if let Some(publication) = compatibility_publication {
+        let compatible_generation: u64 = publication.try_get("segment_generation")?;
+        let compatible_catalog_rows = sqlx::query(
+            "SELECT p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope FROM nodes n JOIN runtime_projection_transport_catalog catalog ON catalog.transport_node_id = n.id AND catalog.transport_node_key_id = n.device_key_id AND catalog.tenant_id = n.tenant_id JOIN site_route_projection_publications p ON p.id = catalog.projection_publication_id AND p.tenant_id = catalog.tenant_id AND p.segment_id = catalog.segment_id AND p.segment_generation = catalog.segment_generation AND p.projection_id = catalog.projection_id WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' AND catalog.segment_id = ? AND catalog.segment_generation = ? ORDER BY p.projection_id, p.projection_generation",
+        )
+        .bind(lookup.tenant_id)
+        .bind(lookup.device_id)
+        .bind(lookup.device_key_id)
+        .bind(segment_id)
+        .bind(compatible_generation)
+        .fetch_all(&mut **transaction)
+        .await?;
+        if compatible_catalog_rows.is_empty() || compatible_catalog_rows.len() > MAX_PROJECTIONS {
+            return Err(RuntimeConfigurationError::AmbiguousConfiguration);
+        }
+        let mut compatible_catalog = Vec::with_capacity(compatible_catalog_rows.len());
+        let mut compatible_ids = HashSet::with_capacity(compatible_catalog_rows.len());
+        for catalog in compatible_catalog_rows {
+            let projection_id: Uuid = catalog.try_get("projection_id")?;
+            if !compatible_ids.insert(projection_id) {
+                return Err(RuntimeConfigurationError::AmbiguousConfiguration);
+            }
+            compatible_catalog.push(RuntimePeerProjection {
+                projection_id,
+                projection_generation: catalog.try_get("projection_generation")?,
+                projection_content_hash: decode_hash(
+                    &catalog.try_get::<Vec<u8>, _>("projection_content_hash")?,
+                )
+                .map_err(|_| RuntimeConfigurationError::InvalidRecord)?,
+                signed_projection_envelope: catalog.try_get("signed_envelope")?,
+            });
+        }
+        compatibility_generations.push(RuntimeCompatibilityGeneration {
+            segment_generation: compatible_generation,
+            segment_content_hash: decode_hash(
+                &publication.try_get::<Vec<u8>, _>("segment_content_hash")?,
+            )
+            .map_err(|_| RuntimeConfigurationError::InvalidRecord)?,
+            signed_segment_envelope: publication.try_get("signed_segment_envelope")?,
+            peer_projection_catalog: compatible_catalog,
+        });
+    }
     let record = RuntimeConfigurationRecord {
         projection_publication_id: row.try_get("projection_publication_id")?,
         projection_id: row.try_get("projection_id")?,
@@ -1593,6 +1717,7 @@ async fn load_current_runtime_configuration(
         signed_segment_envelope: row.try_get("signed_segment_envelope")?,
         signed_projection_envelope: row.try_get("signed_projection_envelope")?,
         peer_projection_catalog,
+        compatibility_generations,
     };
     record.validate(lookup)?;
     Ok(RuntimeConfigurationState::Current(Box::new(record)))

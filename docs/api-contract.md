@@ -301,6 +301,41 @@ is bounded, sorted by projection id, duplicate-free, and covered by the ETag.
 environment tuples and is also covered by the ETag. Runtime verifies these
 objects before enabling the full-duplex TUN data plane.
 
+The response also contains a bounded `compatibility_generations` array for
+rolling activation. Each entry is an independent object with this shape:
+
+```json
+{
+  "segment_generation": 41,
+  "segment_content_hash": "<64 lowercase hex>",
+  "segment_snapshot": "<base64 signed segment envelope>",
+  "peer_projection_catalog": [
+    {
+      "projection_id": "<uuid>",
+      "projection_generation": 41,
+      "projection_content_hash": "<64 lowercase hex>",
+      "site_projection": "<base64 signed projection envelope>"
+    }
+  ]
+}
+```
+
+Cloud may include only the exact previous Segment generation, `N-1`, and only
+while that publication remains inside both its signed validity and stale
+windows. At most one compatibility generation is returned, only to a node that
+owns an inbound transport catalog. An expired generation, an empty or duplicate
+catalog, a malformed hash, or any generation other than `N-1` fails closed. An
+empty array means no prior-generation connection may be accepted.
+
+Runtime must verify the compatibility Segment snapshot and every projection as
+a separate catalog. It selects an inbound catalog only by the Grant's exact
+`(projection_id, generation, content_hash)` tuple. Compatibility material never
+authorizes local routes, local policy, outbound Grant acquisition, or a
+generation rollback. The current top-level generation remains the sole source
+for those decisions. When Cloud stops returning `N-1`, Runtime removes that
+catalog without disturbing current `N` sessions or the last-known-good current
+configuration.
+
 ### Apply and status report
 
 Runtime writes a fetched candidate to a private staging file, verifies it with
