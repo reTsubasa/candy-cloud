@@ -29,7 +29,7 @@ jobs:
       CORE_MODULE_VERSION: 0.3.20
       CORE_MODULE_TARGET: x86_64-unknown-linux-gnu
       CORE_MODULE_INPUT_TAG: core-v0.3.20
-      RUNTIME_RELEASE_TAG: runtime-v0.4.0-r49
+      RUNTIME_RELEASE_TAG: runtime-v0.4.0-r50
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: docker/setup-buildx-action@v3
@@ -145,7 +145,8 @@ jobs:
           jq -n --arg commit "$GITHUB_SHA" --arg revision "$revision" \
             --arg core_version "$CORE_MODULE_VERSION" --arg core_target "$CORE_MODULE_TARGET" \
             --arg core_bundle_sha "$CORE_MODULE_BUNDLE_SHA256" --arg core_module_sha "$CORE_MODULE_SHA256" \
-            '{schema_version:1,source:{repository:"reTsubasa/candy-cloud",commit:$commit},architecture:"x86_64",core:{version:$core_version,target:$core_target,bundle_sha256:$core_bundle_sha,module_sha256:$core_module_sha},images:["migrate","cloud-api","cloud-identity","cloud-auth","cloud-worker","cloud-web"]}' \
+            --arg runtime_release_tag "$RUNTIME_RELEASE_TAG" \
+            '{schema_version:1,source:{repository:"reTsubasa/candy-cloud",commit:$commit},architecture:"x86_64",core:{version:$core_version,target:$core_target,bundle_sha256:$core_bundle_sha,module_sha256:$core_module_sha},runtime:{release_tag:$runtime_release_tag},images:["migrate","cloud-api","cloud-identity","cloud-auth","cloud-worker","cloud-web"]}' \
             > "candy-cloud-x86-$revision.json"
       - name: Publish immutable prerelease assets
         env:

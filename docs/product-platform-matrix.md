@@ -17,20 +17,20 @@ does not count as product support.
 | Candy Android | `candy-android` | Android application/APK | Mobile client; release lifecycle is independent of the SD-WAN appliance line |
 | Meta Core | `candy-meta-core` | Legacy compatibility builds | Compatibility codebase, not a dependency of the current Core/Runtime/Cloud release path |
 
-## Released support as of 2026-08-19
+## Released support as of 2026-08-22
 
 | Component | x86_64 / amd64 | ARMv7 / IPQ40xx | ARM64 / aarch64 |
 |---|---|---|---|
-| Core data plane `0.3.17` | Supported, musl | Supported, musleabihf | Supported, glibc |
-| Core Cloud ABI `0.3.17` | Supported, glibc | Not applicable | Supported, glibc |
-| OpenWrt Runtime `0.4.0-r45` | Supported, OpenWrt 25.12.4 x86/64 | Supported, IPQ40xx Cortex-A7 | Not released |
-| Linux Runtime `0.4.0-r45` | Supported, musl | Not released | Supported, glibc |
+| Core data plane `0.3.20` | Supported, musl | Supported, musleabihf | Supported, glibc |
+| Core Cloud ABI `0.3.20` | Supported, glibc | Not applicable | Supported, glibc |
+| OpenWrt Runtime `0.4.0-r50` | Supported, OpenWrt 25.12.4 x86/64 | Supported, IPQ40xx Cortex-A7 | Not released |
+| Linux Runtime `0.4.0-r50` | Supported, musl | Not released | Supported, glibc |
 | Candy Cloud image | Supported by current x86 image Release | Not supported | Supported by immutable ARM64 Release |
 | LuCI | Supported with x86_64 Runtime | Supported with IPQ40xx Runtime | Not released |
 | Android | Supported ABI | Supported ABI (`armeabi-v7a`) | Supported ABI (`arm64-v8a`) |
 
 The Linux ARM64 Runtime and Cloud paths consume the matching signed Core
-`0.3.17` artifacts. OpenWrt ARM64 remains intentionally unclaimed until a
+`0.3.20` artifacts. OpenWrt ARM64 remains intentionally unclaimed until a
 named OpenWrt target/profile and device test baseline exist.
 
 ```mermaid
@@ -50,7 +50,7 @@ flowchart LR
   CX ---|"same signed Core release"| CA
 ```
 
-## `0.3.17` target matrix
+## `0.3.20` target matrix
 
 | Role | Rust target | OS/libc | Consumers | Status in source |
 |---|---|---|---|---|
@@ -71,9 +71,9 @@ on an AArch64 host.
 
 ARM64 is considered supported only after all of the following are true:
 
-1. `core-v0.3.17` contains three signed data-plane targets and two signed Cloud ABI targets.
+1. `core-v0.3.20` contains three signed data-plane targets and two signed Cloud ABI targets.
 2. `candy-release` verifies all five native targets and publishes both ARM64 records in the stable catalog.
-3. Candy Cloud publishes `cloud-arm64-<commit>` from the signed `core-v0.3.17` ABI asset.
+3. Candy Cloud publishes `cloud-arm64-<commit>` from the signed `core-v0.3.20` ABI asset.
 4. The ARM64 bundle runs natively on `47.83.1.189` without QEMU and preserves the existing MySQL volumes and secrets.
 5. Linux Runtime installs and activates the `aarch64-unknown-linux-gnu` Core on an ARM64 node.
 6. Cloud readiness, identity/login, topology publication, telemetry, Core ABI load, and SD-WAN synchronization pass end-to-end.

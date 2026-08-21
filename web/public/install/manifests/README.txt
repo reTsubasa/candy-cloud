@@ -7,7 +7,7 @@ manifest is generated from a finalized Candy Runtime Release and has this shape:
   "schema_version": 1,
   "platform": "linux",
   "architecture": "x86_64",
-  "runtime_version": "0.4.0-r25",
+  "runtime_version": "0.4.0-r50",
   "runtime_url": "/install/artifacts/candy-server-runtime-x86_64.tar.gz",
   "runtime_sha256": "64 lowercase hexadecimal characters",
   "runtime_size": 12345678
