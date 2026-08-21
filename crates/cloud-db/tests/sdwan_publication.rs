@@ -340,6 +340,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     let segment_id = Uuid::new_v4();
     let node_pool_id = Uuid::new_v4();
     let site_id = Uuid::new_v4();
+    let site_prefix_id = Uuid::new_v4();
     let attachment_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let device_key_id = Uuid::new_v4();
@@ -380,6 +381,14 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         .bind(site_id)
         .bind(tenant_id)
         .bind(format!("site-{site_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO site_prefixes (id, tenant_id, site_id, network, prefix_len, state) VALUES (?, ?, ?, ?, 24, 'ACTIVE')")
+        .bind(site_prefix_id)
+        .bind(tenant_id)
+        .bind(site_id)
+        .bind([10_u8, 42, 0, 0].as_slice())
         .execute(&pool)
         .await
         .unwrap();
