@@ -87,11 +87,20 @@ impl TenantAuthService for DatabaseTenantAuthService {
         Box::pin(async move {
             let issued_at =
                 u64::try_from(Utc::now().timestamp()).map_err(|_| GrantServiceError::Internal)?;
-            let delivery =
-                self.grants
-                    .issue(&command, issued_at)
-                    .await
-                    .map_err(|error| match error {
+            let delivery = self
+                .grants
+                .issue(&command, issued_at)
+                .await
+                .map_err(|error| {
+                    tracing::error!(
+                        event = "grant_issuance_failed",
+                        tenant_id = %command.request.tenant_id,
+                        device_id = %command.request.device_id,
+                        node_pool_id = %command.request.node_pool_id,
+                        error = %error,
+                        "Cloud Grant issuance failed"
+                    );
+                    match error {
                         GrantCoordinatorError::Denied
                         | GrantCoordinatorError::Mapping(_)
                         | GrantCoordinatorError::Preparation(
@@ -112,7 +121,8 @@ impl TenantAuthService for DatabaseTenantAuthService {
                         | GrantCoordinatorError::Preparation(PrepareGrantError::Signing(_)) => {
                             GrantServiceError::Internal
                         }
-                    })?;
+                    }
+                })?;
             Ok(GrantIssuanceReceipt {
                 grant_id: delivery.grant_id,
                 expires_at_unix: delivery.expires_at_unix,
