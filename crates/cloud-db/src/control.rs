@@ -2160,13 +2160,11 @@ fn validate_lease(owner: &str, ttl: StdDuration) -> Result<(), ControlStoreError
 }
 
 fn recoverable_route_error(code: &str) -> bool {
-    matches!(
-        code,
-        "ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD"
-            | "ROUTE_DB_PRINCIPAL_MISMATCH"
-            | "ROUTE_DB_SCOPE_MISMATCH"
-    ) || (code.starts_with("ROUTE_INPUT_ROUTE_PUBLICATION_REVISION_")
-        && code.contains("_IS_NOT_ADJACENT_TO_CURRENT_HEAD_"))
+    code.starts_with("ROUTE_INPUT_")
+        || matches!(
+            code,
+            "ROUTE_DB_PRINCIPAL_MISMATCH" | "ROUTE_DB_SCOPE_MISMATCH"
+        )
         || code.starts_with(
             "ROUTE_BUILD_CORE_MODULE_ROUTE_OPERATION_FAILED_CORE_PREPARE_FAILED_WITH_ABI_STAT",
         )
@@ -2284,12 +2282,15 @@ mod tests {
     }
 
     #[test]
-    fn route_recovery_is_limited_to_known_upgrade_failures() {
+    fn route_recovery_retries_any_input_failure_after_an_upgrade() {
         assert!(recoverable_route_error(
             "ROUTE_INPUT_LOAD_SEGMENT_PUBLICATION_HEAD"
         ));
         assert!(recoverable_route_error(
             "ROUTE_INPUT_ROUTE_PUBLICATION_REVISION_19_IS_NOT_ADJACENT_TO_CURRENT_HEAD_6"
+        ));
+        assert!(recoverable_route_error(
+            "ROUTE_INPUT_DIRECT_PEER_MUST_USE_ONE_TRANSPORT_NODE_WITH_EXACTLY_ONE_OUTBOUND_SIDE"
         ));
         assert!(!recoverable_route_error(
             "CONTROL_SNAPSHOT_INVALID_RESOURCE"
