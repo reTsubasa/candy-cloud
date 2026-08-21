@@ -24,12 +24,13 @@ use crate::{
     },
     routes::{
         AuthenticatedTenant, EnrollmentReceipt, GrantIssuanceReceipt, GrantIssueCommand,
-        GrantServiceError, RuntimeConfigurationApplyState, RuntimeConfigurationDelivery,
-        RuntimeConfigurationService, RuntimeConfigurationServiceError,
-        RuntimeConfigurationStatusCommand, RuntimeGrantVerificationKeyDelivery, RuntimeLifecycle,
-        RuntimePathKind, RuntimePeerProjectionDelivery, RuntimeProfileDelivery,
-        RuntimeTelemetryCommand, RuntimeTransportIdentityCommand, RuntimeTransportIdentityDelivery,
-        RuntimeTransportPreset, ServiceFuture, TenantAuthService,
+        GrantServiceError, RuntimeCompatibilityGenerationDelivery, RuntimeConfigurationApplyState,
+        RuntimeConfigurationDelivery, RuntimeConfigurationService,
+        RuntimeConfigurationServiceError, RuntimeConfigurationStatusCommand,
+        RuntimeGrantVerificationKeyDelivery, RuntimeLifecycle, RuntimePathKind,
+        RuntimePeerProjectionDelivery, RuntimeProfileDelivery, RuntimeTelemetryCommand,
+        RuntimeTransportIdentityCommand, RuntimeTransportIdentityDelivery, RuntimeTransportPreset,
+        ServiceFuture, TenantAuthService,
     },
 };
 
@@ -237,6 +238,26 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                                 projection_generation: projection.projection_generation,
                                 projection_content_hash: projection.projection_content_hash,
                                 signed_projection_envelope: projection.signed_projection_envelope,
+                            })
+                            .collect(),
+                        compatibility_generations: record
+                            .compatibility_generations
+                            .into_iter()
+                            .map(|generation| RuntimeCompatibilityGenerationDelivery {
+                                segment_generation: generation.segment_generation,
+                                segment_content_hash: generation.segment_content_hash,
+                                signed_segment_envelope: generation.signed_segment_envelope,
+                                peer_projection_catalog: generation
+                                    .peer_projection_catalog
+                                    .into_iter()
+                                    .map(|projection| RuntimePeerProjectionDelivery {
+                                        projection_id: projection.projection_id,
+                                        projection_generation: projection.projection_generation,
+                                        projection_content_hash: projection.projection_content_hash,
+                                        signed_projection_envelope: projection
+                                            .signed_projection_envelope,
+                                    })
+                                    .collect(),
                             })
                             .collect(),
                         grant_verification_keys: self.grant_verification_keys.clone(),

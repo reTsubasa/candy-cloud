@@ -432,6 +432,19 @@ fn runtime_delivery() -> RuntimeConfigurationDelivery {
             projection_content_hash: [11; 32],
             signed_projection_envelope: vec![6, 7, 8],
         }],
+        compatibility_generations: vec![
+            cloud_auth::routes::RuntimeCompatibilityGenerationDelivery {
+                segment_generation: 3,
+                segment_content_hash: [15; 32],
+                signed_segment_envelope: vec![9, 10, 11],
+                peer_projection_catalog: vec![cloud_auth::routes::RuntimePeerProjectionDelivery {
+                    projection_id: Uuid::from_bytes([16; 16]),
+                    projection_generation: 2,
+                    projection_content_hash: [17; 32],
+                    signed_projection_envelope: vec![12, 13, 14],
+                }],
+            },
+        ],
         grant_verification_keys: vec![cloud_auth::routes::RuntimeGrantVerificationKeyDelivery {
             key_id: "grant-key-1".into(),
             ed25519_public_key: [12; 32],
@@ -599,6 +612,30 @@ async fn runtime_configuration_returns_coherent_signed_bundle_and_honors_etag() 
     assert_eq!(
         body["peer_projection_catalog"][0]["site_projection"],
         "BgcI"
+    );
+    assert_eq!(
+        body["compatibility_generations"][0]["segment_generation"],
+        3
+    );
+    assert_eq!(
+        body["compatibility_generations"][0]["segment_content_hash"],
+        "0f".repeat(32)
+    );
+    assert_eq!(
+        body["compatibility_generations"][0]["segment_snapshot"],
+        "CQoL"
+    );
+    assert_eq!(
+        body["compatibility_generations"][0]["peer_projection_catalog"][0]["projection_id"],
+        Uuid::from_bytes([16; 16]).to_string()
+    );
+    assert_eq!(
+        body["compatibility_generations"][0]["peer_projection_catalog"][0]["projection_generation"],
+        2
+    );
+    assert_eq!(
+        body["compatibility_generations"][0]["peer_projection_catalog"][0]["site_projection"],
+        "DA0O"
     );
     assert_eq!(body["grant_verification_keys"][0]["key_id"], "grant-key-1");
 

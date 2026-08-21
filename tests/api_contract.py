@@ -227,6 +227,8 @@ def main() -> None:
         "segment_snapshot",
         "site_projection",
         "peer_projection_catalog",
+        "compatibility_generations",
+        "RuntimeCompatibilityGeneration",
         "route_signing_public_key",
         "grant_verification_keys",
         "ed25519_public_key",
