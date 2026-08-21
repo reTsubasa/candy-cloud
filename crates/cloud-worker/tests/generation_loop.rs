@@ -11,6 +11,7 @@ use cloud_worker::generation_loop::{
     GenerationJobQueue, GenerationPublisher, GenerationWorker, PublicationFailure,
     PublishedGeneration, RunOutcome,
 };
+use cloud_worker::route_types::PUBLICATION_REFRESH_LEAD_SECONDS;
 use uuid::Uuid;
 
 #[derive(Default)]
@@ -18,6 +19,7 @@ struct QueueState {
     jobs: VecDeque<GenerationJob>,
     published: Vec<(Uuid, PublishedGeneration)>,
     failures: Vec<(Uuid, JobFailure)>,
+    refreshes: Vec<(DateTime<Utc>, Duration, u16)>,
     claims: usize,
 }
 
@@ -26,6 +28,20 @@ struct FakeQueue(Arc<Mutex<QueueState>>);
 
 #[async_trait]
 impl GenerationJobQueue for FakeQueue {
+    async fn refresh_expiring(
+        &self,
+        now: DateTime<Utc>,
+        refresh_before: Duration,
+        limit: u16,
+    ) -> Result<u16, ControlStoreError> {
+        self.0
+            .lock()
+            .unwrap()
+            .refreshes
+            .push((now, refresh_before, limit));
+        Ok(0)
+    }
+
     async fn claim_next(
         &self,
         _owner: &str,
@@ -111,6 +127,13 @@ async fn successful_publication_completes_the_claimed_job() {
         RunOutcome::Published
     );
     assert_eq!(queue.0.lock().unwrap().published.len(), 1);
+    let state = queue.0.lock().unwrap();
+    assert_eq!(state.refreshes.len(), 1);
+    assert_eq!(
+        state.refreshes[0].1,
+        Duration::from_secs(PUBLICATION_REFRESH_LEAD_SECONDS)
+    );
+    assert_eq!(state.refreshes[0].2, 32);
 }
 
 #[tokio::test]
