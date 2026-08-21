@@ -522,5 +522,10 @@ mod tests {
         .unwrap();
         let request = request_from_issued(&prepared.issued);
         assert!(request["object"]["route_policy"].is_null());
+        assert_eq!(
+            request["object"]["service_permissions"].as_u64().unwrap()
+                & PERMISSION_PRIVATE_TUN_CONNECT,
+            0
+        );
     }
 }
