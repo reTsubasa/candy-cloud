@@ -166,13 +166,34 @@ impl ControlRoutePublisher {
             .map(|(resource, attachment)| (resource.metadata.id, attachment.node_id))
             .collect::<HashMap<_, _>>();
         let known_nodes = nodes.keys().copied().collect::<HashSet<_>>();
+        let route_owner_attachment_ids = core_attachments
+            .iter()
+            .filter(|attachment| {
+                attachment.state == AttachmentState::Active && !attachment.local_prefixes.is_empty()
+            })
+            .map(|attachment| Uuid::from_bytes(attachment.attachment_id.0))
+            .collect::<HashSet<_>>();
         let path_values = paths
             .iter()
             .map(|(_, path)| path.clone())
             .collect::<Vec<_>>();
         validate_direct_dialers(&path_values, &attachment_nodes, &known_nodes)?;
+        let routable_paths = paths
+            .iter()
+            .filter(|(_, path)| path_targets_route_owner(path, &route_owner_attachment_ids))
+            .collect::<Vec<_>>();
+        let omitted_paths = paths.len().saturating_sub(routable_paths.len());
+        if omitted_paths > 0 {
+            tracing::info!(
+                event = "route_publication_non_owner_paths_omitted",
+                tenant_id = %snapshot.tenant_id,
+                segment_id = %snapshot.segment_id,
+                omitted_paths,
+                "omitted peer paths that cannot carry a published site prefix"
+            );
+        }
         let mut path_map: HashMap<Uuid, Vec<PeerPathCandidateV1>> = HashMap::new();
-        for (resource, value) in &paths {
+        for (resource, value) in &routable_paths {
             let (_, peer_attachment) = attachment_ids
                 .get(&value.destination_attachment_id)
                 .copied()
@@ -289,8 +310,12 @@ impl ControlRoutePublisher {
                 .context("Attachment Node is missing")?;
             let site = SiteId(attachment.site_id.into_bytes());
             let mut peer_paths = Vec::new();
-            for (path_resource, path) in &paths {
-                if path.source_attachment_id == resource.metadata.id {
+            for (path_resource, path) in &routable_paths {
+                if path_belongs_to_projection(
+                    resource.metadata.id,
+                    path,
+                    &route_owner_attachment_ids,
+                ) {
                     peer_paths.extend(
                         path_map
                             .get(&path_resource.metadata.id)
@@ -405,6 +430,22 @@ impl ControlRoutePublisher {
             projections,
         })
     }
+}
+
+fn path_targets_route_owner(
+    path: &cloud_control::PathCandidateV1,
+    route_owner_attachment_ids: &HashSet<Uuid>,
+) -> bool {
+    route_owner_attachment_ids.contains(&path.destination_attachment_id)
+}
+
+fn path_belongs_to_projection(
+    source_attachment_id: Uuid,
+    path: &cloud_control::PathCandidateV1,
+    route_owner_attachment_ids: &HashSet<Uuid>,
+) -> bool {
+    path.source_attachment_id == source_attachment_id
+        && path_targets_route_owner(path, route_owner_attachment_ids)
 }
 
 fn validate_direct_dialers(
@@ -671,6 +712,38 @@ mod tests {
             &nodes,
         )
         .is_err());
+    }
+
+    #[test]
+    fn three_attachment_projections_only_keep_paths_to_route_owners() {
+        let hangzhou = Uuid::from_bytes([3; 16]);
+        let hong_kong = Uuid::from_bytes([4; 16]);
+        let no_prefix_node = Uuid::from_bytes([5; 16]);
+        let transport_node = Uuid::from_bytes([6; 16]);
+        let peer = Uuid::from_bytes([2; 16]);
+        let route_owners = HashSet::from([hangzhou, hong_kong]);
+        let paths = [
+            direct_path(peer, hangzhou, hong_kong, transport_node),
+            direct_path(peer, hong_kong, hangzhou, transport_node),
+            direct_path(peer, hangzhou, no_prefix_node, transport_node),
+            direct_path(peer, no_prefix_node, hangzhou, transport_node),
+            direct_path(peer, hong_kong, no_prefix_node, transport_node),
+            direct_path(peer, no_prefix_node, hong_kong, transport_node),
+        ];
+        let destinations_for = |source| {
+            paths
+                .iter()
+                .filter(|path| path_belongs_to_projection(source, path, &route_owners))
+                .map(|path| path.destination_attachment_id)
+                .collect::<HashSet<_>>()
+        };
+
+        assert_eq!(destinations_for(hangzhou), HashSet::from([hong_kong]));
+        assert_eq!(destinations_for(hong_kong), HashSet::from([hangzhou]));
+        assert_eq!(
+            destinations_for(no_prefix_node),
+            HashSet::from([hangzhou, hong_kong])
+        );
     }
 
     #[test]

@@ -728,6 +728,8 @@ pub enum RoutePublicationError {
     IncompleteProjectionSet,
     #[error("projection does not bind the selected DeviceAttachment")]
     ProjectionAttachmentMismatch,
+    #[error("projection contains a peer path that owns no remote route")]
+    UnroutablePeerPath,
     #[error("expansion object does not bind the selected Segment publication")]
     ExpansionScopeMismatch,
     #[error("every device projection requires a reverse route")]
@@ -823,6 +825,9 @@ pub fn build_route_publication(
         if remote_routes.is_empty() {
             return Err(RoutePublicationError::MissingReverseRoute);
         }
+        if !peer_paths_reference_remote_route_owners(&remote_routes, &plan.peer_paths) {
+            return Err(RoutePublicationError::UnroutablePeerPath);
+        }
         let sealed = signer.sign_site_projection(SiteRouteProjectionV1 {
             tenant_id: input.tenant_id,
             segment_id: input.segment_id,
@@ -862,6 +867,19 @@ pub fn build_route_publication(
         segment,
         projections,
     })
+}
+
+fn peer_paths_reference_remote_route_owners(
+    remote_routes: &[RemoteRouteV1],
+    peer_paths: &[PeerPathCandidateV1],
+) -> bool {
+    let route_owners = remote_routes
+        .iter()
+        .flat_map(|route| route.owner_attachment_ids.iter())
+        .collect::<std::collections::HashSet<_>>();
+    peer_paths
+        .iter()
+        .all(|path| route_owners.contains(&path.peer_attachment_id))
 }
 
 fn compile_routes(
@@ -912,6 +930,60 @@ fn compile_routes(
 
 fn uuid(bytes: [u8; 16]) -> Uuid {
     Uuid::from_bytes(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::route_types::{NodePoolId, PolicyRefV1, SiteId};
+
+    fn path(peer_attachment_id: AttachmentId, candidate: u8) -> PeerPathCandidateV1 {
+        PeerPathCandidateV1 {
+            candidate_id: crate::route_types::PathCandidateId([candidate; 16]),
+            peer_site_id: SiteId([candidate.wrapping_add(1); 16]),
+            peer_attachment_id,
+            kind: crate::route_types::PeerPathKindV1::Direct,
+            relay_node: None,
+            node_pool_id: NodePoolId([candidate.wrapping_add(2); 16]),
+            transport_node: TransportNodeIdentityV1 {
+                node_id: crate::route_types::NodeId([candidate.wrapping_add(3); 16]),
+                node_key_id: crate::route_types::NodeKeyId([candidate.wrapping_add(4); 16]),
+            },
+            endpoint: crate::route_types::PeerEndpointV1::Ipv4 {
+                address: [203, 0, 113, candidate],
+                port: 18_443,
+            },
+            server_name: format!("node-{candidate}.candy.invalid-net"),
+            server_cert_sha256: [candidate.wrapping_add(5); 32],
+            transport_preset: crate::route_types::TransportPresetV1::Current,
+            priority: 100,
+            authorization: PolicyRefV1 {
+                policy_id: PolicyId([candidate.wrapping_add(6); 16]),
+                generation: 1,
+                content_hash: [candidate.wrapping_add(7); 32],
+            },
+        }
+    }
+
+    #[test]
+    fn peer_paths_must_reference_a_remote_route_owner() {
+        let route_owner = AttachmentId([1; 16]);
+        let no_prefix_attachment = AttachmentId([2; 16]);
+        let routes = [RemoteRouteV1 {
+            destination_prefix: Ipv4PrefixV1::new([192, 168, 1, 0], 24).unwrap(),
+            owner_site_id: SiteId([3; 16]),
+            owner_attachment_ids: vec![route_owner],
+        }];
+
+        assert!(peer_paths_reference_remote_route_owners(
+            &routes,
+            &[path(route_owner, 10), path(route_owner, 11)]
+        ));
+        assert!(!peer_paths_reference_remote_route_owners(
+            &routes,
+            &[path(route_owner, 10), path(no_prefix_attachment, 12)]
+        ));
+    }
 }
 
 #[derive(Clone)]
