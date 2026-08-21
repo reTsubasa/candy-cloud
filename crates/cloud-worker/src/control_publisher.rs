@@ -97,22 +97,33 @@ impl ControlRoutePublisher {
                 ResourceSpecV1::Segment(value) if resource.metadata.id == snapshot.segment_id => {
                     segment = Some(value.clone())
                 }
-                ResourceSpecV1::Node(value) => {
+                ResourceSpecV1::Node(value) if resource.metadata.state == ResourceState::Active => {
                     nodes.insert(resource.metadata.id, value.clone());
                 }
                 ResourceSpecV1::Attachment(value) if value.segment_id == snapshot.segment_id => {
                     attachments.push((resource, value.clone()));
                 }
-                ResourceSpecV1::Prefix(value) if value.segment_id == snapshot.segment_id => {
+                ResourceSpecV1::Prefix(value)
+                    if value.segment_id == snapshot.segment_id
+                        && resource.metadata.state == ResourceState::Active =>
+                {
                     prefixes.push((resource, value.clone()));
                 }
-                ResourceSpecV1::Peer(value) if value.segment_id == snapshot.segment_id => {
+                ResourceSpecV1::Peer(value)
+                    if value.segment_id == snapshot.segment_id
+                        && resource.metadata.state == ResourceState::Active =>
+                {
                     peers.push((resource, value.clone()));
                 }
-                ResourceSpecV1::PathCandidate(value) if value.segment_id == snapshot.segment_id => {
+                ResourceSpecV1::PathCandidate(value)
+                    if value.segment_id == snapshot.segment_id
+                        && resource.metadata.state == ResourceState::Active =>
+                {
                     paths.push((resource, value.clone()));
                 }
-                ResourceSpecV1::Relay(value) => {
+                ResourceSpecV1::Relay(value)
+                    if resource.metadata.state == ResourceState::Active =>
+                {
                     relays.insert(resource.metadata.id, value.clone());
                 }
                 _ => {}
