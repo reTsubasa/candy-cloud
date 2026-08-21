@@ -98,6 +98,7 @@ impl TenantAuthService for DatabaseTenantAuthService {
                         device_id = %command.request.device_id,
                         node_pool_id = %command.request.node_pool_id,
                         error = %error,
+                        error_debug = ?error,
                         "Cloud Grant issuance failed"
                     );
                     match error {
