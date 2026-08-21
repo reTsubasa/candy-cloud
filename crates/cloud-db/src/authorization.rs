@@ -85,7 +85,7 @@ impl AuthorizationRepository {
                     np.id AS node_pool_id, np.service_class, \
                     e.id AS entitlement_id, e.service_permission, e.status AS entitlement_status, \
                     e.generation AS entitlement_generation, s.status AS subscription_status, \
-                    COALESCE(p.generation, 0) AS policy_generation, \
+                    COALESCE((SELECT MAX(policy.generation) FROM policies policy WHERE policy.tenant_id = t.id), 0) AS policy_generation, \
                     COALESCE(r.generation, 0) AS revocation_generation, \
                     ag.generation AS authorization_generation, \
                     CAST(e.quota_json AS CHAR) AS quota_json \
@@ -96,7 +96,6 @@ impl AuthorizationRepository {
              JOIN subscriptions s ON s.tenant_id = t.id AND s.id = e.subscription_id \
              JOIN node_pools np ON np.id = e.node_pool_id \
              JOIN authorization_generations ag ON ag.tenant_id = t.id \
-             LEFT JOIN policies p ON p.tenant_id = t.id \
              LEFT JOIN revocation_generations r ON r.tenant_id = t.id \
              WHERE t.id = ? FOR SHARE",
         )
