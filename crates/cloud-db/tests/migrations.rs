@@ -124,6 +124,15 @@ fn trial_tunnel_quota_migration_replaces_only_the_known_placeholder_and_republis
 }
 
 #[test]
+fn deleted_segment_migration_withdraws_materialized_state_and_pending_work() {
+    let migration = include_str!("../migrations/0023_retire_deleted_segments.sql");
+    assert!(migration.contains("control_segment.state = 'DELETED'"));
+    assert!(migration.contains("SET segment.state = 'DELETED'"));
+    assert!(migration.contains("job.state IN ('PENDING','LEASED','RETRY')"));
+    assert!(migration.contains("job.last_error_code = 'SEGMENT_DELETED'"));
+}
+
+#[test]
 fn transport_activation_migration_is_identity_scoped_and_fail_closed() {
     let migration = include_str!("../migrations/0015_sdwan_transport_activation.sql");
     assert!(migration.contains("uq_nodes_device_identity"));

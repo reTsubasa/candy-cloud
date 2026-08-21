@@ -1038,6 +1038,12 @@ impl ControlRepository {
         }
 
         replace_resource_references(&mut transaction, &mutation.resource).await?;
+        let deleting_segment = mutation.resource.metadata.state == ResourceState::Deleted
+            && matches!(mutation.resource.resource, ResourceSpecV1::Segment(_));
+        if deleting_segment {
+            retire_deleted_segment(&mut transaction, metadata.tenant_id, metadata.id).await?;
+            affected_segments.remove(&metadata.id);
+        }
         affected_segments.extend(
             dependent_segments(
                 &mut transaction,
@@ -1047,7 +1053,7 @@ impl ControlRepository {
             )
             .await?,
         );
-        if let Some(segment_id) = segment_id {
+        if let Some(segment_id) = segment_id.filter(|_| !deleting_segment) {
             affected_segments.insert(segment_id);
         }
         for segment_id in affected_segments {
@@ -1063,6 +1069,28 @@ impl ControlRepository {
         transaction.commit().await?;
         Ok(MutationOutcome::Applied(mutation.resource.clone()))
     }
+}
+
+async fn retire_deleted_segment(
+    transaction: &mut Transaction<'_, MySql>,
+    tenant_id: Uuid,
+    segment_id: Uuid,
+) -> Result<(), ControlStoreError> {
+    sqlx::query(
+        "UPDATE segments SET state = 'DELETED' WHERE tenant_id = ? AND id = ? AND state <> 'DELETED'",
+    )
+    .bind(tenant_id)
+    .bind(segment_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE segment_generation_jobs SET state = 'PERMANENT_FAILURE', lease_owner = NULL, lease_until = NULL, published_generation = NULL, published_content_hash = NULL, last_error_code = 'SEGMENT_DELETED' WHERE tenant_id = ? AND segment_id = ? AND state IN ('PENDING','LEASED','RETRY')",
+    )
+    .bind(tenant_id)
+    .bind(segment_id)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
 }
 
 async fn load_transport_bindings(
