@@ -1609,6 +1609,9 @@ async fn validate_projection_ownership(
     .bind(write.segment_id)
     .fetch_all(&mut **transaction)
     .await?;
+    if required_route_owners.is_empty() {
+        return Err(SdwanError::MissingProjection);
+    }
     let projected_attachments = write
         .projections
         .iter()
