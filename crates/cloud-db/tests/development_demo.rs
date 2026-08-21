@@ -35,6 +35,14 @@ async fn development_demo_is_idempotent_and_cannot_claim_an_existing_account() {
             .unwrap(),
         DemoAccountBootstrap::Created
     );
+    let trial_datagram_capacity: u64 = sqlx::query_scalar(
+        "SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(quota_json, '$.max_datagram_record')) AS UNSIGNED) FROM entitlements WHERE tenant_id = ? AND service_permission = 'private.tun.connect' AND status = 'ACTIVE'",
+    )
+    .bind(first.tenant_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(trial_datagram_capacity, 1_350);
 
     let second = registration(demo_email.clone(), "$argon2id$second");
     assert_eq!(

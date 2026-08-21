@@ -9,6 +9,13 @@ const MAX_NAME_LEN: usize = 200;
 const MAX_DEVICE_LABEL_LEN: usize = 200;
 const MAX_ABUSE_SCOPE_LEN: usize = 48;
 
+// The production projection permits a 1,300-byte inner packet. Candy's IP-packet record can
+// require another 50 bytes when every variable-length field uses its worst-case encoding.
+const SDWAN_PROJECTION_MAX_INNER_MTU_BYTES: u64 = 1_300;
+const SDWAN_IP_PACKET_RECORD_WORST_CASE_OVERHEAD_BYTES: u64 = 50;
+const SDWAN_TRIAL_MAX_DATAGRAM_RECORD_BYTES: u64 =
+    SDWAN_PROJECTION_MAX_INNER_MTU_BYTES + SDWAN_IP_PACKET_RECORD_WORST_CASE_OVERHEAD_BYTES;
+
 async fn provision_initial_sdwan_trial(
     tx: &mut Transaction<'_, MySql>,
     tenant_id: Uuid,
@@ -34,12 +41,13 @@ async fn provision_initial_sdwan_trial(
     .execute(&mut **tx)
     .await?;
     sqlx::query(
-        "INSERT INTO entitlements (id, tenant_id, subscription_id, node_pool_id, service_permission, quota_json, status) VALUES (?, ?, ?, ?, 'private.tun.connect', JSON_OBJECT('allowed_features', 1025, 'max_outer_connections_per_node', 2, 'max_outer_connections_per_pool', 4, 'max_active_sessions_per_connection', 128, 'max_udp_flows_per_connection', 256, 'max_pending_opens', 32, 'max_speculative_streams', 8, 'max_datagram_record', 1200, 'upload_rate_bps', 0, 'download_rate_bps', 0), 'ACTIVE')",
+        "INSERT INTO entitlements (id, tenant_id, subscription_id, node_pool_id, service_permission, quota_json, status) VALUES (?, ?, ?, ?, 'private.tun.connect', JSON_OBJECT('allowed_features', 1025, 'max_outer_connections_per_node', 2, 'max_outer_connections_per_pool', 4, 'max_active_sessions_per_connection', 128, 'max_udp_flows_per_connection', 256, 'max_pending_opens', 32, 'max_speculative_streams', 8, 'max_datagram_record', ?, 'upload_rate_bps', 0, 'download_rate_bps', 0), 'ACTIVE')",
     )
     .bind(Uuid::now_v7())
     .bind(tenant_id)
     .bind(subscription_id)
     .bind(pool_id)
+    .bind(SDWAN_TRIAL_MAX_DATAGRAM_RECORD_BYTES)
     .execute(&mut **tx)
     .await?;
     Ok(())

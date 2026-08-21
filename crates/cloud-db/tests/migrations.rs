@@ -124,6 +124,32 @@ fn trial_tunnel_quota_migration_replaces_only_the_known_placeholder_and_republis
 }
 
 #[test]
+fn trial_datagram_capacity_migration_repairs_only_the_known_active_default_and_republishes() {
+    let migration = include_str!("../migrations/0024_sdwan_trial_datagram_capacity.sql");
+    assert!(migration.contains("subscription.plan_code = 'sdwan-trial'"));
+    assert!(migration.contains("subscription.status IN ('TRIAL', 'ACTIVE')"));
+    assert!(migration.contains("entitlement.service_permission = 'private.tun.connect'"));
+    assert!(migration.contains("entitlement.status = 'ACTIVE'"));
+    assert!(migration.contains("segment.state = 'ACTIVE'"));
+    assert!(migration.contains("entitlement.node_pool_id = segment.hub_node_pool_id"));
+    assert!(migration.contains("$.max_datagram_record')) AS UNSIGNED) = 1200"));
+    assert!(migration.contains("'$.max_datagram_record', 1350"));
+    assert!(migration.contains("INSERT INTO segment_generation_jobs"));
+    assert!(migration.contains("candy/sdwan-trial-datagram-capacity-v1/"));
+}
+
+#[test]
+fn initial_trial_datagram_capacity_covers_the_production_projection_record() {
+    let identity = include_str!("../src/identity.rs");
+    let publisher = include_str!("../../cloud-worker/src/control_publisher.rs");
+    assert!(publisher.contains("max_inner_mtu: 1300"));
+    assert!(identity.contains("SDWAN_PROJECTION_MAX_INNER_MTU_BYTES: u64 = 1_300"));
+    assert!(identity.contains("SDWAN_IP_PACKET_RECORD_WORST_CASE_OVERHEAD_BYTES: u64 = 50"));
+    assert!(identity.contains("SDWAN_TRIAL_MAX_DATAGRAM_RECORD_BYTES"));
+    assert!(identity.contains(".bind(SDWAN_TRIAL_MAX_DATAGRAM_RECORD_BYTES)"));
+}
+
+#[test]
 fn deleted_segment_migration_withdraws_materialized_state_and_pending_work() {
     let migration = include_str!("../migrations/0023_retire_deleted_segments.sql");
     assert!(migration.contains("control_segment.state = 'DELETED'"));
