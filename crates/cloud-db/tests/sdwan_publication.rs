@@ -1,6 +1,7 @@
 use cloud_control::{
-    AttachmentV1, ControlResourceV1, Ipv4PrefixV1, NodePlatformV1, NodeV1, ResourceMetadataV1,
-    ResourceSpecV1, ResourceState, SegmentV1, SiteKindV1, SiteV1, CONTROL_SCHEMA_V1,
+    AttachmentV1, ControlResourceV1, Ipv4PrefixV1, NodePlatformV1, NodeV1, PrefixSourceV1,
+    PrefixV1, ResourceMetadataV1, ResourceSpecV1, ResourceState, SegmentV1, SiteKindV1, SiteV1,
+    CONTROL_SCHEMA_V1,
 };
 use cloud_db::sdwan::{
     ExpansionObjectKind, ExpansionObjectPublicationWrite, PublicationOutcome,
@@ -86,6 +87,7 @@ async fn control_snapshot_materializes_empty_route_contract_idempotently() {
     let site_id = Uuid::new_v4();
     let segment_id = Uuid::new_v4();
     let attachment_id = Uuid::new_v4();
+    let prefix_id = Uuid::new_v4();
     sqlx::query("INSERT INTO organizations (id, name) VALUES (?, ?)")
         .bind(organization_id)
         .bind(format!("materialize-org-{organization_id}"))
@@ -162,6 +164,20 @@ async fn control_snapshot_materializes_empty_route_contract_idempotently() {
                 epoch_floor: 1,
             }),
         ),
+        control_resource(
+            tenant_id,
+            prefix_id,
+            ResourceState::Active,
+            ResourceSpecV1::Prefix(PrefixV1 {
+                segment_id,
+                site_id,
+                prefix: Ipv4PrefixV1 {
+                    network: Ipv4Addr::new(10, 10, 0, 0),
+                    prefix_len: 24,
+                },
+                source: PrefixSourceV1::Configured,
+            }),
+        ),
     ];
     let repository = SdwanRepository::new(pool.clone());
     repository
@@ -193,6 +209,14 @@ async fn control_snapshot_materializes_empty_route_contract_idempotently() {
         .await
         .unwrap();
     assert_eq!(active, 1);
+    let prefix_state: String =
+        sqlx::query_scalar("SELECT state FROM site_prefixes WHERE tenant_id = ? AND id = ?")
+            .bind(tenant_id)
+            .bind(prefix_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(prefix_state, "ACTIVE");
 
     resources[3].metadata.state = ResourceState::Disabled;
     repository
@@ -223,7 +247,7 @@ async fn control_snapshot_materializes_empty_route_contract_idempotently() {
     assert_eq!(state, "REVOKED");
 
     let replacement_attachment_id = Uuid::new_v4();
-    resources.pop();
+    resources.remove(3);
     resources.push(control_resource(
         tenant_id,
         replacement_attachment_id,
