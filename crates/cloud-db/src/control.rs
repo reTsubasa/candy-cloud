@@ -1969,9 +1969,10 @@ impl GenerationJobRepository {
         Self { pool }
     }
 
-    /// Enqueue a new publication generation when the active signed route is
-    /// close to (or past) its stale deadline. The control resources remain
-    /// unchanged; only the publication generation advances.
+    /// Enqueue a new publication generation before the active signed route
+    /// expires. The overlap keeps the exact previous generation available for
+    /// bounded rolling activation; stale_until is a fail-safe verification
+    /// boundary, not the normal refresh schedule.
     pub async fn refresh_expiring(
         &self,
         now: DateTime<Utc>,
@@ -1987,7 +1988,7 @@ impl GenerationJobRepository {
         let threshold_unix = threshold.timestamp().max(0) as u64;
         let mut transaction = self.pool.begin().await?;
         let rows = sqlx::query(
-            "SELECT seg.tenant_id, seg.id AS segment_id, seg.current_generation, head.desired_revision FROM segments seg JOIN segment_generation_heads head ON head.tenant_id = seg.tenant_id AND head.segment_id = seg.id JOIN segment_route_publications publication ON publication.tenant_id = seg.tenant_id AND publication.segment_id = seg.id AND publication.generation = seg.current_generation WHERE seg.state = 'ACTIVE' AND seg.current_generation > 0 AND publication.stale_until <= ? AND NOT EXISTS (SELECT 1 FROM segment_generation_jobs pending WHERE pending.tenant_id = seg.tenant_id AND pending.segment_id = seg.id AND pending.state IN ('PENDING','LEASED','RETRY')) ORDER BY publication.stale_until, seg.tenant_id, seg.id LIMIT ? FOR UPDATE SKIP LOCKED",
+            "SELECT seg.tenant_id, seg.id AS segment_id, seg.current_generation, head.desired_revision FROM segments seg JOIN segment_generation_heads head ON head.tenant_id = seg.tenant_id AND head.segment_id = seg.id JOIN segment_route_publications publication ON publication.tenant_id = seg.tenant_id AND publication.segment_id = seg.id AND publication.generation = seg.current_generation WHERE seg.state = 'ACTIVE' AND seg.current_generation > 0 AND publication.expires_at <= ? AND NOT EXISTS (SELECT 1 FROM segment_generation_jobs pending WHERE pending.tenant_id = seg.tenant_id AND pending.segment_id = seg.id AND pending.state IN ('PENDING','LEASED','RETRY')) ORDER BY publication.expires_at, seg.tenant_id, seg.id LIMIT ? FOR UPDATE SKIP LOCKED",
         )
         .bind(threshold_unix)
         .bind(limit as u32)

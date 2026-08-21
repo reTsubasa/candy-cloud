@@ -27,6 +27,7 @@ use crate::{
         PathCandidateId, PathSelectionPolicyV1, PeerEndpointV1, PeerPathCandidateV1,
         PeerPathKindV1, PolicyId, PolicyRefV1, RelayNodeIdentityV1, SegmentAttachmentV1, SegmentId,
         SiteId, TenantId, TransportNodeIdentityV1, TransportPresetV1,
+        ROUTE_PUBLICATION_STALE_SECONDS, ROUTE_PUBLICATION_VALIDITY_SECONDS,
     },
 };
 
@@ -470,8 +471,8 @@ impl ControlRoutePublisher {
             )?,
             attachments: core_attachments,
             not_before,
-            expires_at: not_before + 3_600,
-            stale_until: not_before + 7_200,
+            expires_at: not_before + ROUTE_PUBLICATION_VALIDITY_SECONDS,
+            stale_until: not_before + ROUTE_PUBLICATION_STALE_SECONDS,
             projections,
         })
     }

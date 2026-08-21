@@ -8,6 +8,8 @@ use cloud_db::control::{
 use thiserror::Error;
 use tokio::sync::watch;
 
+use crate::route_types::PUBLICATION_REFRESH_LEAD_SECONDS;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublishedGeneration {
     pub generation: u64,
@@ -256,7 +258,11 @@ where
             return Ok(RunOutcome::PublisherUnavailable);
         }
         self.queue
-            .refresh_expiring(now, Duration::from_secs(3600), 32)
+            .refresh_expiring(
+                now,
+                Duration::from_secs(PUBLICATION_REFRESH_LEAD_SECONDS),
+                32,
+            )
             .await?;
         let Some(job) = self
             .queue
