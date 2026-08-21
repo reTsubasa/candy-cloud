@@ -502,6 +502,8 @@ pub struct SegmentPublicationWrite {
     pub expected_previous_generation: u64,
     pub expected_previous_hash: [u8; 32],
     pub generation: u64,
+    pub expires_at: u64,
+    pub stale_until: u64,
     pub snapshot: SignedObjectWrite,
     pub projections: Vec<SiteProjectionPublicationWrite>,
     pub expansions: Vec<ExpansionObjectPublicationWrite>,
@@ -530,6 +532,9 @@ impl SegmentPublicationWrite {
             || (self.expected_previous_generation != 0 && self.expected_previous_hash == [0; 32])
         {
             return Err(SdwanError::GenerationGap);
+        }
+        if self.expires_at == 0 || self.stale_until <= self.expires_at {
+            return Err(SdwanError::InvalidScope);
         }
         self.snapshot.validate()?;
         if self.projections.is_empty() || self.projections.len() > MAX_PROJECTIONS {
@@ -1069,7 +1074,7 @@ impl SdwanRepository {
         .execute(&mut *transaction)
         .await?;
         sqlx::query(
-            "INSERT INTO segment_route_publications (id, tenant_id, segment_id, expected_previous_generation, expected_previous_hash, generation, content_hash, signed_envelope, audit_event_id, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO segment_route_publications (id, tenant_id, segment_id, expected_previous_generation, expected_previous_hash, generation, content_hash, signed_envelope, expires_at, stale_until, audit_event_id, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(write.publication_id)
         .bind(write.tenant_id)
@@ -1079,6 +1084,8 @@ impl SdwanRepository {
         .bind(write.generation)
         .bind(write.snapshot.content_hash.as_slice())
         .bind(&write.snapshot.signed_envelope)
+        .bind(write.expires_at)
+        .bind(write.stale_until)
         .bind(write.audit_event_id)
         .bind(&write.actor_id)
         .execute(&mut *transaction)
@@ -1305,7 +1312,7 @@ async fn publication_matches(
     write: &SegmentPublicationWrite,
 ) -> Result<bool, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT tenant_id, segment_id, expected_previous_generation, expected_previous_hash, generation, content_hash, signed_envelope, audit_event_id, actor_id FROM segment_route_publications WHERE id = ? FOR SHARE",
+            "SELECT tenant_id, segment_id, expected_previous_generation, expected_previous_hash, generation, content_hash, signed_envelope, expires_at, stale_until, audit_event_id, actor_id FROM segment_route_publications WHERE id = ? FOR SHARE",
     )
     .bind(write.publication_id)
     .fetch_one(&mut **transaction)
@@ -1321,6 +1328,8 @@ async fn publication_matches(
         || row.try_get::<u64, _>("generation")? != write.generation
         || row.try_get::<Vec<u8>, _>("content_hash")?.as_slice() != write.snapshot.content_hash
         || row.try_get::<Vec<u8>, _>("signed_envelope")? != write.snapshot.signed_envelope
+        || row.try_get::<u64, _>("expires_at")? != write.expires_at
+        || row.try_get::<u64, _>("stale_until")? != write.stale_until
         || row.try_get::<Uuid, _>("audit_event_id")? != write.audit_event_id
         || row.try_get::<String, _>("actor_id")? != write.actor_id
     {

@@ -543,6 +543,8 @@ impl BuiltRoutePublication {
             expected_previous_generation,
             expected_previous_hash: self.segment.source.previous_hash,
             generation,
+            expires_at: self.segment.source.expires_at,
+            stale_until: self.segment.source.stale_until,
             snapshot: SignedObjectWrite {
                 content_hash: self.segment.content_hash,
                 signed_envelope: self.segment.envelope.clone(),
