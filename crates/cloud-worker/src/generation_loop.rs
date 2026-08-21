@@ -107,6 +107,14 @@ fn control_error_code(error: &ControlStoreError) -> &'static str {
 
 #[async_trait]
 pub trait GenerationJobQueue: Send + Sync {
+    async fn refresh_expiring(
+        &self,
+        _now: DateTime<Utc>,
+        _refresh_before: Duration,
+        _limit: u16,
+    ) -> Result<u16, ControlStoreError> {
+        Ok(0)
+    }
     async fn claim_next(
         &self,
         owner: &str,
@@ -129,6 +137,15 @@ pub trait GenerationJobQueue: Send + Sync {
 
 #[async_trait]
 impl GenerationJobQueue for GenerationJobRepository {
+    async fn refresh_expiring(
+        &self,
+        now: DateTime<Utc>,
+        refresh_before: Duration,
+        limit: u16,
+    ) -> Result<u16, ControlStoreError> {
+        self.refresh_expiring(now, refresh_before, limit).await
+    }
+
     async fn claim_next(
         &self,
         owner: &str,
@@ -238,6 +255,9 @@ where
         if !self.publisher.ready() {
             return Ok(RunOutcome::PublisherUnavailable);
         }
+        self.queue
+            .refresh_expiring(now, Duration::from_secs(3600), 32)
+            .await?;
         let Some(job) = self
             .queue
             .claim_next(&self.owner_id, now, self.lease_ttl)

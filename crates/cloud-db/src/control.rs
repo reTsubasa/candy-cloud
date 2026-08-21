@@ -1870,6 +1870,69 @@ impl GenerationJobRepository {
         Self { pool }
     }
 
+    /// Enqueue a new publication generation when the active signed route is
+    /// close to (or past) its stale deadline. The control resources remain
+    /// unchanged; only the publication generation advances.
+    pub async fn refresh_expiring(
+        &self,
+        now: DateTime<Utc>,
+        refresh_before: StdDuration,
+        limit: u16,
+    ) -> Result<u16, ControlStoreError> {
+        if refresh_before.is_zero() || limit == 0 || limit > 128 {
+            return Err(ControlStoreError::InvalidRequest);
+        }
+        let threshold = now
+            + chrono::Duration::from_std(refresh_before)
+                .map_err(|_| ControlStoreError::InvalidRequest)?;
+        let threshold_unix = threshold.timestamp().max(0) as u64;
+        let mut transaction = self.pool.begin().await?;
+        let rows = sqlx::query(
+            "SELECT seg.tenant_id, seg.id AS segment_id, seg.current_generation FROM segments seg JOIN segment_generation_heads head ON head.tenant_id = seg.tenant_id AND head.segment_id = seg.id AND head.desired_revision = seg.current_generation JOIN segment_route_publications publication ON publication.tenant_id = seg.tenant_id AND publication.segment_id = seg.id AND publication.generation = seg.current_generation WHERE seg.state = 'ACTIVE' AND seg.current_generation > 0 AND publication.stale_until <= ? AND NOT EXISTS (SELECT 1 FROM segment_generation_jobs pending WHERE pending.tenant_id = seg.tenant_id AND pending.segment_id = seg.id AND pending.state IN ('PENDING','LEASED','RETRY')) ORDER BY publication.stale_until, seg.tenant_id, seg.id LIMIT ? FOR UPDATE SKIP LOCKED",
+        )
+        .bind(threshold_unix)
+        .bind(limit as u32)
+        .fetch_all(&mut *transaction)
+        .await?;
+        let mut refreshed = 0_u16;
+        for row in rows {
+            let tenant_id: Uuid = row.try_get("tenant_id")?;
+            let segment_id: Uuid = row.try_get("segment_id")?;
+            let current_generation: u64 = row.try_get("current_generation")?;
+            let desired_revision = current_generation
+                .checked_add(1)
+                .ok_or(ControlStoreError::InvalidTransition)?;
+            let mut digest = Sha256::new();
+            digest.update(b"candy/cloud-route-refresh-v1\0");
+            digest.update(tenant_id.as_bytes());
+            digest.update(segment_id.as_bytes());
+            digest.update(desired_revision.to_be_bytes());
+            let idempotency_hash: [u8; 32] = digest.finalize().into();
+            sqlx::query(
+                "UPDATE segment_generation_heads SET desired_revision = ? WHERE tenant_id = ? AND segment_id = ? AND desired_revision = ?",
+            )
+            .bind(desired_revision)
+            .bind(tenant_id)
+            .bind(segment_id)
+            .bind(current_generation)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query(
+                "INSERT INTO segment_generation_jobs (id, tenant_id, segment_id, desired_revision, idempotency_hash) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(tenant_id)
+            .bind(segment_id)
+            .bind(desired_revision)
+            .bind(idempotency_hash.as_slice())
+            .execute(&mut *transaction)
+            .await?;
+            refreshed = refreshed.saturating_add(1);
+        }
+        transaction.commit().await?;
+        Ok(refreshed)
+    }
+
     pub async fn claim_next(
         &self,
         owner: &str,

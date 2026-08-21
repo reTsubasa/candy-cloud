@@ -28,6 +28,8 @@ fn publication(tenant_id: Uuid, segment_id: Uuid) -> SegmentPublicationWrite {
         expected_previous_generation: 0,
         expected_previous_hash: [0; 32],
         generation: 1,
+        expires_at: 3_600,
+        stale_until: 7_200,
         snapshot: snapshot.clone(),
         projections: vec![SiteProjectionPublicationWrite {
             publication_id: Uuid::new_v4(),
