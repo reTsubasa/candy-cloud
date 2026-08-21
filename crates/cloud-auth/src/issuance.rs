@@ -17,6 +17,12 @@ const REQUIRED_TUN_FEATURES: u64 = FEATURE_DATAGRAM | FEATURE_IP_PACKET_TUNNEL_V
 const CORE_SERVICE_CLASS_CUSTOMER_PRIVATE: u64 = 1;
 const CORE_OPERATOR_SCOPE_CUSTOMER: u64 = 1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PermissionWireContract {
+    bits: u64,
+    requires_route_policy: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct PolicyRefBuildV1 {
     policy_id_hex: String,
@@ -180,8 +186,8 @@ pub fn prepare_private_grant_with_id(
     if request.service_class != ServiceClass::Private {
         return Err(PrepareGrantError::UnsupportedServiceClass);
     }
-    let (service_permissions, is_tun) = permission_bits(&request.service_permission)?;
-    let route_policy = if is_tun {
+    let permission = permission_wire_contract(&request.service_permission)?;
+    let route_policy = if permission.requires_route_policy {
         let binding = material
             .route_policy
             .as_ref()
@@ -241,7 +247,7 @@ pub fn prepare_private_grant_with_id(
         operator_id_hex: None,
         region_ids_hex: Vec::new(),
         allowed_features: material.quota.allowed_features,
-        service_permissions,
+        service_permissions: permission.bits,
         route_policy,
         dns_policy: None,
         max_outer_connections_per_node: material.quota.max_outer_connections_per_node,
@@ -286,10 +292,16 @@ fn encode_hex(bytes: &[u8]) -> String {
     output
 }
 
-fn permission_bits(permission: &str) -> Result<(u64, bool), PrepareGrantError> {
+fn permission_wire_contract(permission: &str) -> Result<PermissionWireContract, PrepareGrantError> {
     match permission {
-        "private.connect" => Ok((PERMISSION_PRIVATE_CONNECT, false)),
-        "private.tun.connect" => Ok((PERMISSION_PRIVATE_TUN_CONNECT, true)),
+        "private.connect" => Ok(PermissionWireContract {
+            bits: PERMISSION_PRIVATE_CONNECT,
+            requires_route_policy: false,
+        }),
+        "private.tun.connect" => Ok(PermissionWireContract {
+            bits: PERMISSION_PRIVATE_TUN_CONNECT,
+            requires_route_policy: true,
+        }),
         _ => Err(PrepareGrantError::UnsupportedPermission),
     }
 }

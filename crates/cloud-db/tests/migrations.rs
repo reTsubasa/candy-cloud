@@ -112,6 +112,18 @@ fn control_plane_readiness_requires_the_latest_telemetry_migration() {
 }
 
 #[test]
+fn trial_tunnel_quota_migration_replaces_only_the_known_placeholder_and_republishes() {
+    let migration = include_str!("../migrations/0022_sdwan_trial_tunnel_quota.sql");
+    assert!(migration.contains("subscription.plan_code = 'sdwan-trial'"));
+    assert!(migration.contains("$.upload_rate_bps')) AS UNSIGNED) = 10000000"));
+    assert!(migration.contains("$.download_rate_bps')) AS UNSIGNED) = 20000000"));
+    assert!(migration.contains("'$.upload_rate_bps', 0"));
+    assert!(migration.contains("'$.download_rate_bps', 0"));
+    assert!(migration.contains("INSERT INTO segment_generation_jobs"));
+    assert!(migration.contains("candy/sdwan-trial-quota-v2/"));
+}
+
+#[test]
 fn transport_activation_migration_is_identity_scoped_and_fail_closed() {
     let migration = include_str!("../migrations/0015_sdwan_transport_activation.sql");
     assert!(migration.contains("uq_nodes_device_identity"));

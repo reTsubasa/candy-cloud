@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     net::{Ipv4Addr, SocketAddr},
+    num::NonZeroU64,
     time::Duration as StdDuration,
 };
 
@@ -195,10 +196,30 @@ pub struct RuntimeTransportBinding {
     pub service_device_id: Uuid,
     pub service_device_key_id: Uuid,
     pub node_pool_id: Uuid,
+    pub entitlement_id: Uuid,
+    pub entitlement_rate_limit: BytesPerSecond,
     pub endpoint: SocketAddr,
     pub server_name: String,
     pub server_cert_sha256: [u8; 32],
     pub transport_preset: RuntimeTransportPreset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BitsPerSecond(u64);
+
+impl BitsPerSecond {
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BytesPerSecond(NonZeroU64);
+
+impl BytesPerSecond {
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1072,7 +1093,7 @@ async fn load_transport_bindings(
             .get(&candidate.transport_node_id)
             .ok_or(ControlStoreError::ReferenceConflict)?;
         let rows = sqlx::query(
-            "SELECT ne.id AS endpoint_id, n.id AS service_node_id, n.device_key_id AS service_node_key_id, n.device_id AS service_device_id, n.device_key_id AS service_device_key_id, n.node_pool_id, ne.endpoint, ne.server_name, ne.server_cert_sha256, ne.transport_preset FROM nodes n JOIN devices d ON d.id = n.device_id AND d.tenant_id = n.tenant_id AND d.status = 'ACTIVE' JOIN device_keys dk ON dk.id = n.device_key_id AND dk.device_id = d.id AND dk.tenant_id = d.tenant_id AND dk.status = 'ACTIVE' JOIN node_pools np ON np.id = n.node_pool_id AND np.tenant_id = n.tenant_id AND np.status = 'ACTIVE' JOIN entitlements entitlement ON entitlement.tenant_id = n.tenant_id AND entitlement.node_pool_id = np.id AND entitlement.service_permission = 'private.tun.connect' AND entitlement.status = 'ACTIVE' JOIN subscriptions subscription ON subscription.id = entitlement.subscription_id AND subscription.tenant_id = entitlement.tenant_id AND subscription.status IN ('TRIAL','ACTIVE') JOIN node_endpoints ne ON ne.node_id = n.id AND ne.status = 'ACTIVE' AND ne.transport = 'CANDY_QUIC_UDP' WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' ORDER BY ne.id",
+            "SELECT ne.id AS endpoint_id, n.id AS service_node_id, n.device_key_id AS service_node_key_id, n.device_id AS service_device_id, n.device_key_id AS service_device_key_id, n.node_pool_id, entitlement.id AS entitlement_id, CAST(entitlement.quota_json AS CHAR) AS entitlement_quota_json, ne.endpoint, ne.server_name, ne.server_cert_sha256, ne.transport_preset FROM nodes n JOIN devices d ON d.id = n.device_id AND d.tenant_id = n.tenant_id AND d.status = 'ACTIVE' JOIN device_keys dk ON dk.id = n.device_key_id AND dk.device_id = d.id AND dk.tenant_id = d.tenant_id AND dk.status = 'ACTIVE' JOIN node_pools np ON np.id = n.node_pool_id AND np.tenant_id = n.tenant_id AND np.status = 'ACTIVE' JOIN entitlements entitlement ON entitlement.tenant_id = n.tenant_id AND entitlement.node_pool_id = np.id AND entitlement.service_permission = 'private.tun.connect' AND entitlement.status = 'ACTIVE' JOIN subscriptions subscription ON subscription.id = entitlement.subscription_id AND subscription.tenant_id = entitlement.tenant_id AND subscription.status IN ('TRIAL','ACTIVE') JOIN node_endpoints ne ON ne.node_id = n.id AND ne.status = 'ACTIVE' AND ne.transport = 'CANDY_QUIC_UDP' WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' ORDER BY ne.id",
         )
         .bind(tenant_id)
         .bind(expected_transport_node.device_id)
@@ -1098,17 +1119,26 @@ async fn load_transport_bindings(
             }
         }
         let mut bindings = Vec::with_capacity(rows.len());
+        let mut endpoint_ids = HashSet::with_capacity(rows.len());
         for row in rows {
+            let endpoint_id: Uuid = row.try_get("endpoint_id")?;
+            if !endpoint_ids.insert(endpoint_id) {
+                return Err(ControlStoreError::InvalidTransition);
+            }
             let endpoint: String = row.try_get("endpoint")?;
             let pin: Vec<u8> = row.try_get("server_cert_sha256")?;
             bindings.push(RuntimeTransportBinding {
                 candidate_id: resource.metadata.id,
-                endpoint_id: row.try_get("endpoint_id")?,
+                endpoint_id,
                 service_node_id: row.try_get("service_node_id")?,
                 service_node_key_id: row.try_get("service_node_key_id")?,
                 service_device_id: row.try_get("service_device_id")?,
                 service_device_key_id: row.try_get("service_device_key_id")?,
                 node_pool_id: row.try_get("node_pool_id")?,
+                entitlement_id: row.try_get("entitlement_id")?,
+                entitlement_rate_limit: entitlement_rate_limit(
+                    &row.try_get::<String, _>("entitlement_quota_json")?,
+                )?,
                 endpoint: endpoint
                     .parse()
                     .map_err(|_| ControlStoreError::InvalidTransition)?,
@@ -1122,6 +1152,47 @@ async fn load_transport_bindings(
         result.insert(resource.metadata.id, bindings);
     }
     Ok(result)
+}
+
+#[derive(serde::Deserialize)]
+struct PersistedTunnelBandwidthQuota {
+    #[serde(rename = "upload_rate_bps")]
+    upload_rate: BitsPerSecond,
+    #[serde(rename = "download_rate_bps")]
+    download_rate: BitsPerSecond,
+}
+
+impl<'de> serde::Deserialize<'de> for BitsPerSecond {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self(<u64 as serde::Deserialize>::deserialize(
+            deserializer,
+        )?))
+    }
+}
+
+// An unlimited Grant still needs a finite, non-zero signed route budget.
+const UNMETERED_PRIVATE_TUNNEL_MAX_BYTES_PER_SECOND: u64 = 1_250_000_000;
+
+fn entitlement_rate_limit(quota_json: &str) -> Result<BytesPerSecond, ControlStoreError> {
+    const BITS_PER_BYTE: u64 = 8;
+
+    let quota: PersistedTunnelBandwidthQuota =
+        serde_json::from_str(quota_json).map_err(|_| ControlStoreError::InvalidTransition)?;
+    let effective_bits_per_second = [quota.upload_rate, quota.download_rate]
+        .into_iter()
+        .map(BitsPerSecond::get)
+        .filter(|rate| *rate != 0)
+        .min();
+    let bytes_per_second = effective_bits_per_second
+        .map_or(UNMETERED_PRIVATE_TUNNEL_MAX_BYTES_PER_SECOND, |rate| {
+            rate / BITS_PER_BYTE
+        });
+    NonZeroU64::new(bytes_per_second)
+        .map(BytesPerSecond)
+        .ok_or(ControlStoreError::InvalidTransition)
 }
 
 fn valid_server_name(value: &str) -> bool {
@@ -2296,5 +2367,46 @@ mod tests {
             "CONTROL_SNAPSHOT_INVALID_RESOURCE"
         ));
         assert!(!recoverable_route_error("PREFIX_OVERLAP"));
+    }
+
+    #[test]
+    fn entitlement_quota_matches_core_direction_and_unit_rules() {
+        let quota = r#"{"upload_rate_bps":10000000,"download_rate_bps":20000000}"#;
+
+        assert_eq!(entitlement_rate_limit(quota).unwrap().get(), 1_250_000);
+        assert_eq!(
+            entitlement_rate_limit(r#"{"upload_rate_bps":20000000,"download_rate_bps":8000000}"#)
+                .unwrap()
+                .get(),
+            1_000_000
+        );
+        assert_eq!(
+            entitlement_rate_limit(r#"{"upload_rate_bps":0,"download_rate_bps":8000000}"#)
+                .unwrap()
+                .get(),
+            1_000_000
+        );
+        assert_eq!(
+            entitlement_rate_limit(r#"{"upload_rate_bps":0,"download_rate_bps":0}"#)
+                .unwrap()
+                .get(),
+            UNMETERED_PRIVATE_TUNNEL_MAX_BYTES_PER_SECOND
+        );
+    }
+
+    #[test]
+    fn entitlement_quota_rejects_missing_malformed_and_sub_byte_effective_rates() {
+        for quota in [
+            r#"{}"#,
+            r#"{"upload_rate_bps":"10000000","download_rate_bps":20000000}"#,
+            r#"{"upload_rate_bps":10000000}"#,
+            r#"{"upload_rate_bps":7,"download_rate_bps":0}"#,
+            "not-json",
+        ] {
+            assert!(matches!(
+                entitlement_rate_limit(quota),
+                Err(ControlStoreError::InvalidTransition)
+            ));
+        }
     }
 }

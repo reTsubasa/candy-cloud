@@ -152,6 +152,11 @@ fn entitlement_status(value: &str) -> Result<SnapshotStatus, MappingError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        domain::{GrantRequest, ServiceClass},
+        grants::test_support::{request_from_issued, signer},
+        issuance::{prepare_private_grant, IssuerConfig, PERMISSION_PRIVATE_TUN_CONNECT},
+    };
     use uuid::Uuid;
 
     fn record() -> AuthorizationRecord {
@@ -197,5 +202,60 @@ mod tests {
             private_material_from_record(value).unwrap_err(),
             MappingError::InvalidQuota
         );
+    }
+
+    #[test]
+    fn production_projection_record_issues_core_tun_permission() {
+        let mut value = record();
+        value.service_permission = "private.tun.connect".into();
+        value.quota_json = r#"{"allowed_features":1025,"max_outer_connections_per_node":2,"max_outer_connections_per_pool":4,"max_active_sessions_per_connection":128,"max_udp_flows_per_connection":256,"max_pending_opens":32,"max_speculative_streams":8,"max_datagram_record":1200,"upload_rate_bps":10000000,"download_rate_bps":20000000}"#.into();
+        let projection_id = Uuid::new_v4();
+        let projection_content_hash = vec![0x71; 32];
+        value.route_policy = Some(cloud_db::authorization::AuthorizationRoutePolicy {
+            segment_id: Uuid::new_v4(),
+            attachment_id: Uuid::new_v4(),
+            site_id: Uuid::new_v4(),
+            projection_id,
+            projection_generation: 17,
+            projection_content_hash: projection_content_hash.clone(),
+            segment_generation: 17,
+            segment_content_hash: vec![0x72; 32],
+        });
+        let request = GrantRequest {
+            tenant_id: value.tenant_id,
+            device_id: value.device_id,
+            device_key_id: value.device_key_id,
+            node_pool_id: value.node_pool_id,
+            service_class: ServiceClass::Private,
+            service_permission: "private.tun.connect".into(),
+        };
+        let material = private_material_from_record(value).unwrap();
+
+        let prepared = prepare_private_grant(
+            &signer("production-projection-test", [3; 32]),
+            &IssuerConfig {
+                issuer_id: Uuid::new_v4(),
+                environment_id: Uuid::new_v4(),
+            },
+            "production-projection-grant-17",
+            &request,
+            &material,
+            1_800_000_000,
+        )
+        .unwrap();
+        let build_request = request_from_issued(&prepared.issued);
+        let payload = &build_request["object"];
+
+        assert_eq!(payload["service_class"], 1);
+        assert_eq!(
+            payload["service_permissions"],
+            PERMISSION_PRIVATE_TUN_CONNECT
+        );
+        assert_eq!(
+            payload["route_policy"]["policy_id_hex"],
+            projection_id.simple().to_string()
+        );
+        assert_eq!(payload["route_policy"]["generation"], 17);
+        assert_eq!(payload["route_policy"]["content_hash_hex"], "71".repeat(32));
     }
 }

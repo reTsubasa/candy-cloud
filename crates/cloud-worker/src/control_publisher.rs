@@ -45,6 +45,12 @@ enum InputReadinessError {
     PeerPolicy,
 }
 
+#[derive(Clone)]
+struct QuotaBoundPeerPathCandidate {
+    peer_path: PeerPathCandidateV1,
+    entitlement_rate_limit: cloud_db::control::BytesPerSecond,
+}
+
 impl InputReadinessError {
     fn code(&self) -> &'static str {
         match self {
@@ -220,7 +226,7 @@ impl ControlRoutePublisher {
                 "omitted peer paths that cannot carry a published site prefix"
             );
         }
-        let mut path_map: HashMap<Uuid, Vec<PeerPathCandidateV1>> = HashMap::new();
+        let mut path_map: HashMap<Uuid, Vec<QuotaBoundPeerPathCandidate>> = HashMap::new();
         for (resource, value) in &routable_paths {
             let (_, peer_attachment) = attachment_ids
                 .get(&value.destination_attachment_id)
@@ -278,37 +284,40 @@ impl ControlRoutePublisher {
                         node_id: transport_node.node_id,
                         node_key_id: transport_node.node_key_id,
                     });
-                expanded.push(PeerPathCandidateV1 {
-                    candidate_id: PathCandidateId(stable_candidate_id(
-                        resource.metadata.id,
-                        transport.endpoint_id,
-                    )),
-                    peer_site_id: peer_site,
-                    peer_attachment_id: peer_attachment,
-                    kind,
-                    relay_node,
-                    node_pool_id: NodePoolId(transport.node_pool_id.into_bytes()),
-                    transport_node,
-                    endpoint,
-                    server_name: transport.server_name.clone(),
-                    server_cert_sha256: transport.server_cert_sha256,
-                    transport_preset: match transport.transport_preset {
-                        cloud_db::control::RuntimeTransportPreset::Current => {
-                            TransportPresetV1::Current
-                        }
-                        cloud_db::control::RuntimeTransportPreset::BbrV1 => {
-                            TransportPresetV1::BbrV1
-                        }
-                        cloud_db::control::RuntimeTransportPreset::Aggressive => {
-                            TransportPresetV1::Aggressive
-                        }
+                expanded.push(QuotaBoundPeerPathCandidate {
+                    peer_path: PeerPathCandidateV1 {
+                        candidate_id: PathCandidateId(stable_candidate_id(
+                            resource.metadata.id,
+                            transport.endpoint_id,
+                        )),
+                        peer_site_id: peer_site,
+                        peer_attachment_id: peer_attachment,
+                        kind,
+                        relay_node,
+                        node_pool_id: NodePoolId(transport.node_pool_id.into_bytes()),
+                        transport_node,
+                        endpoint,
+                        server_name: transport.server_name.clone(),
+                        server_cert_sha256: transport.server_cert_sha256,
+                        transport_preset: match transport.transport_preset {
+                            cloud_db::control::RuntimeTransportPreset::Current => {
+                                TransportPresetV1::Current
+                            }
+                            cloud_db::control::RuntimeTransportPreset::BbrV1 => {
+                                TransportPresetV1::BbrV1
+                            }
+                            cloud_db::control::RuntimeTransportPreset::Aggressive => {
+                                TransportPresetV1::Aggressive
+                            }
+                        },
+                        priority: value.priority,
+                        authorization: PolicyRefV1 {
+                            policy_id: PolicyId(resource.metadata.id.into_bytes()),
+                            generation: resource.metadata.revision,
+                            content_hash: authorization_hash,
+                        },
                     },
-                    priority: value.priority,
-                    authorization: PolicyRefV1 {
-                        policy_id: PolicyId(resource.metadata.id.into_bytes()),
-                        generation: resource.metadata.revision,
-                        content_hash: authorization_hash,
-                    },
+                    entitlement_rate_limit: transport.entitlement_rate_limit,
                 });
             }
             path_map.insert(resource.metadata.id, expanded);
@@ -340,17 +349,21 @@ impl ControlRoutePublisher {
                 .context("Attachment Node is missing")?;
             let site = SiteId(attachment.site_id.into_bytes());
             let mut peer_paths = Vec::new();
+            let mut outbound_rate_limits_bytes_per_second = Vec::new();
             for (path_resource, path) in &routable_paths {
                 if path_belongs_to_projection(
                     resource.metadata.id,
                     path,
                     &route_owner_attachment_ids,
                 ) {
-                    peer_paths.extend(
-                        path_map
-                            .get(&path_resource.metadata.id)
-                            .cloned()
-                            .context("path candidate conversion failed")?,
+                    let candidates = path_map
+                        .get(&path_resource.metadata.id)
+                        .context("path candidate conversion failed")?;
+                    peer_paths.extend(candidates.iter().map(|item| item.peer_path.clone()));
+                    outbound_rate_limits_bytes_per_second.extend(
+                        candidates
+                            .iter()
+                            .map(|item| item.entitlement_rate_limit.get()),
                     );
                 }
             }
@@ -367,6 +380,8 @@ impl ControlRoutePublisher {
                 )
             });
             let remote_site = peer_paths[0].peer_site_id;
+            let max_bytes_per_second =
+                effective_projection_rate_limit(outbound_rate_limits_bytes_per_second.into_iter())?;
             let projection_id = PolicyId(resource.metadata.id.into_bytes());
             let (projection_generation, previous_hash) = match self
                 .routes
@@ -423,7 +438,7 @@ impl ControlRoutePublisher {
                     max_queue_bytes: 16 * 1024 * 1024,
                     replay_window_packets: 4096,
                     max_packets_per_second: 100_000,
-                    max_bytes_per_second: 1_000_000_000,
+                    max_bytes_per_second,
                     allowed_traffic_classes: 1,
                 },
             });
@@ -460,6 +475,19 @@ impl ControlRoutePublisher {
             projections,
         })
     }
+}
+
+fn effective_projection_rate_limit(
+    limits_bytes_per_second: impl Iterator<Item = u64>,
+) -> Result<u64> {
+    let mut effective = None;
+    for limit in limits_bytes_per_second {
+        if limit == 0 {
+            bail!("projection contains a zero outbound entitlement rate limit");
+        }
+        effective = Some(effective.map_or(limit, |current: u64| current.min(limit)));
+    }
+    effective.context("projection has no outbound entitlement rate limit")
 }
 
 fn path_targets_route_owner(
@@ -820,5 +848,19 @@ mod tests {
             failure,
             PublicationFailure::Retryable { code, .. } if code == "ROUTE_DB_DATABASE"
         ));
+    }
+
+    #[test]
+    fn projection_uses_the_safe_minimum_across_outbound_candidates() {
+        assert_eq!(
+            effective_projection_rate_limit([2_500_000, 1_250_000, 5_000_000].into_iter()).unwrap(),
+            1_250_000
+        );
+    }
+
+    #[test]
+    fn projection_rejects_missing_or_zero_candidate_quotas() {
+        assert!(effective_projection_rate_limit(std::iter::empty()).is_err());
+        assert!(effective_projection_rate_limit([1_250_000, 0].into_iter()).is_err());
     }
 }

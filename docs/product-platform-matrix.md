@@ -21,16 +21,16 @@ does not count as product support.
 
 | Component | x86_64 / amd64 | ARMv7 / IPQ40xx | ARM64 / aarch64 |
 |---|---|---|---|
-| Core data plane `0.3.14` | Supported, musl | Supported, musleabihf | Supported, glibc |
-| Core Cloud ABI `0.3.14` | Supported, glibc | Not applicable | Supported, glibc |
-| OpenWrt Runtime `0.4.0-r39` | Supported, OpenWrt 25.12.4 x86/64 | Supported, IPQ40xx Cortex-A7 | Not released |
-| Linux Runtime `0.4.0-r39` | Supported, musl | Not released | Supported, glibc |
+| Core data plane `0.3.17` | Supported, musl | Supported, musleabihf | Supported, glibc |
+| Core Cloud ABI `0.3.17` | Supported, glibc | Not applicable | Supported, glibc |
+| OpenWrt Runtime `0.4.0-r45` | Supported, OpenWrt 25.12.4 x86/64 | Supported, IPQ40xx Cortex-A7 | Not released |
+| Linux Runtime `0.4.0-r45` | Supported, musl | Not released | Supported, glibc |
 | Candy Cloud image | Supported by current x86 image Release | Not supported | Supported by immutable ARM64 Release |
 | LuCI | Supported with x86_64 Runtime | Supported with IPQ40xx Runtime | Not released |
 | Android | Supported ABI | Supported ABI (`armeabi-v7a`) | Supported ABI (`arm64-v8a`) |
 
 The Linux ARM64 Runtime and Cloud paths consume the matching signed Core
-`0.3.14` artifacts. OpenWrt ARM64 remains intentionally unclaimed until a
+`0.3.17` artifacts. OpenWrt ARM64 remains intentionally unclaimed until a
 named OpenWrt target/profile and device test baseline exist.
 
 ```mermaid
@@ -50,15 +50,15 @@ flowchart LR
   CX ---|"same signed Core release"| CA
 ```
 
-## `0.3.14` target matrix
+## `0.3.17` target matrix
 
 | Role | Rust target | OS/libc | Consumers | Status in source |
 |---|---|---|---|---|
 | Core data plane | `x86_64-unknown-linux-musl` | Linux/musl | OpenWrt x86_64, Linux x86_64 | Existing |
 | Core data plane | `armv7-unknown-linux-musleabihf` | Linux/musl | OpenWrt IPQ40xx | Existing |
-| Core data plane | `aarch64-unknown-linux-gnu` | Linux/glibc | Linux ARM64 server/edge nodes | Added for `0.3.14` |
+| Core data plane | `aarch64-unknown-linux-gnu` | Linux/glibc | Linux ARM64 server/edge nodes | Supported |
 | Core Cloud ABI | `x86_64-unknown-linux-gnu` | Linux/glibc | Cloud amd64 images | Existing |
-| Core Cloud ABI | `aarch64-unknown-linux-gnu` | Linux/glibc | Cloud ARM64 images | Added for `0.3.14` |
+| Core Cloud ABI | `aarch64-unknown-linux-gnu` | Linux/glibc | Cloud ARM64 images | Supported |
 | Cloud services | `x86_64-unknown-linux-gnu` | Debian Bookworm | Cloud amd64 image bundle | Existing |
 | Cloud services | `aarch64-unknown-linux-gnu` | Debian Bookworm | Cloud ARM64 image bundle | Added |
 
@@ -71,9 +71,9 @@ on an AArch64 host.
 
 ARM64 is considered supported only after all of the following are true:
 
-1. `core-v0.3.14` contains three signed data-plane targets and two signed Cloud ABI targets.
+1. `core-v0.3.17` contains three signed data-plane targets and two signed Cloud ABI targets.
 2. `candy-release` verifies all five native targets and publishes both ARM64 records in the stable catalog.
-3. Candy Cloud publishes `cloud-arm64-<commit>` from the signed `core-v0.3.14` ABI asset.
+3. Candy Cloud publishes `cloud-arm64-<commit>` from the signed `core-v0.3.17` ABI asset.
 4. The ARM64 bundle runs natively on `47.83.1.189` without QEMU and preserves the existing MySQL volumes and secrets.
 5. Linux Runtime installs and activates the `aarch64-unknown-linux-gnu` Core on an ARM64 node.
 6. Cloud readiness, identity/login, topology publication, telemetry, Core ABI load, and SD-WAN synchronization pass end-to-end.
