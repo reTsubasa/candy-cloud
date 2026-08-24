@@ -229,7 +229,7 @@ The same service chain is valid from Site B through Site A.
   membership, last known good policy, and local configuration.
 - [ ] Failed activation restores the prior Core/Runtime and prior network
   behavior.
-- [ ] Upgrade tests cover the current stable Runtime `0.4.0-r61` and Core
+- [ ] Upgrade tests cover the current stable Runtime `0.4.0-r62` and Core
   `0.3.23` baseline.
 
 ## 5. Cross-repository task list

@@ -71,7 +71,7 @@ assert_before 'migration_started=1' 'compose run --rm migrate'
 for workflow in "$arm_workflow" "$x86_workflow"; do
 	grep -F 'CORE_MODULE_VERSION: 0.3.23' "$workflow" >/dev/null
 	grep -F 'CORE_MODULE_INPUT_TAG: core-v0.3.23' "$workflow" >/dev/null
-	grep -F 'RUNTIME_RELEASE_TAG: runtime-v0.4.0-r61' "$workflow" >/dev/null
+	grep -F 'RUNTIME_RELEASE_TAG: runtime-v0.4.0-r62' "$workflow" >/dev/null
 	grep -F 'runtime:{release_tag:$runtime_release_tag}' "$workflow" >/dev/null
 done
 
