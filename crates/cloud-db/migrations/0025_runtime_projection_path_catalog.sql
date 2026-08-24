@@ -23,12 +23,50 @@ CREATE TABLE runtime_projection_path_catalog (
         FOREIGN KEY (destination_attachment_id) REFERENCES segment_attachments(id)
 ) ENGINE=InnoDB;
 
--- Historical signed projections cannot be reconstructed from mutable current
--- control state. They intentionally remain uncataloged: Runtime accepts their
--- aggregate telemetry but discards unverifiable per-path details until an
--- exact catalog is transactionally written by a fresh signed publication.
--- Force that publication while the old committed projection remains valid
--- throughout normal rolling activation.
+-- Existing nodes may still be running a committed publication when this
+-- migration lands. Materialize every candidate that can be reconstructed from
+-- the retained publication attachment and the active control/transport state;
+-- all new publications write the exact immutable catalog transactionally.
+INSERT IGNORE INTO runtime_projection_path_catalog (
+    tenant_id,
+    projection_publication_id,
+    candidate_id,
+    source_attachment_id,
+    destination_attachment_id,
+    path_kind
+)
+SELECT
+    projection.tenant_id,
+    projection.id,
+    UNHEX(LEFT(SHA2(CONCAT(
+        _binary 'candy/path-endpoint-candidate-v1',
+        0x00,
+        resource.id,
+        endpoint.id
+    ), 256), 32)),
+    projection.attachment_id,
+    UUID_TO_BIN(JSON_UNQUOTE(JSON_EXTRACT(resource.document_json, '$.resource.spec.destination_attachment_id'))),
+    JSON_UNQUOTE(JSON_EXTRACT(resource.document_json, '$.resource.spec.kind'))
+FROM site_route_projection_publications projection
+JOIN sdwan_control_resources resource
+    ON resource.tenant_id = projection.tenant_id
+    AND resource.segment_id = projection.segment_id
+    AND resource.resource_kind = 'PATH_CANDIDATE'
+    AND resource.state = 'ACTIVE'
+    AND UUID_TO_BIN(JSON_UNQUOTE(JSON_EXTRACT(resource.document_json, '$.resource.spec.source_attachment_id')))
+        = projection.attachment_id
+JOIN nodes transport_node
+    ON transport_node.tenant_id = projection.tenant_id
+    AND transport_node.node_id = JSON_UNQUOTE(JSON_EXTRACT(resource.document_json, '$.resource.spec.transport_node_id'))
+    AND transport_node.status = 'ACTIVE'
+JOIN node_endpoints endpoint
+    ON endpoint.node_id = transport_node.id
+    AND endpoint.transport = 'CANDY_QUIC_UDP'
+    AND endpoint.status = 'ACTIVE';
+
+-- Replace the best-effort compatibility backfill with an exact catalog from a
+-- freshly signed publication. The old committed projection remains valid
+-- while the normal rolling activation advances each active Segment.
 CREATE TEMPORARY TABLE runtime_path_catalog_refresh_segments (
     tenant_id BINARY(16) NOT NULL,
     segment_id BINARY(16) NOT NULL,
