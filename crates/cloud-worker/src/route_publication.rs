@@ -1,7 +1,8 @@
 use cloud_core_module::{CoreModule, ObjectType};
 use cloud_db::sdwan::{
-    ExpansionObjectKind, ExpansionObjectPublicationWrite, PublicationOutcome, SdwanError,
-    SdwanRepository, SegmentPublicationWrite, SignedObjectWrite, SiteProjectionPublicationWrite,
+    ExpansionObjectKind, ExpansionObjectPublicationWrite, PublicationOutcome, RuntimePathKind,
+    RuntimeProjectionPathCatalogWrite, SdwanError, SdwanRepository, SegmentPublicationWrite,
+    SignedObjectWrite, SiteProjectionPublicationWrite,
 };
 use ed25519_dalek::SigningKey;
 use serde_json::{json, Value};
@@ -589,6 +590,22 @@ impl BuiltRoutePublication {
                             nodes.dedup();
                             nodes
                         },
+                        runtime_paths: projection
+                            .peer_paths
+                            .iter()
+                            .map(|path| RuntimeProjectionPathCatalogWrite {
+                                candidate_id: uuid(path.candidate_id.0),
+                                peer_attachment_id: uuid(path.peer_attachment_id.0),
+                                path_kind: match path.kind {
+                                    crate::route_types::PeerPathKindV1::Direct => {
+                                        RuntimePathKind::Direct
+                                    }
+                                    crate::route_types::PeerPathKindV1::Relay => {
+                                        RuntimePathKind::Relay
+                                    }
+                                },
+                            })
+                            .collect(),
                     })
                 })
                 .collect::<Result<Vec<_>, RoutePublicationError>>()?,

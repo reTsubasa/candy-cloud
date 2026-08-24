@@ -5,7 +5,9 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use cloud_control::{PathCandidateKindV1, PeerPathPolicyV1, ResourceSpecV1, ResourceState};
+use cloud_control::{
+    runtime_path_candidate_id, PathCandidateKindV1, PeerPathPolicyV1, ResourceSpecV1, ResourceState,
+};
 use cloud_core_module::CoreModule;
 use cloud_db::{
     control::SegmentControlSnapshot,
@@ -287,10 +289,10 @@ impl ControlRoutePublisher {
                     });
                 expanded.push(QuotaBoundPeerPathCandidate {
                     peer_path: PeerPathCandidateV1 {
-                        candidate_id: PathCandidateId(stable_candidate_id(
-                            resource.metadata.id,
-                            transport.endpoint_id,
-                        )),
+                        candidate_id: PathCandidateId(
+                            runtime_path_candidate_id(resource.metadata.id, transport.endpoint_id)
+                                .into_bytes(),
+                        ),
                         peer_site_id: peer_site,
                         peer_attachment_id: peer_attachment,
                         kind,
@@ -696,17 +698,6 @@ fn stable_uuid(a: Uuid, b: Uuid, generation: u64) -> Uuid {
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     Uuid::from_bytes(bytes)
-}
-
-fn stable_candidate_id(path_resource_id: Uuid, endpoint_id: Uuid) -> [u8; 16] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"candy/path-endpoint-candidate-v1\0");
-    hasher.update(path_resource_id.as_bytes());
-    hasher.update(endpoint_id.as_bytes());
-    let digest: [u8; 32] = hasher.finalize().into();
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    bytes
 }
 
 #[cfg(test)]

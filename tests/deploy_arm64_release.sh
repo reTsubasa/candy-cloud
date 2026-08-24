@@ -31,6 +31,7 @@ for required in \
 	'DROP DATABASE IF EXISTS' \
 	'web-volume.tar.gz' \
 	'restore_web_volume()' \
+	'compose stop reverse-proxy cloud-api cloud-identity cloud-auth cloud-worker cloud-web' \
 	'compose up -d --no-deps --force-recreate' \
 	'compose run --rm migrate' \
 	'web_source_container=$(docker create "$web_image")' \
@@ -64,12 +65,13 @@ assert_before 'web-volume.tar.gz -C /srv' 'transaction_started=1'
 assert_before 'sha256sum compose.arm64.release.yml.previous' 'transaction_started=1'
 assert_before 'trap '\''on_exit $?'\'' EXIT' 'transaction_started=1'
 assert_before 'transaction_started=1' 'compose run --rm migrate'
+assert_before 'compose stop reverse-proxy cloud-api cloud-identity cloud-auth cloud-worker cloud-web' 'compose run --rm migrate'
 assert_before 'migration_started=1' 'compose run --rm migrate'
 
 for workflow in "$arm_workflow" "$x86_workflow"; do
-	grep -F 'CORE_MODULE_VERSION: 0.3.20' "$workflow" >/dev/null
-	grep -F 'CORE_MODULE_INPUT_TAG: core-v0.3.20' "$workflow" >/dev/null
-	grep -F 'RUNTIME_RELEASE_TAG: runtime-v0.4.0-r50' "$workflow" >/dev/null
+	grep -F 'CORE_MODULE_VERSION: 0.3.22' "$workflow" >/dev/null
+	grep -F 'CORE_MODULE_INPUT_TAG: core-v0.3.22' "$workflow" >/dev/null
+	grep -F 'RUNTIME_RELEASE_TAG: runtime-v0.4.0-r59' "$workflow" >/dev/null
 	grep -F 'runtime:{release_tag:$runtime_release_tag}' "$workflow" >/dev/null
 done
 

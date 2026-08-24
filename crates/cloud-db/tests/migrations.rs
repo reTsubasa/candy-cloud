@@ -51,6 +51,7 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "development_demo_accounts",
         "identity_abuse_buckets",
         "runtime_projection_transport_catalog",
+        "runtime_projection_path_catalog",
         "runtime_transport_identity_requests",
     ];
     for table in required {
@@ -81,6 +82,20 @@ fn runtime_path_telemetry_is_bounded_latest_state() {
 }
 
 #[test]
+fn runtime_path_catalog_is_immutable_projection_scoped_and_republished() {
+    let migration = include_str!("../migrations/0025_runtime_projection_path_catalog.sql");
+    assert!(migration.contains("PRIMARY KEY (projection_publication_id, candidate_id)"));
+    assert!(migration.contains(
+        "FOREIGN KEY (projection_publication_id) REFERENCES site_route_projection_publications(id)"
+    ));
+    assert!(migration.contains("source_attachment_id"));
+    assert!(migration.contains("destination_attachment_id"));
+    assert!(migration.contains("runtime_path_catalog_refresh_segments"));
+    assert!(migration.contains("INSERT INTO segment_generation_jobs"));
+    assert!(migration.contains("transport_node.node_id = JSON_UNQUOTE"));
+}
+
+#[test]
 fn runtime_local_network_telemetry_is_non_null_bounded_latest_state() {
     let migration = include_str!("../migrations/0020_runtime_local_network_telemetry.sql");
     assert!(migration.contains("local_networks_json JSON NOT NULL DEFAULT (JSON_ARRAY())"));
@@ -108,7 +123,7 @@ fn revoked_attachment_does_not_reserve_overlay_address_forever() {
 #[test]
 fn control_plane_readiness_requires_the_latest_telemetry_migration() {
     let source = include_str!("../src/control.rs");
-    assert!(source.contains("_sqlx_migrations WHERE version = 17 AND success = TRUE"));
+    assert!(source.contains("_sqlx_migrations WHERE version = 25 AND success = TRUE"));
 }
 
 #[test]
