@@ -42,6 +42,12 @@ export type OperationalSite = {
   egressCount: number;
 };
 
+export type OperationalPathTelemetry = RuntimePathTelemetry & {
+  sourceSiteId: string;
+  sourceNodeName: string;
+  sampledAt: string;
+};
+
 export type OperationalLink = {
   id: string;
   siteAId: string;
@@ -50,7 +56,7 @@ export type OperationalLink = {
   kindLabel: string;
   state: 'active' | 'pending';
   activePathCount: number;
-  activePaths: RuntimePathTelemetry[];
+  activePaths: OperationalPathTelemetry[];
 };
 
 export type OperationalTopologySnapshot = {
@@ -219,9 +225,16 @@ export function buildOperationalTopology(
           .filter((attachment) => value(attachment, 'site_id') === value(peer, 'site_a_id') || value(attachment, 'site_id') === value(peer, 'site_b_id'))
           .map((attachment) => attachment.metadata.id),
       );
-      const activePaths = nodes.flatMap((node) => {
+      const activePaths: OperationalPathTelemetry[] = nodes.flatMap((node) => {
         if (!node.dataPlaneActive) return [];
-        return (node.telemetry?.paths ?? []).filter((path) => peerAttachmentIds.has(path.peer_attachment_id));
+        return (node.telemetry?.paths ?? [])
+          .filter((path) => peerAttachmentIds.has(path.peer_attachment_id))
+          .map((path) => ({
+            ...path,
+            sourceSiteId: node.siteId,
+            sourceNodeName: node.name,
+            sampledAt: node.telemetry?.reported_at ?? '',
+          }));
       });
       return {
         id: peer.metadata.id,

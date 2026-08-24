@@ -109,6 +109,8 @@ describe('operational topology', () => {
     expect(snapshot.telemetryCoverageCount).toBe(1);
     expect(snapshot.activeLinkCount).toBe(1);
     expect(snapshot.links[0].activePathCount).toBe(1);
+    expect(snapshot.links[0].activePaths[0].sourceSiteId).toBe('site-a');
+    expect(snapshot.links[0].activePaths[0].sampledAt).toBe(active.reported_at);
     expect(snapshot.averageRttMs).toBe(42);
     expect(snapshot.averagePacketLossPpm).toBe(12_500);
     expect(snapshot.rxBps).toBe(20_000_000);
