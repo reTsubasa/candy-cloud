@@ -269,6 +269,13 @@ for file in cloud-api-auth-public.pem device-ca.pem; do
 done
 
 transaction_started=1
+
+# Quiesce every process that can read or mutate control-plane state before
+# migrations schedule work for the new release. In particular, an old worker
+# must never claim a generation whose catalog is only understood by the new
+# worker. MySQL remains online for migration and transactional rollback.
+compose stop reverse-proxy cloud-api cloud-identity cloud-auth cloud-worker cloud-web
+
 mv -f "$new_override" "$release_override"
 migration_started=1
 compose run --rm migrate

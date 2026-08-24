@@ -6,8 +6,10 @@ use cloud_control::{
 use cloud_db::sdwan::{
     ExpansionObjectKind, ExpansionObjectPublicationWrite, PublicationOutcome,
     RuntimeConfigurationApplyState, RuntimeConfigurationError, RuntimeConfigurationLookup,
-    RuntimeConfigurationState, RuntimeConfigurationStatusWrite, SdwanError, SdwanRepository,
-    SegmentPublicationWrite, SignedObjectWrite, SiteProjectionPublicationWrite,
+    RuntimeConfigurationState, RuntimeConfigurationStatusWrite, RuntimeLifecycle, RuntimePathKind,
+    RuntimePathTelemetryWrite, RuntimeProjectionPathCatalogWrite, RuntimeTelemetryWrite,
+    SdwanError, SdwanRepository, SegmentPublicationWrite, SignedObjectWrite,
+    SiteProjectionPublicationWrite,
 };
 use sqlx::Row;
 use std::net::Ipv4Addr;
@@ -22,6 +24,7 @@ fn signed(byte: u8) -> SignedObjectWrite {
 
 fn publication(tenant_id: Uuid, segment_id: Uuid) -> SegmentPublicationWrite {
     let snapshot = signed(7);
+    let attachment_id = Uuid::new_v4();
     SegmentPublicationWrite {
         publication_id: Uuid::new_v4(),
         tenant_id,
@@ -38,7 +41,7 @@ fn publication(tenant_id: Uuid, segment_id: Uuid) -> SegmentPublicationWrite {
             tenant_id,
             segment_id,
             site_id: Uuid::new_v4(),
-            attachment_id: Uuid::new_v4(),
+            attachment_id,
             device_id: Uuid::new_v4(),
             device_key_id: Uuid::new_v4(),
             segment_generation: 1,
@@ -47,6 +50,11 @@ fn publication(tenant_id: Uuid, segment_id: Uuid) -> SegmentPublicationWrite {
             previous_hash: [0; 32],
             object: signed(8),
             transport_nodes: vec![(Uuid::new_v4(), Uuid::new_v4())],
+            runtime_paths: vec![RuntimeProjectionPathCatalogWrite {
+                candidate_id: Uuid::new_v4(),
+                peer_attachment_id: Uuid::new_v4(),
+                path_kind: RuntimePathKind::Direct,
+            }],
         }],
         expansions: Vec::new(),
         audit_event_id: Uuid::new_v4(),
@@ -309,6 +317,16 @@ fn publication_validation_requires_signed_complete_adjacent_generation() {
         SdwanError::MissingProjection
     );
 
+    let mut duplicate_candidate = publication(tenant_id, segment_id);
+    let duplicate_path = duplicate_candidate.projections[0].runtime_paths[0].clone();
+    duplicate_candidate.projections[0]
+        .runtime_paths
+        .push(duplicate_path);
+    assert_eq!(
+        duplicate_candidate.validate().unwrap_err(),
+        SdwanError::InvalidScope
+    );
+
     let mut expanded = publication(tenant_id, segment_id);
     expanded.expansions.push(ExpansionObjectPublicationWrite {
         publication_id: Uuid::new_v4(),
@@ -502,6 +520,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     write.projections[0].device_id = device_id;
     write.projections[0].device_key_id = device_key_id;
     write.projections[0].transport_nodes = vec![(service_node_id, device_key_id)];
+    write.projections[0].runtime_paths[0].peer_attachment_id = peer_attachment_id;
     let mut peer_projection = write.projections[0].clone();
     peer_projection.publication_id = Uuid::new_v4();
     peer_projection.projection_id = peer_attachment_id;
@@ -514,6 +533,8 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         (service_node_id, device_key_id),
         (peer_service_node_id, peer_device_key_id),
     ];
+    peer_projection.runtime_paths[0].candidate_id = Uuid::new_v4();
+    peer_projection.runtime_paths[0].peer_attachment_id = attachment_id;
     write.projections.push(peer_projection);
     write.expansions.push(ExpansionObjectPublicationWrite {
         publication_id: Uuid::new_v4(),
@@ -685,6 +706,52 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         compatible.peer_projection_catalog[0].projection_content_hash,
         [10_u8; 32]
     );
+    let active_candidate = write.projections[0].runtime_paths[0].candidate_id;
+    let telemetry = RuntimeTelemetryWrite {
+        lookup: runtime_lookup.clone(),
+        boot_id: Uuid::new_v4(),
+        sequence: 1,
+        lifecycle: RuntimeLifecycle::Active,
+        configured_peers: 1,
+        active_peers: 1,
+        required_route_owners: 1,
+        ready_route_owners: 1,
+        fail_open_required: false,
+        last_error_code: None,
+        rtt_ms: Some(40),
+        jitter_ms: Some(2),
+        packet_loss_ppm: Some(0),
+        rx_bps: Some(1_000),
+        tx_bps: Some(2_000),
+        reconnects: Some(0),
+        path_changes: Some(0),
+        paths: vec![RuntimePathTelemetryWrite {
+            peer_attachment_id,
+            candidate_id: Some(active_candidate),
+            path_kind: RuntimePathKind::Direct,
+            transport: "quic_udp".into(),
+            connection_epoch: 1,
+            rtt_ms: Some(40),
+            jitter_ms: Some(2),
+            packet_loss_ppm: Some(0),
+            rx_bps: Some(1_000),
+            tx_bps: Some(2_000),
+            reconnects: 0,
+            path_changes: 0,
+        }],
+        local_networks: None,
+    };
+    repository
+        .record_runtime_telemetry(&telemetry)
+        .await
+        .unwrap();
+    let mut forged = telemetry.clone();
+    forged.sequence = 2;
+    forged.paths[0].candidate_id = Some(Uuid::new_v4());
+    assert!(matches!(
+        repository.record_runtime_telemetry(&forged).await,
+        Err(RuntimeConfigurationError::InvalidScope)
+    ));
     let peer_runtime_lookup = RuntimeConfigurationLookup {
         tenant_id,
         device_id: peer_device_id,
@@ -799,6 +866,12 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     divergent.expansions[0].object.signed_envelope.push(1);
     assert!(matches!(
         repository.publish(&divergent).await,
+        Err(SdwanError::DivergentReplay)
+    ));
+    let mut divergent_catalog = write.clone();
+    divergent_catalog.projections[0].runtime_paths[0].candidate_id = Uuid::new_v4();
+    assert!(matches!(
+        repository.publish(&divergent_catalog).await,
         Err(SdwanError::DivergentReplay)
     ));
 

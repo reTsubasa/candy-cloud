@@ -13,6 +13,17 @@ pub const MAX_DNS_RECORDS: usize = 4096;
 pub const MIN_DNS_TTL_SECONDS: u32 = 5;
 pub const MAX_DNS_TTL_SECONDS: u32 = 86_400;
 
+pub fn runtime_path_candidate_id(path_resource_id: Uuid, endpoint_id: Uuid) -> Uuid {
+    let mut hasher = Sha256::new();
+    hasher.update(b"candy/path-endpoint-candidate-v1\0");
+    hasher.update(path_resource_id.as_bytes());
+    hasher.update(endpoint_id.as_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    Uuid::from_bytes(bytes)
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResourceState {
@@ -642,6 +653,16 @@ mod tests {
 
     fn id(value: u128) -> Uuid {
         Uuid::from_u128(value)
+    }
+
+    #[test]
+    fn runtime_candidate_id_is_stable_across_publisher_and_telemetry_validation() {
+        let path_resource_id = Uuid::parse_str("7395e28b-4418-54b8-a969-b4d3b18ca7f1").unwrap();
+        let endpoint_id = Uuid::parse_str("01a017c4-3e22-7732-95ad-2a87cbff09cd").unwrap();
+        assert_eq!(
+            runtime_path_candidate_id(path_resource_id, endpoint_id),
+            Uuid::parse_str("f86c8c0f-c44f-9391-9f2f-deb09859f093").unwrap()
+        );
     }
 
     #[test]

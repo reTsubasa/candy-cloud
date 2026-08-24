@@ -1,9 +1,7 @@
 use std::{collections::HashSet, net::Ipv4Addr};
 
 use chrono::Utc;
-use cloud_control::{
-    ControlResourceV1, PathCandidateKindV1, ResourceSpecV1, ResourceState, SiteKindV1,
-};
+use cloud_control::{ControlResourceV1, ResourceSpecV1, ResourceState, SiteKindV1};
 use sha2::{Digest, Sha256};
 use sqlx::{MySql, Row, Transaction};
 use thiserror::Error;
@@ -385,11 +383,20 @@ pub struct RuntimePathTelemetryWrite {
     pub path_changes: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimePathKind {
     Direct,
     Relay,
+}
+
+impl RuntimePathKind {
+    fn database_value(self) -> &'static str {
+        match self {
+            Self::Direct => "DIRECT",
+            Self::Relay => "RELAY",
+        }
+    }
 }
 
 impl RuntimeTelemetryWrite {
@@ -763,6 +770,14 @@ pub struct SiteProjectionPublicationWrite {
     pub previous_hash: [u8; 32],
     pub object: SignedObjectWrite,
     pub transport_nodes: Vec<(Uuid, Uuid)>,
+    pub runtime_paths: Vec<RuntimeProjectionPathCatalogWrite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeProjectionPathCatalogWrite {
+    pub candidate_id: Uuid,
+    pub peer_attachment_id: Uuid,
+    pub path_kind: RuntimePathKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -893,6 +908,18 @@ impl SegmentPublicationWrite {
                 || !devices.insert((projection.device_id, projection.device_key_id))
             {
                 return Err(SdwanError::DuplicateProjection);
+            }
+            let mut candidates = HashSet::new();
+            if projection.runtime_paths.is_empty()
+                || projection.runtime_paths.len() > MAX_RUNTIME_PATHS
+                || projection.runtime_paths.iter().any(|path| {
+                    path.candidate_id.is_nil()
+                        || path.peer_attachment_id.is_nil()
+                        || path.peer_attachment_id == projection.attachment_id
+                        || !candidates.insert(path.candidate_id)
+                })
+            {
+                return Err(SdwanError::InvalidScope);
             }
         }
         if self.expansions.len() > MAX_EXPANSION_OBJECTS {
@@ -1117,64 +1144,63 @@ impl SdwanRepository {
             return Err(RuntimeConfigurationError::InvalidScope);
         }
         if !telemetry.paths.is_empty() {
-            let local_attachments: Vec<(Uuid, Uuid)> = sqlx::query_as(
-                "SELECT id, segment_id FROM segment_attachments WHERE tenant_id = ? AND device_id = ? AND device_key_id = ? AND principal_kind = 'DEVICE' AND state IN ('ACTIVE','STANDBY') FOR SHARE",
+            let committed_projection: Option<(Uuid, Uuid)> = sqlx::query_as(
+                "SELECT projection.id, projection.attachment_id FROM runtime_configuration_status status JOIN site_route_projection_publications projection ON projection.tenant_id = status.tenant_id AND projection.device_id = status.device_id AND projection.device_key_id = status.device_key_id AND projection.id = status.projection_publication_id JOIN segment_attachments attachment ON attachment.tenant_id = projection.tenant_id AND attachment.id = projection.attachment_id AND attachment.device_id = projection.device_id AND attachment.device_key_id = projection.device_key_id AND attachment.principal_kind = 'DEVICE' WHERE status.tenant_id = ? AND status.device_id = ? AND status.device_key_id = ? AND status.apply_state = 'ACTIVE' FOR SHARE",
             )
             .bind(telemetry.lookup.tenant_id)
             .bind(telemetry.lookup.device_id)
             .bind(telemetry.lookup.device_key_id)
-            .fetch_all(&mut *transaction)
+            .fetch_optional(&mut *transaction)
             .await?;
-            if local_attachments.len() != 1 {
+            let Some((projection_publication_id, local_attachment_id)) = committed_projection
+            else {
                 transaction.rollback().await?;
                 return Err(RuntimeConfigurationError::InvalidScope);
-            }
-            let (local_attachment_id, segment_id) = local_attachments[0];
-            let peer_attachments = sqlx::query_scalar::<_, Uuid>(
-                "SELECT id FROM segment_attachments WHERE tenant_id = ? AND segment_id = ? AND id <> ? AND state IN ('ACTIVE','STANDBY') FOR SHARE",
+            };
+            let catalog = sqlx::query(
+                "SELECT candidate_id, source_attachment_id, destination_attachment_id, path_kind FROM runtime_projection_path_catalog WHERE tenant_id = ? AND projection_publication_id = ? FOR SHARE",
             )
             .bind(telemetry.lookup.tenant_id)
-            .bind(segment_id)
-            .bind(local_attachment_id)
+            .bind(projection_publication_id)
             .fetch_all(&mut *transaction)
-            .await?
-            .into_iter()
-            .collect::<HashSet<_>>();
-            for path in &telemetry.paths {
-                if !peer_attachments.contains(&path.peer_attachment_id) {
+            .await?;
+            let mut authorized_candidates = HashSet::new();
+            let mut authorized_peers = HashSet::new();
+            for row in catalog {
+                let source_attachment_id: Uuid = row.try_get("source_attachment_id")?;
+                if source_attachment_id != local_attachment_id {
                     transaction.rollback().await?;
-                    return Err(RuntimeConfigurationError::InvalidScope);
+                    return Err(RuntimeConfigurationError::InvalidRecord);
                 }
+                let path_kind = match row.try_get::<String, _>("path_kind")?.as_str() {
+                    "DIRECT" => RuntimePathKind::Direct,
+                    "RELAY" => RuntimePathKind::Relay,
+                    _ => {
+                        transaction.rollback().await?;
+                        return Err(RuntimeConfigurationError::InvalidRecord);
+                    }
+                };
+                let peer_attachment_id: Uuid = row.try_get("destination_attachment_id")?;
+                authorized_peers.insert((peer_attachment_id, path_kind));
+                authorized_candidates.insert((
+                    row.try_get::<Uuid, _>("candidate_id")?,
+                    peer_attachment_id,
+                    path_kind,
+                ));
+            }
+            for path in &telemetry.paths {
                 let Some(candidate_id) = path.candidate_id else {
-                    if path.path_kind != RuntimePathKind::Direct {
+                    if !authorized_peers.contains(&(path.peer_attachment_id, path.path_kind)) {
                         transaction.rollback().await?;
                         return Err(RuntimeConfigurationError::InvalidScope);
                     }
                     continue;
                 };
-                let document: Option<String> = sqlx::query_scalar(
-                    "SELECT CAST(document_json AS CHAR) FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = 'PATH_CANDIDATE' AND id = ? AND segment_id = ? AND state = 'ACTIVE' FOR SHARE",
-                )
-                .bind(telemetry.lookup.tenant_id)
-                .bind(candidate_id)
-                .bind(segment_id)
-                .fetch_optional(&mut *transaction)
-                .await?;
-                let valid = document
-                    .and_then(|value| serde_json::from_str::<ControlResourceV1>(&value).ok())
-                    .is_some_and(|resource| match resource.resource {
-                        ResourceSpecV1::PathCandidate(candidate) => {
-                            candidate.source_attachment_id == local_attachment_id
-                                && candidate.destination_attachment_id == path.peer_attachment_id
-                                && matches!(
-                                    (candidate.kind, path.path_kind),
-                                    (PathCandidateKindV1::Direct, RuntimePathKind::Direct)
-                                        | (PathCandidateKindV1::Relay, RuntimePathKind::Relay)
-                                )
-                        }
-                        _ => false,
-                    });
-                if !valid {
+                if !authorized_candidates.contains(&(
+                    candidate_id,
+                    path.peer_attachment_id,
+                    path.path_kind,
+                )) {
                     transaction.rollback().await?;
                     return Err(RuntimeConfigurationError::InvalidScope);
                 }
@@ -1924,6 +1950,28 @@ async fn publication_matches(
         {
             return Ok(false);
         }
+        let persisted_paths = sqlx::query(
+            "SELECT candidate_id, source_attachment_id, destination_attachment_id, path_kind FROM runtime_projection_path_catalog WHERE tenant_id = ? AND projection_publication_id = ? ORDER BY candidate_id",
+        )
+        .bind(projection.tenant_id)
+        .bind(projection.publication_id)
+        .fetch_all(&mut **transaction)
+        .await?;
+        if persisted_paths.len() != projection.runtime_paths.len() {
+            return Ok(false);
+        }
+        let mut expected_paths: Vec<&RuntimeProjectionPathCatalogWrite> =
+            projection.runtime_paths.iter().collect();
+        expected_paths.sort_unstable_by_key(|path| path.candidate_id);
+        for (row, path) in persisted_paths.into_iter().zip(expected_paths) {
+            if row.try_get::<Uuid, _>("candidate_id")? != path.candidate_id
+                || row.try_get::<Uuid, _>("source_attachment_id")? != projection.attachment_id
+                || row.try_get::<Uuid, _>("destination_attachment_id")? != path.peer_attachment_id
+                || row.try_get::<String, _>("path_kind")? != path.path_kind.database_value()
+            {
+                return Ok(false);
+            }
+        }
     }
     let persisted = sqlx::query(
         "SELECT id, tenant_id, segment_id, object_kind, policy_id, generation, segment_generation, segment_content_hash, site_id, attachment_id, content_hash, signed_envelope FROM segment_expansion_publications WHERE segment_publication_id = ? ORDER BY id",
@@ -2032,6 +2080,19 @@ async fn insert_projection(
         .bind(transport_node_key_id)
         .bind(projection.publication_id)
         .bind(projection.projection_id)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    for path in &projection.runtime_paths {
+        sqlx::query(
+            "INSERT INTO runtime_projection_path_catalog (tenant_id, projection_publication_id, candidate_id, source_attachment_id, destination_attachment_id, path_kind) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(projection.tenant_id)
+        .bind(projection.publication_id)
+        .bind(path.candidate_id)
+        .bind(projection.attachment_id)
+        .bind(path.peer_attachment_id)
+        .bind(path.path_kind.database_value())
         .execute(&mut **transaction)
         .await?;
     }
