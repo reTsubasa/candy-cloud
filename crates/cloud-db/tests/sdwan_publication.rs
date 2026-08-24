@@ -752,6 +752,38 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         repository.record_runtime_telemetry(&forged).await,
         Err(RuntimeConfigurationError::InvalidScope)
     ));
+    sqlx::query("DELETE FROM runtime_projection_path_catalog WHERE projection_publication_id = ?")
+        .bind(first_runtime.projection_publication_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    repository.record_runtime_telemetry(&forged).await.unwrap();
+    let legacy_paths_json: String = sqlx::query_scalar(
+        "SELECT CAST(paths_json AS CHAR) FROM runtime_telemetry_latest WHERE tenant_id = ? AND device_id = ? AND device_key_id = ?",
+    )
+    .bind(tenant_id)
+    .bind(device_id)
+    .bind(device_key_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(legacy_paths_json, "[]");
+    repository
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: runtime_lookup.clone(),
+            projection_publication_id: second_runtime.projection_publication_id,
+            projection_content_hash: second_runtime.projection_content_hash,
+            envelope_sha256: second_runtime.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Active,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    forged.sequence = 3;
+    assert!(matches!(
+        repository.record_runtime_telemetry(&forged).await,
+        Err(RuntimeConfigurationError::InvalidScope)
+    ));
     let peer_runtime_lookup = RuntimeConfigurationLookup {
         tenant_id,
         device_id: peer_device_id,

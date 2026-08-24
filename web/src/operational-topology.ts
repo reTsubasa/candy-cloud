@@ -107,7 +107,6 @@ function cidr(input: unknown): string {
 function readinessLabel(readiness: RuntimeActivationReadiness | null): string {
   if (!readiness) return '等待 Cloud 生成配置';
   if (readiness.ready) return '数据面已就绪';
-  if (readiness.reason_codes.includes('remote_egress_unsupported')) return '远端出口待实现';
   if (readiness.reason_codes.includes('service_not_enabled')) return '服务尚未开通';
   if (readiness.reason_codes.includes('node_apply_failed')) return '节点应用失败';
   if (readiness.reason_codes.includes('node_offline')) return '等待节点端点';

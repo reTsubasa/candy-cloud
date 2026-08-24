@@ -92,7 +92,9 @@ fn runtime_path_catalog_is_immutable_projection_scoped_and_republished() {
     assert!(migration.contains("destination_attachment_id"));
     assert!(migration.contains("runtime_path_catalog_refresh_segments"));
     assert!(migration.contains("INSERT INTO segment_generation_jobs"));
-    assert!(migration.contains("transport_node.node_id = JSON_UNQUOTE"));
+    assert!(!migration.contains("JOIN sdwan_control_resources"));
+    assert!(!migration.contains("INSERT IGNORE INTO runtime_projection_path_catalog"));
+    assert!(migration.contains("Historical signed projections cannot be reconstructed"));
 }
 
 #[test]

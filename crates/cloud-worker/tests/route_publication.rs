@@ -7,8 +7,9 @@ use cloud_worker::route_types::{
     AttachmentId, AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1, DeviceId,
     DeviceKeyId, Ipv4PrefixV1, NodeId, NodeKeyId, NodePoolId, PacketResourcePolicyV1,
     PathCandidateId, PathSelectionPolicyV1, PeerEndpointV1, PeerPathCandidateV1, PeerPathKindV1,
-    PolicyId, PolicyRefV1, SegmentAttachmentV1, SegmentId, SharedHubAdmissionPolicyV1,
-    SharedHubQuotaV1, SiteId, TenantId, TransportNodeIdentityV1, TransportPresetV1,
+    PolicyId, PolicyRefV1, RemoteRouteV1, SegmentAttachmentV1, SegmentId,
+    SharedHubAdmissionPolicyV1, SharedHubQuotaV1, SiteId, TenantId, TransportNodeIdentityV1,
+    TransportPresetV1,
 };
 use ed25519_dalek::SigningKey;
 use sha2::Digest;
@@ -108,11 +109,14 @@ fn projection(
         local_transport_node: None,
         path_policy: PathSelectionPolicyV1::DirectPreferred,
         peer_paths: vec![path],
+        egress_routes: Vec::new(),
+        egress_destination_prefixes: Vec::new(),
         coherent_manifest: CoherentPolicyManifestV1 {
             generation: 1,
             peer_paths_hash: [0; 32],
             dns_projection: None,
             egress_authorization: None,
+            egress_gateway: false,
         },
         max_inner_mtu: 1180,
         resources: resources(),
@@ -213,11 +217,14 @@ fn fixture() -> RoutePublicationInput {
                     peer(local_site, local_attachment, 0x92, 0x65),
                     peer(remote_site, remote_attachment, 0x93, 0x66),
                 ],
+                egress_routes: Vec::new(),
+                egress_destination_prefixes: Vec::new(),
                 coherent_manifest: CoherentPolicyManifestV1 {
                     generation: 1,
                     peer_paths_hash: [0; 32],
                     dns_projection: None,
                     egress_authorization: None,
+                    egress_gateway: false,
                 },
                 max_inner_mtu: 1180,
                 resources: resources(),
@@ -289,12 +296,81 @@ fn database_write_binds_projection_to_exact_segment_hash() {
     );
     let built = build_route_publication(&fixture(), &signer).unwrap();
     let write = built.database_write().unwrap();
-    assert_eq!(write.projections.len(), 2);
+    assert_eq!(write.projections.len(), 3);
     assert_eq!(write.snapshot.content_hash, built.segment.content_hash);
     assert!(write
         .projections
         .iter()
         .all(|projection| projection.segment_content_hash == write.snapshot.content_hash));
+}
+
+#[test]
+#[ignore = "requires CANDY_CORE_INTEROP_MODULE"]
+fn signs_explicit_remote_egress_source_and_gateway_roles() {
+    let signer = RouteSigner::new(
+        "route-key-1",
+        SigningKey::from_bytes(&[0x77; 32]),
+        real_core(),
+    );
+    let mut input = fixture();
+    let authorization = PolicyRefV1 {
+        policy_id: PolicyId([0xa1; 16]),
+        generation: 1,
+        content_hash: [0xa2; 32],
+    };
+    let peer = input.projections[0].peer_paths[0].clone();
+    input.projections[0].coherent_manifest.egress_authorization = Some(authorization.clone());
+    input.projections[0].egress_destination_prefixes = vec![
+        Ipv4PrefixV1::new([0, 0, 0, 0], 1).unwrap(),
+        Ipv4PrefixV1::new([128, 0, 0, 0], 1).unwrap(),
+    ];
+    input.projections[0].egress_routes = vec![
+        RemoteRouteV1 {
+            destination_prefix: Ipv4PrefixV1::new([0, 0, 0, 0], 1).unwrap(),
+            owner_site_id: peer.peer_site_id,
+            owner_attachment_ids: vec![peer.peer_attachment_id],
+        },
+        RemoteRouteV1 {
+            destination_prefix: Ipv4PrefixV1::new([128, 0, 0, 0], 1).unwrap(),
+            owner_site_id: peer.peer_site_id,
+            owner_attachment_ids: vec![peer.peer_attachment_id],
+        },
+    ];
+    let gateway = input
+        .projections
+        .iter_mut()
+        .find(|projection| projection.attachment_id == peer.peer_attachment_id)
+        .unwrap();
+    gateway.coherent_manifest.egress_authorization = Some(authorization);
+    gateway.coherent_manifest.egress_gateway = true;
+    gateway.egress_destination_prefixes = vec![
+        Ipv4PrefixV1::new([0, 0, 0, 0], 1).unwrap(),
+        Ipv4PrefixV1::new([128, 0, 0, 0], 1).unwrap(),
+    ];
+
+    let built = build_route_publication(&input, &signer).unwrap();
+    let source = built
+        .projections
+        .iter()
+        .find(|projection| {
+            projection.sealed.source.attachment_id == input.projections[0].attachment_id
+        })
+        .unwrap();
+    assert_eq!(
+        source
+            .sealed
+            .source
+            .remote_routes
+            .iter()
+            .filter(|route| route.destination_prefix.prefix_len == 1)
+            .count(),
+        2
+    );
+    assert!(built.projections.iter().any(|projection| {
+        projection.sealed.source.attachment_id == peer.peer_attachment_id
+            && projection.sealed.source.coherent_manifest.egress_gateway
+            && projection.sealed.source.egress_destination_prefixes.len() == 2
+    }));
 }
 
 #[test]

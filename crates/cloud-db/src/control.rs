@@ -356,19 +356,6 @@ impl ControlRepository {
         } else if candidate_ids.is_empty() || !missing_candidate_ids.is_empty() {
             reason_codes.push("node_offline");
         }
-        // The policy schema already stores REMOTE_EGRESS, but the signed
-        // projection/runtime data plane does not yet carry an egress target
-        // or NAT return-flow contract. Do not report the network as ready
-        // while silently dropping that policy.
-        let remote_egress_configured: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = 'SERVICE_POLICY' AND state = 'ACTIVE' AND JSON_SEARCH(document_json, 'one', 'REMOTE_EGRESS') IS NOT NULL)",
-        )
-        .bind(tenant_id)
-        .fetch_one(&self.pool)
-        .await?;
-        if remote_egress_configured {
-            reason_codes.push("remote_egress_unsupported");
-        }
         let published: Option<(u64, Vec<u8>)> = sqlx::query_as(
             "SELECT current_generation, current_content_hash FROM segments WHERE tenant_id = ? AND id = ? AND state = 'ACTIVE'",
         )

@@ -1143,6 +1143,7 @@ impl SdwanRepository {
             transaction.rollback().await?;
             return Err(RuntimeConfigurationError::InvalidScope);
         }
+        let mut persisted_paths = telemetry.paths.as_slice();
         if !telemetry.paths.is_empty() {
             let committed_projection: Option<(Uuid, Uuid)> = sqlx::query_as(
                 "SELECT projection.id, projection.attachment_id FROM runtime_configuration_status status JOIN site_route_projection_publications projection ON projection.tenant_id = status.tenant_id AND projection.device_id = status.device_id AND projection.device_key_id = status.device_key_id AND projection.id = status.projection_publication_id JOIN segment_attachments attachment ON attachment.tenant_id = projection.tenant_id AND attachment.id = projection.attachment_id AND attachment.device_id = projection.device_id AND attachment.device_key_id = projection.device_key_id AND attachment.principal_kind = 'DEVICE' WHERE status.tenant_id = ? AND status.device_id = ? AND status.device_key_id = ? AND status.apply_state = 'ACTIVE' FOR SHARE",
@@ -1158,51 +1159,58 @@ impl SdwanRepository {
                 return Err(RuntimeConfigurationError::InvalidScope);
             };
             let catalog = sqlx::query(
-                "SELECT candidate_id, source_attachment_id, destination_attachment_id, path_kind FROM runtime_projection_path_catalog WHERE tenant_id = ? AND projection_publication_id = ? FOR SHARE",
+                "SELECT candidate_id, source_attachment_id, destination_attachment_id, path_kind FROM runtime_projection_path_catalog WHERE tenant_id = ? AND projection_publication_id = ?",
             )
             .bind(telemetry.lookup.tenant_id)
             .bind(projection_publication_id)
             .fetch_all(&mut *transaction)
             .await?;
-            let mut authorized_candidates = HashSet::new();
-            let mut authorized_peers = HashSet::new();
-            for row in catalog {
-                let source_attachment_id: Uuid = row.try_get("source_attachment_id")?;
-                if source_attachment_id != local_attachment_id {
-                    transaction.rollback().await?;
-                    return Err(RuntimeConfigurationError::InvalidRecord);
-                }
-                let path_kind = match row.try_get::<String, _>("path_kind")?.as_str() {
-                    "DIRECT" => RuntimePathKind::Direct,
-                    "RELAY" => RuntimePathKind::Relay,
-                    _ => {
+            if catalog.is_empty() {
+                // Publications created before the immutable path catalog cannot
+                // safely authorize path identities. Preserve their aggregate
+                // heartbeat during rolling activation, but retain no path data.
+                persisted_paths = &[];
+            } else {
+                let mut authorized_candidates = HashSet::new();
+                let mut authorized_peers = HashSet::new();
+                for row in catalog {
+                    let source_attachment_id: Uuid = row.try_get("source_attachment_id")?;
+                    if source_attachment_id != local_attachment_id {
                         transaction.rollback().await?;
                         return Err(RuntimeConfigurationError::InvalidRecord);
                     }
-                };
-                let peer_attachment_id: Uuid = row.try_get("destination_attachment_id")?;
-                authorized_peers.insert((peer_attachment_id, path_kind));
-                authorized_candidates.insert((
-                    row.try_get::<Uuid, _>("candidate_id")?,
-                    peer_attachment_id,
-                    path_kind,
-                ));
-            }
-            for path in &telemetry.paths {
-                let Some(candidate_id) = path.candidate_id else {
-                    if !authorized_peers.contains(&(path.peer_attachment_id, path.path_kind)) {
+                    let path_kind = match row.try_get::<String, _>("path_kind")?.as_str() {
+                        "DIRECT" => RuntimePathKind::Direct,
+                        "RELAY" => RuntimePathKind::Relay,
+                        _ => {
+                            transaction.rollback().await?;
+                            return Err(RuntimeConfigurationError::InvalidRecord);
+                        }
+                    };
+                    let peer_attachment_id: Uuid = row.try_get("destination_attachment_id")?;
+                    authorized_peers.insert((peer_attachment_id, path_kind));
+                    authorized_candidates.insert((
+                        row.try_get::<Uuid, _>("candidate_id")?,
+                        peer_attachment_id,
+                        path_kind,
+                    ));
+                }
+                for path in &telemetry.paths {
+                    let Some(candidate_id) = path.candidate_id else {
+                        if !authorized_peers.contains(&(path.peer_attachment_id, path.path_kind)) {
+                            transaction.rollback().await?;
+                            return Err(RuntimeConfigurationError::InvalidScope);
+                        }
+                        continue;
+                    };
+                    if !authorized_candidates.contains(&(
+                        candidate_id,
+                        path.peer_attachment_id,
+                        path.path_kind,
+                    )) {
                         transaction.rollback().await?;
                         return Err(RuntimeConfigurationError::InvalidScope);
                     }
-                    continue;
-                };
-                if !authorized_candidates.contains(&(
-                    candidate_id,
-                    path.peer_attachment_id,
-                    path.path_kind,
-                )) {
-                    transaction.rollback().await?;
-                    return Err(RuntimeConfigurationError::InvalidScope);
                 }
             }
         }
@@ -1221,7 +1229,7 @@ impl SdwanRepository {
             return Ok(());
         }
         let now = Utc::now();
-        let paths_json = serde_json::to_string(&telemetry.paths)
+        let paths_json = serde_json::to_string(persisted_paths)
             .map_err(|_| RuntimeConfigurationError::InvalidScope)?;
         let local_networks_present = telemetry.local_networks.is_some();
         let local_networks_json =

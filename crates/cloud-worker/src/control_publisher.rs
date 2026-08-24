@@ -6,7 +6,8 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use cloud_control::{
-    runtime_path_candidate_id, PathCandidateKindV1, PeerPathPolicyV1, ResourceSpecV1, ResourceState,
+    runtime_path_candidate_id, PathCandidateKindV1, PeerPathPolicyV1, PolicyActionV1,
+    ResourceSpecV1, ResourceState,
 };
 use cloud_core_module::CoreModule;
 use cloud_db::{
@@ -27,9 +28,9 @@ use crate::{
         AttachmentId, AttachmentPrincipalV1, AttachmentState, CoherentPolicyManifestV1, DeviceId,
         DeviceKeyId, Ipv4PrefixV1, NodeId, NodeKeyId, NodePoolId, PacketResourcePolicyV1,
         PathCandidateId, PathSelectionPolicyV1, PeerEndpointV1, PeerPathCandidateV1,
-        PeerPathKindV1, PolicyId, PolicyRefV1, RelayNodeIdentityV1, SegmentAttachmentV1, SegmentId,
-        SiteId, TenantId, TransportNodeIdentityV1, TransportPresetV1,
-        ROUTE_PUBLICATION_STALE_SECONDS, ROUTE_PUBLICATION_VALIDITY_SECONDS,
+        PeerPathKindV1, PolicyId, PolicyRefV1, RelayNodeIdentityV1, RemoteRouteV1,
+        SegmentAttachmentV1, SegmentId, SiteId, TenantId, TransportNodeIdentityV1,
+        TransportPresetV1, ROUTE_PUBLICATION_STALE_SECONDS, ROUTE_PUBLICATION_VALIDITY_SECONDS,
     },
 };
 
@@ -101,6 +102,8 @@ impl ControlRoutePublisher {
         let mut paths = Vec::new();
         let mut relays = HashMap::new();
         let mut nodes = HashMap::new();
+        let mut egresses = HashMap::new();
+        let mut remote_egress_rules = Vec::new();
         for resource in &snapshot.resources {
             match &resource.resource {
                 ResourceSpecV1::Segment(value) if resource.metadata.id == snapshot.segment_id => {
@@ -135,10 +138,139 @@ impl ControlRoutePublisher {
                 {
                     relays.insert(resource.metadata.id, value.clone());
                 }
+                ResourceSpecV1::Egress(value)
+                    if resource.metadata.state == ResourceState::Active =>
+                {
+                    egresses.insert(resource.metadata.id, value.clone());
+                }
+                ResourceSpecV1::ServicePolicy(policy)
+                    if resource.metadata.state == ResourceState::Active
+                        && policy.segment_id == snapshot.segment_id =>
+                {
+                    let has_remote_egress = policy
+                        .rules
+                        .iter()
+                        .any(|rule| matches!(rule.action, PolicyActionV1::RemoteEgress(_)));
+                    if has_remote_egress {
+                        let content_hash = resource
+                            .resource
+                            .document_hash()
+                            .context("remote egress policy hash failed")?;
+                        let policy_ref = PolicyRefV1 {
+                            policy_id: PolicyId(resource.metadata.id.into_bytes()),
+                            generation: resource.metadata.revision,
+                            content_hash,
+                        };
+                        for rule in &policy.rules {
+                            if matches!(rule.action, PolicyActionV1::RemoteEgress(_)) {
+                                if rule.destination_prefixes.is_empty() {
+                                    bail!("remote egress policy requires explicit signed destination prefixes");
+                                }
+                                remote_egress_rules.push((policy_ref.clone(), rule.clone()));
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
         let segment = segment.context("control snapshot is missing its Segment resource")?;
+        let mut remote_egress_policy_for_site: HashMap<Uuid, PolicyRefV1> = HashMap::new();
+        let mut remote_egress_routes_for_site: HashMap<Uuid, Vec<RemoteRouteV1>> = HashMap::new();
+        let mut remote_egress_destinations_for_site: HashMap<Uuid, Vec<Ipv4PrefixV1>> =
+            HashMap::new();
+        let mut remote_egress_gateway_sites = HashSet::new();
+        for (policy_ref, rule) in remote_egress_rules {
+            let PolicyActionV1::RemoteEgress(egress_id) = rule.action else {
+                continue;
+            };
+            let egress = egresses
+                .get(&egress_id)
+                .context("remote egress rule references an inactive Egress")?;
+            if remote_egress_policy_for_site
+                .get(&egress.site_id)
+                .is_some_and(|existing| existing != &policy_ref)
+            {
+                bail!("Egress Site has conflicting remote egress policies");
+            }
+            remote_egress_policy_for_site
+                .entry(egress.site_id)
+                .or_insert_with(|| policy_ref.clone());
+            remote_egress_gateway_sites.insert(egress.site_id);
+            let signed_destinations = rule
+                .destination_prefixes
+                .iter()
+                .map(|prefix| {
+                    Ipv4PrefixV1::new(prefix.network.octets(), prefix.prefix_len)
+                        .expect("validated control prefix must convert")
+                })
+                .collect::<Vec<_>>();
+            merge_egress_destinations(
+                remote_egress_destinations_for_site
+                    .entry(egress.site_id)
+                    .or_default(),
+                &signed_destinations,
+            )?;
+            let source_sites = if rule.source_site_ids.is_empty() {
+                attachments
+                    .iter()
+                    .map(|(_, attachment)| attachment.site_id)
+                    .filter(|site_id| *site_id != egress.site_id)
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            } else {
+                rule.source_site_ids
+            };
+            for source_site_id in source_sites {
+                if source_site_id == egress.site_id {
+                    bail!("remote egress source cannot be its own Egress Site");
+                }
+                if remote_egress_policy_for_site
+                    .get(&source_site_id)
+                    .is_some_and(|existing| existing != &policy_ref)
+                {
+                    bail!("source Site has conflicting remote egress policies");
+                }
+                remote_egress_policy_for_site
+                    .entry(source_site_id)
+                    .or_insert_with(|| policy_ref.clone());
+                merge_egress_destinations(
+                    remote_egress_destinations_for_site
+                        .entry(source_site_id)
+                        .or_default(),
+                    &signed_destinations,
+                )?;
+                let routes = remote_egress_routes_for_site
+                    .entry(source_site_id)
+                    .or_default();
+                let additions = rule
+                    .destination_prefixes
+                    .iter()
+                    .map(|prefix| RemoteRouteV1 {
+                        destination_prefix: Ipv4PrefixV1::new(
+                            prefix.network.octets(),
+                            prefix.prefix_len,
+                        )
+                        .expect("validated control prefix must convert"),
+                        owner_site_id: SiteId(egress.site_id.into_bytes()),
+                        owner_attachment_ids: vec![AttachmentId(egress.attachment_id.into_bytes())],
+                    });
+                for addition in additions {
+                    if routes.iter().any(|existing| {
+                        existing
+                            .destination_prefix
+                            .overlaps(&addition.destination_prefix)
+                            && existing.owner_attachment_ids != addition.owner_attachment_ids
+                    }) {
+                        bail!("source Site has overlapping remote egress destinations");
+                    }
+                    if !routes.contains(&addition) {
+                        routes.push(addition);
+                    }
+                }
+            }
+        }
         let active_peer_ids = peers
             .iter()
             .map(|(resource, _)| resource.metadata.id)
@@ -428,11 +560,22 @@ impl ControlRoutePublisher {
                     }),
                 path_policy: policy_for(site, remote_site)?,
                 peer_paths,
+                egress_routes: remote_egress_routes_for_site
+                    .get(&Uuid::from_bytes(site.0))
+                    .cloned()
+                    .unwrap_or_default(),
+                egress_destination_prefixes: remote_egress_destinations_for_site
+                    .get(&Uuid::from_bytes(site.0))
+                    .cloned()
+                    .unwrap_or_default(),
                 coherent_manifest: CoherentPolicyManifestV1 {
                     generation,
                     peer_paths_hash: [0; 32],
                     dns_projection: None,
-                    egress_authorization: None,
+                    egress_authorization: remote_egress_policy_for_site
+                        .get(&Uuid::from_bytes(site.0))
+                        .cloned(),
+                    egress_gateway: remote_egress_gateway_sites.contains(&Uuid::from_bytes(site.0)),
                 },
                 max_inner_mtu: 1300,
                 resources: PacketResourcePolicyV1 {
@@ -478,6 +621,26 @@ impl ControlRoutePublisher {
             projections,
         })
     }
+}
+
+fn merge_egress_destinations(
+    destinations: &mut Vec<Ipv4PrefixV1>,
+    additions: &[Ipv4PrefixV1],
+) -> Result<()> {
+    for addition in additions {
+        if destinations.contains(addition) {
+            continue;
+        }
+        if destinations
+            .iter()
+            .any(|existing| existing.overlaps(addition))
+        {
+            bail!("remote egress policy contains overlapping destination prefixes");
+        }
+        destinations.push(*addition);
+    }
+    destinations.sort_unstable();
+    Ok(())
 }
 
 fn effective_projection_rate_limit(

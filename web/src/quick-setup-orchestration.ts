@@ -74,7 +74,6 @@ export function activationMessage(readiness: RuntimeActivationReadiness | null):
   const messages: string[] = [];
   if (readiness.candidate_count === 0) messages.push('尚未生成双向线路');
   if (readiness.reason_codes.includes('service_not_enabled')) messages.push('当前租户的 SD-WAN 服务尚未开通');
-  if (readiness.reason_codes.includes('remote_egress_unsupported')) messages.push('当前策略包含远端出口，但数据面出口契约尚未实现；请先移除该规则或使用站点互联前缀验证线路');
   if (readiness.reason_codes.includes('node_apply_failed')) messages.push(String(readiness.failed_apply_count || 1) + ' 个节点应用配置失败：' + ((readiness.apply_error_codes ?? []).join('、') || '请查看运行日志'));
   if (readiness.reason_codes.includes('node_offline')) messages.push(`有 ${readiness.missing_transport_count} 条线路等待公网节点发布 UDP 端点`);
   if (readiness.reason_codes.includes('config_pending')) messages.push('Cloud 正在生成并签名节点配置');

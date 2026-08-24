@@ -69,9 +69,9 @@ assert_before 'compose stop reverse-proxy cloud-api cloud-identity cloud-auth cl
 assert_before 'migration_started=1' 'compose run --rm migrate'
 
 for workflow in "$arm_workflow" "$x86_workflow"; do
-	grep -F 'CORE_MODULE_VERSION: 0.3.22' "$workflow" >/dev/null
-	grep -F 'CORE_MODULE_INPUT_TAG: core-v0.3.22' "$workflow" >/dev/null
-	grep -F 'RUNTIME_RELEASE_TAG: runtime-v0.4.0-r59' "$workflow" >/dev/null
+	grep -F 'CORE_MODULE_VERSION: 0.3.23' "$workflow" >/dev/null
+	grep -F 'CORE_MODULE_INPUT_TAG: core-v0.3.23' "$workflow" >/dev/null
+	grep -F 'RUNTIME_RELEASE_TAG: runtime-v0.4.0-r60' "$workflow" >/dev/null
 	grep -F 'runtime:{release_tag:$runtime_release_tag}' "$workflow" >/dev/null
 done
 

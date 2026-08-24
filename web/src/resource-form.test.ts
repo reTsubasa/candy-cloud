@@ -30,6 +30,19 @@ describe('resource form contract mapping', () => {
     vi.unstubAllGlobals();
   });
 
+  it('expands an empty remote-egress destination to two canonical default slices', () => {
+    vi.stubGlobal('crypto', { randomUUID: () => '019ff9c1-ac24-7303-a6c3-905768fe5905' });
+    const document = buildResourceSpec('SERVICE_POLICY', {
+      segment_id: '019ff9c1-ac24-7303-a6c3-905768fe5901', generation: 2,
+      rules: [{ priority: 100, source_site_ids: [], destination_cidrs: [], domains: [], traffic_classes: [], action_type: 'REMOTE_EGRESS', egress_id: '019ff9c1-ac24-7303-a6c3-905768fe5902' }],
+    });
+    expect(document).toMatchObject({ spec: { rules: [{ destination_prefixes: [
+      { network: '0.0.0.0', prefix_len: 1 },
+      { network: '128.0.0.0', prefix_len: 1 },
+    ] }] } });
+    vi.unstubAllGlobals();
+  });
+
   it('reports duplicate policy priorities before submission', () => {
     const uuid = '019ff9c1-ac24-7303-a6c3-905768fe5901';
     expect(validateResourceEditor('SERVICE_POLICY', { segment_id: uuid, generation: 1, rules: [

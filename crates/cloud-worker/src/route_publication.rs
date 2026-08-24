@@ -182,12 +182,14 @@ fn site_projection_json(object: &SiteRouteProjectionV1) -> Value {
         "overlay_router_ipv4_hex": hex(&object.overlay_router_ipv4),
         "local_prefixes": object.local_prefixes.iter().map(prefix_json).collect::<Vec<_>>(),
         "remote_routes": object.remote_routes.iter().map(remote_route_json).collect::<Vec<_>>(),
+        "egress_destination_prefixes": object.egress_destination_prefixes.iter().map(prefix_json).collect::<Vec<_>>(),
         "path_policy": object.path_policy as u64,
         "peer_paths": object.peer_paths.iter().map(peer_path_json).collect::<Vec<_>>(),
         "coherent_manifest": {
             "generation": manifest.generation,
             "dns_projection": manifest.dns_projection.as_ref().map(policy_ref_json),
             "egress_authorization": manifest.egress_authorization.as_ref().map(policy_ref_json),
+            "egress_gateway": manifest.egress_gateway,
         },
         "max_inner_mtu": object.max_inner_mtu,
         "resources": {
@@ -470,6 +472,8 @@ pub struct DeviceProjectionInput {
     pub local_transport_node: Option<TransportNodeIdentityV1>,
     pub path_policy: PathSelectionPolicyV1,
     pub peer_paths: Vec<PeerPathCandidateV1>,
+    pub egress_routes: Vec<RemoteRouteV1>,
+    pub egress_destination_prefixes: Vec<Ipv4PrefixV1>,
     pub coherent_manifest: CoherentPolicyManifestV1,
     pub max_inner_mtu: u16,
     pub resources: PacketResourcePolicyV1,
@@ -826,7 +830,7 @@ pub fn build_route_publication(
         let site_id = attachment
             .site_id
             .ok_or(RoutePublicationError::ProjectionAttachmentMismatch)?;
-        let remote_routes: Vec<RemoteRouteV1> = routes
+        let mut remote_routes: Vec<RemoteRouteV1> = routes
             .iter()
             .filter(|route| route.owner_site_id != Some(site_id))
             .map(|route| {
@@ -839,6 +843,8 @@ pub fn build_route_publication(
                 })
             })
             .collect::<Result<Vec<_>, RoutePublicationError>>()?;
+        remote_routes.extend(plan.egress_routes.iter().cloned());
+        remote_routes.sort_unstable_by_key(|route| route.destination_prefix);
         if remote_routes.is_empty() {
             return Err(RoutePublicationError::MissingReverseRoute);
         }
@@ -858,6 +864,7 @@ pub fn build_route_publication(
             overlay_router_ipv4: attachment.overlay_router_ipv4,
             local_prefixes: attachment.local_prefixes.clone(),
             remote_routes,
+            egress_destination_prefixes: plan.egress_destination_prefixes.clone(),
             path_policy: plan.path_policy,
             peer_paths: plan.peer_paths.clone(),
             coherent_manifest: plan.coherent_manifest.clone(),
