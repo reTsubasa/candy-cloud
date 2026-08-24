@@ -253,7 +253,7 @@ button, input, textarea { font: inherit; }
 .topology-site-node line { stroke: #edf0f4; }.topology-site-node text.value { fill: #4e5969; font-size: 10px; }.topology-site-node text.site-name { font-weight: 600; }
 .topology-peer-link path { fill: none; stroke-width: 1.8; }.topology-peer-link.ok path { stroke: #00a870; }.topology-peer-link.warn path { stroke: #d97706; stroke-dasharray: 5 4; }
 .topology-peer-link rect { fill: #fff; }.topology-peer-link.ok rect { stroke: #79c9ad; }.topology-peer-link.warn rect { stroke: #e4bd7d; }
-.topology-peer-link text { fill: #4e5969; font-size: 10px; }
+.topology-peer-link text { fill: #4e5969; font-size: 10px; }.topology-peer-link text.telemetry { fill: #86909c; font-size: 9px; }
 .topology-legend text { fill: #6b778c; font-size: 10px; }.topology-legend circle.ok { fill: #00a870; }.topology-legend circle.warn { fill: #d97706; }.topology-legend circle.error { fill: #d92d20; }
 .topology-empty { min-height: 470px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
 .telemetry-rail { min-width: 0; background: #fff; border: 1px solid var(--line); }

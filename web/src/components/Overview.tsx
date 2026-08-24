@@ -292,7 +292,7 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
   const aggregate = snapshot.segment?.aggregate ?? false;
   const siteY = aggregate ? 142 : 190;
   const siteBottom = siteY + 152;
-  const linkLaneGap = 28;
+  const linkLaneGap = 62;
   const linkLaneCount = Math.min(snapshot.links.length, 8);
   const height = siteBottom + 42 + linkLaneCount * linkLaneGap + 32;
   const siteX = (index: number) => siteCount <= 1 ? center : 100 + index * ((width - 200) / (siteCount - 1));
@@ -339,15 +339,25 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const lane = Math.min(linkIndex, 7);
         const y = siteBottom + 28 + lane * linkLaneGap;
         const tone = link.state === 'active' ? 'ok' : 'warn';
-        const activePath = link.activePaths[0];
-        const pathDetail = activePath
-          ? ` · RTT ${activePath.rtt_ms == null ? '--' : `${activePath.rtt_ms} ms`} · 丢包 ${activePath.packet_loss_ppm == null ? '--' : `${(activePath.packet_loss_ppm / 10_000).toFixed(2)}%`}`
-          : '';
+        const telemetryRows = link.activePaths.slice(0, 2).map((path) => {
+          const sourceName = siteById[path.sourceSiteId]?.name ?? path.sourceNodeName;
+          const destinationName = path.sourceSiteId === link.siteAId
+            ? (siteById[link.siteBId]?.name ?? '对端')
+            : (siteById[link.siteAId]?.name ?? '对端');
+          const age = path.sampledAt ? formatTelemetryAge(path.sampledAt) : '时间未知';
+          return `${sourceName} -> ${destinationName}  RTT ${formatMetric(path.rtt_ms, ' ms')}  丢包 ${path.packet_loss_ppm == null ? '—' : `${(path.packet_loss_ppm / 10_000).toFixed(2)}%`}  ↑${formatRate(path.tx_bps)} ↓${formatRate(path.rx_bps)}  ${age}`;
+        });
+        const pathDetail = telemetryRows.length > 0 ? ` · ${telemetryRows.join(' · ')}` : '';
+        const labelWidth = 310;
+        const labelHeight = telemetryRows.length > 0 ? 42 : 24;
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
-          <title>{link.activePathCount > 0 ? `双向数据面活跃 · ${link.activePathCount} 条路径 · ${link.kindLabel}${pathDetail}` : '双向线路已编排，等待节点数据面遥测'}</title>
+          <title>{link.activePathCount > 0 ? `双向数据面 · ${link.activePathCount} 条路径 · ${link.kindLabel}${pathDetail}` : '双向线路已编排，暂无数据面遥测'}</title>
           <path aria-label="双向站点数据线路" d={`M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`} markerStart={`url(#topology-arrow-${tone})`} markerEnd={`url(#topology-arrow-${tone})`} />
-          <rect x={(left.x + right.x) / 2 - 63} y={y - 13} width="126" height="24" rx="12" />
-          <text x={(left.x + right.x) / 2} y={y + 4} textAnchor="middle">{link.activePathCount > 0 ? `${link.activePathCount} 条活跃 · 双向` : `${link.directionCount}/2 · ${link.kindLabel} · 双向`}</text>
+          <rect x={(left.x + right.x) / 2 - labelWidth / 2} y={y - labelHeight / 2} width={labelWidth} height={labelHeight} rx="7" />
+          {telemetryRows.length > 0 ? <>
+            <text x={(left.x + right.x) / 2} y={y - 11} textAnchor="middle">双向 · {link.kindLabel} · {link.activePathCount} 条路径</text>
+            {telemetryRows.map((row, index) => <text className="telemetry" key={row} x={(left.x + right.x) / 2} y={y + 4 + index * 12} textAnchor="middle">{ellipsis(row, 72)}</text>)}
+          </> : <text x={(left.x + right.x) / 2} y={y + 4} textAnchor="middle">双向 · {link.kindLabel} · 暂无遥测</text>}
         </g>;
       })}
       <g className="topology-legend" transform={`translate(${center - 225} ${height - 24})`}>
@@ -373,4 +383,11 @@ function formatRate(value: number | null): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)} Mbps`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)} Kbps`;
   return `${value} bps`;
+}
+
+function formatTelemetryAge(value: string): string {
+  const reported = Date.parse(value);
+  if (!Number.isFinite(reported)) return '时间未知';
+  const seconds = Math.max(0, Math.round((Date.now() - reported) / 1000));
+  return seconds < 60 ? `${seconds} 秒前` : `${Math.floor(seconds / 60)} 分钟前`;
 }
