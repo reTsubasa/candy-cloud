@@ -437,14 +437,29 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                     &provisions,
                 )
                 .await
-                .map_err(|error| match error {
-                    cloud_db::control::ControlStoreError::ReferenceConflict
-                    | cloud_db::control::ControlStoreError::NotFound
-                    | cloud_db::control::ControlStoreError::InvalidRequest
-                    | cloud_db::control::ControlStoreError::IdempotencyConflict => {
-                        RuntimeConfigurationServiceError::Conflict
-                    }
-                    _ => RuntimeConfigurationServiceError::Unavailable,
+                .map_err(|error| {
+                    let service_error = match error {
+                        cloud_db::control::ControlStoreError::ReferenceConflict
+                        | cloud_db::control::ControlStoreError::NotFound
+                        | cloud_db::control::ControlStoreError::InvalidRequest
+                        | cloud_db::control::ControlStoreError::IdempotencyConflict => {
+                            RuntimeConfigurationServiceError::Conflict
+                        }
+                        _ => RuntimeConfigurationServiceError::Unavailable,
+                    };
+                    tracing::error!(
+                        event = "runtime_transport_identity_provision_failed",
+                        tenant_id = %command.actor.tenant_id(),
+                        device_id = %command.actor.device_id(),
+                        device_key_id = %command.actor.device_key_id(),
+                        request_id = %command.request_id,
+                        endpoint_count = provisions.len(),
+                        service_error = ?service_error,
+                        error = %error,
+                        error_debug = ?error,
+                        "Cloud Runtime transport identity provision failed"
+                    );
+                    service_error
                 })?;
             Ok(RuntimeTransportIdentityDelivery {
                 node_id: result.node_id,

@@ -93,17 +93,23 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
   }
   if (kind === 'SERVICE_POLICY') {
     spec.generation = positiveInteger(editor.generation);
-    spec.rules = ((editor.rules as Spec[]) ?? []).map((rule) => ({
-      id: cleanText(rule.id) || crypto.randomUUID(),
-      priority: positiveInteger(rule.priority),
-      source_site_ids: (rule.source_site_ids as string[]) ?? [],
-      destination_prefixes: ((rule.destination_cidrs as string[]) ?? []).map(parseCidr),
-      domains: ((rule.domains as string[]) ?? []).map(cleanText).filter(Boolean),
-      traffic_classes: ((rule.traffic_classes as string[]) ?? []).map(cleanText).filter(Boolean),
-      action: rule.action_type === 'REMOTE_EGRESS'
-        ? { type: 'REMOTE_EGRESS', egress_id: cleanText(rule.egress_id) }
-        : { type: 'LOCAL_EGRESS' },
-    }));
+    spec.rules = ((editor.rules as Spec[]) ?? []).map((rule) => {
+      const cidrs = (rule.destination_cidrs as string[]) ?? [];
+      const effectiveCidrs = rule.action_type === 'REMOTE_EGRESS' && cidrs.length === 0
+        ? ['0.0.0.0/1', '128.0.0.0/1']
+        : cidrs;
+      return {
+        id: cleanText(rule.id) || crypto.randomUUID(),
+        priority: positiveInteger(rule.priority),
+        source_site_ids: (rule.source_site_ids as string[]) ?? [],
+        destination_prefixes: effectiveCidrs.map(parseCidr),
+        domains: ((rule.domains as string[]) ?? []).map(cleanText).filter(Boolean),
+        traffic_classes: ((rule.traffic_classes as string[]) ?? []).map(cleanText).filter(Boolean),
+        action: rule.action_type === 'REMOTE_EGRESS'
+          ? { type: 'REMOTE_EGRESS', egress_id: cleanText(rule.egress_id) }
+          : { type: 'LOCAL_EGRESS' },
+      };
+    });
   }
   if (kind === 'DNS_INTENT') {
     delete spec.publish_scope;

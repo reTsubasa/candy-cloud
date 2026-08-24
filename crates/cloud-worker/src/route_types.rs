@@ -201,6 +201,7 @@ pub struct CoherentPolicyManifestV1 {
     pub peer_paths_hash: [u8; 32],
     pub dns_projection: Option<PolicyRefV1>,
     pub egress_authorization: Option<PolicyRefV1>,
+    pub egress_gateway: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -228,6 +229,7 @@ pub struct SiteRouteProjectionV1 {
     pub overlay_router_ipv4: [u8; 4],
     pub local_prefixes: Vec<Ipv4PrefixV1>,
     pub remote_routes: Vec<RemoteRouteV1>,
+    pub egress_destination_prefixes: Vec<Ipv4PrefixV1>,
     pub path_policy: PathSelectionPolicyV1,
     pub peer_paths: Vec<PeerPathCandidateV1>,
     pub coherent_manifest: CoherentPolicyManifestV1,
