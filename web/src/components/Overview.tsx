@@ -300,8 +300,8 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
   return <div className="topology-canvas" aria-label="SD-WAN 运行拓扑">
     <svg viewBox={`0 0 ${width} ${height}`} role="img" style={{ minWidth: width, height }}>
       <defs>
-        <marker id="topology-arrow-ok" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#00a870" /></marker>
-        <marker id="topology-arrow-warn" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#d97706" /></marker>
+        <marker id="topology-arrow-ok" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto-start-reverse"><path d="M0,0 L0,6 L7,3 z" fill="#00a870" /></marker>
+        <marker id="topology-arrow-warn" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto-start-reverse"><path d="M0,0 L0,6 L7,3 z" fill="#d97706" /></marker>
       </defs>
       <g className={`topology-control-node ${controlReady ? 'ok' : 'error'}`} transform={`translate(${center - 98} 20)`}>
         <rect width="196" height="48" rx="6" /><circle cx="20" cy="24" r="5" /><text x="34" y="21">Candy Cloud</text><text className="sub" x="34" y="36">控制面 · {controlReady ? '正常' : '异常'}</text>
@@ -344,10 +344,10 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
           ? ` · RTT ${activePath.rtt_ms == null ? '--' : `${activePath.rtt_ms} ms`} · 丢包 ${activePath.packet_loss_ppm == null ? '--' : `${(activePath.packet_loss_ppm / 10_000).toFixed(2)}%`}`
           : '';
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
-          <title>{link.activePathCount > 0 ? `数据面活跃 · ${link.activePathCount} 条路径 · ${link.kindLabel}${pathDetail}` : '已编排，等待节点数据面遥测'}</title>
-          <path d={`M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`} markerEnd={`url(#topology-arrow-${tone})`} />
-          <rect x={(left.x + right.x) / 2 - 52} y={y - 13} width="104" height="24" rx="12" />
-          <text x={(left.x + right.x) / 2} y={y + 4} textAnchor="middle">{link.activePathCount > 0 ? `${link.activePathCount} 条活跃` : `${link.directionCount}/2 · ${link.kindLabel}`}</text>
+          <title>{link.activePathCount > 0 ? `双向数据面活跃 · ${link.activePathCount} 条路径 · ${link.kindLabel}${pathDetail}` : '双向线路已编排，等待节点数据面遥测'}</title>
+          <path aria-label="双向站点数据线路" d={`M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`} markerStart={`url(#topology-arrow-${tone})`} markerEnd={`url(#topology-arrow-${tone})`} />
+          <rect x={(left.x + right.x) / 2 - 63} y={y - 13} width="126" height="24" rx="12" />
+          <text x={(left.x + right.x) / 2} y={y + 4} textAnchor="middle">{link.activePathCount > 0 ? `${link.activePathCount} 条活跃 · 双向` : `${link.directionCount}/2 · ${link.kindLabel} · 双向`}</text>
         </g>;
       })}
       <g className="topology-legend" transform={`translate(${center - 225} ${height - 24})`}>
