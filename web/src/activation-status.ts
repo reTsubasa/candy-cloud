@@ -27,6 +27,7 @@ export function activationDisplay(
   if (!readiness) return { label: '待检查', detail: '尚未读取 Cloud 激活状态', tone: 'gray' };
   if (readiness.ready) return { label: '已启用', detail: '配置已发布，等待节点保持在线', tone: 'green' };
   if (readiness.reason_codes.includes('service_not_enabled')) return { label: '服务未开通', detail: '当前租户尚未开通 SD-WAN 服务', tone: 'orange' };
+  if (readiness.reason_codes.includes('remote_egress_unsupported')) return { label: '远端出口待实现', detail: '当前策略包含远端 Candy 出口，但 Cloud 尚未下发可执行的数据面出口契约；站点不会被误报为已激活。', tone: 'red' };
   if (readiness.reason_codes.includes('node_apply_failed')) return { label: '节点应用失败', detail: applyFailureDetail(readiness), tone: 'red' };
   if (readiness.reason_codes.includes('node_offline')) return { label: '等待节点', detail: `${readiness.missing_transport_count} 条线路等待公网 UDP 端点`, tone: 'orange' };
   if (readiness.reason_codes.includes('config_pending')) return { label: '配置发布中', detail: 'Cloud 正在生成并签名节点配置', tone: 'arcoblue' };

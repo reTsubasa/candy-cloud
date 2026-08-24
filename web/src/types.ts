@@ -126,7 +126,7 @@ export type RuntimeActivationReadiness = {
   pending_apply_count: number;
   failed_apply_count: number;
   apply_error_codes: string[];
-  reason_codes: ('node_offline' | 'service_not_enabled' | 'config_pending' | 'node_apply_pending' | 'node_apply_failed')[];
+  reason_codes: ('node_offline' | 'service_not_enabled' | 'config_pending' | 'node_apply_pending' | 'node_apply_failed' | 'remote_egress_unsupported')[];
 };
 
 export type RuntimeConfigurationStatus = {
