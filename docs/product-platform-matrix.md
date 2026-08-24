@@ -23,8 +23,8 @@ does not count as product support.
 |---|---|---|---|
 | Core data plane `0.3.23` | Supported, musl | Supported, musleabihf | Supported, glibc |
 | Core Cloud ABI `0.3.23` | Supported, glibc | Not applicable | Supported, glibc |
-| OpenWrt Runtime `0.4.0-r60` | Supported, OpenWrt 25.12.4 x86/64 | Supported, IPQ40xx Cortex-A7 | Not released |
-| Linux Runtime `0.4.0-r60` | Supported, musl | Not released | Supported, glibc |
+| OpenWrt Runtime `0.4.0-r61` | Supported, OpenWrt 25.12.4 x86/64 | Supported, IPQ40xx Cortex-A7 | Not released |
+| Linux Runtime `0.4.0-r61` | Supported, musl | Not released | Supported, glibc |
 | Candy Cloud image | Supported by current x86 image Release | Not supported | Supported by immutable ARM64 Release |
 | LuCI | Supported with x86_64 Runtime | Supported with IPQ40xx Runtime | Not released |
 | Android | Supported ABI | Supported ABI (`armeabi-v7a`) | Supported ABI (`arm64-v8a`) |
