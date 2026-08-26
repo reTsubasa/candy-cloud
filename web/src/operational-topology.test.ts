@@ -31,6 +31,84 @@ function fixture(): OperationalResources {
   };
 }
 
+const threeSiteIds = {
+  segment: 'segment-production',
+  sites: { wrt: 'site-wrt', us: 'site-us', hk: 'site-hk' },
+  nodes: { wrt: 'node-wrt', us: 'node-us', hk: 'node-hk' },
+  attachments: { wrt: '4813e5d7...', us: '2647e64a...', hk: '45e68f9d...' },
+  peers: { wrtHk: 'peer-wrt-hk', hkUs: 'peer-hk-us', wrtUs: 'peer-wrt-us' },
+} as const;
+
+function telemetry(
+  location: keyof typeof threeSiteIds.nodes,
+  peerAttachmentIds: string[],
+): RuntimeTelemetry {
+  const configuredPeers = peerAttachmentIds.length;
+  return {
+    device_id: `device-${location}`, device_key_id: `key-${location}`,
+    boot_id: `boot-${location}`, sequence: 1, lifecycle: 'active',
+    configured_peers: configuredPeers, active_peers: configuredPeers,
+    required_route_owners: configuredPeers, ready_route_owners: configuredPeers,
+    fail_open_required: false, last_error_code: null,
+    rtt_ms: 30, jitter_ms: 2, packet_loss_ppm: 0,
+    rx_bps: 20_000, tx_bps: 10_000, reconnects: 0, path_changes: 0,
+    paths: peerAttachmentIds.map((peerAttachmentId, index) => ({
+      peer_attachment_id: peerAttachmentId, candidate_id: null,
+      path_kind: 'direct', transport: 'quic_udp', connection_epoch: index + 1,
+      rtt_ms: 30, jitter_ms: 2, packet_loss_ppm: 0,
+      rx_bps: 20_000, tx_bps: 10_000, reconnects: 0, path_changes: 0,
+    })),
+    local_networks: [], reported_at: '2026-08-26T05:59:50Z',
+  };
+}
+
+function threeSiteFixture(): { resources: OperationalResources; telemetry: RuntimeTelemetry[] } {
+  const { segment, sites, nodes, attachments, peers } = threeSiteIds;
+  const peer = (id: string, siteAId: string, siteBId: string): ControlResource => resource(id, 'PEER', {
+    segment_id: segment, site_a_id: siteAId, site_b_id: siteBId,
+  });
+  const candidates = (peerId: string): ControlResource[] => [1, 2].map((direction) => resource(
+    `${peerId}-path-${direction}`, 'PATH_CANDIDATE',
+    { segment_id: segment, peer_id: peerId, kind: 'DIRECT' },
+  ));
+  return {
+    resources: {
+      ...emptyOperationalResources,
+      sites: [
+        resource(sites.wrt, 'SITE', { name: '杭州', kind: 'EDGE' }),
+        resource(sites.us, 'SITE', { name: '美国搬瓦工', kind: 'PRIVATE_CLOUD' }),
+        resource(sites.hk, 'SITE', { name: '香港', kind: 'PRIVATE_CLOUD' }),
+      ],
+      nodes: [
+        resource(nodes.wrt, 'NODE', { display_name: '192.168.1.1', site_id: sites.wrt, device_id: 'device-wrt', device_key_id: 'key-wrt' }),
+        resource(nodes.us, 'NODE', { display_name: '104.243.28.153', site_id: sites.us, device_id: 'device-us', device_key_id: 'key-us' }),
+        resource(nodes.hk, 'NODE', { display_name: '47.83.1.189', site_id: sites.hk, device_id: 'device-hk', device_key_id: 'key-hk' }),
+      ],
+      segments: [resource(segment, 'SEGMENT', { name: '生产网络', overlay_prefix: { network: '100.64.0.0', prefix_len: 24 } })],
+      attachments: [
+        resource(attachments.wrt, 'ATTACHMENT', { segment_id: segment, site_id: sites.wrt, node_id: nodes.wrt }),
+        resource(attachments.us, 'ATTACHMENT', { segment_id: segment, site_id: sites.us, node_id: nodes.us }),
+        resource(attachments.hk, 'ATTACHMENT', { segment_id: segment, site_id: sites.hk, node_id: nodes.hk }),
+      ],
+      peers: [
+        peer(peers.wrtHk, sites.wrt, sites.hk),
+        peer(peers.hkUs, sites.hk, sites.us),
+        peer(peers.wrtUs, sites.wrt, sites.us),
+      ],
+      paths: [
+        ...candidates(peers.wrtHk),
+        ...candidates(peers.hkUs),
+        ...candidates(peers.wrtUs),
+      ],
+    },
+    telemetry: [
+      telemetry('wrt', [attachments.hk]),
+      telemetry('us', [attachments.hk]),
+      telemetry('hk', [attachments.wrt, attachments.us]),
+    ],
+  };
+}
+
 describe('operational topology', () => {
   it('joins resources and runtime receipts without inventing telemetry', () => {
     const status: RuntimeConfigurationStatus = {
@@ -168,5 +246,34 @@ describe('operational topology', () => {
     }, [], {}, 'segment', [telemetry], 90, Date.parse('2026-08-18T10:00:00Z'));
     expect(snapshot.links[0].activePathCount).toBe(0);
     expect(snapshot.links[0].state).toBe('pending');
+  });
+
+  it('binds the three-site field telemetry to the correct peer endpoints', () => {
+    const { resources, telemetry: runtimeTelemetry } = threeSiteFixture();
+    const snapshot = buildOperationalTopology(
+      resources, [], {}, threeSiteIds.segment, runtimeTelemetry, 90,
+      Date.parse('2026-08-26T06:00:00Z'),
+    );
+    const linksById = Object.fromEntries(snapshot.links.map((link) => [link.id, link]));
+    const siteNames = Object.fromEntries(snapshot.sites.map((site) => [site.id, site.name]));
+    const namedPaths = (linkId: string): string[][] => linksById[linkId].activePaths.map((path) => [
+      siteNames[path.sourceSiteId], siteNames[path.destinationSiteId], path.peer_attachment_id,
+    ]);
+
+    expect(snapshot.activeLinkCount).toBe(2);
+    expect(linksById[threeSiteIds.peers.wrtHk]).toMatchObject({ state: 'active', activeDirectionCount: 2 });
+    expect(namedPaths(threeSiteIds.peers.wrtHk)).toEqual([
+      ['杭州', '香港', threeSiteIds.attachments.hk],
+      ['香港', '杭州', threeSiteIds.attachments.wrt],
+    ]);
+    expect(linksById[threeSiteIds.peers.hkUs]).toMatchObject({ state: 'active', activeDirectionCount: 2 });
+    expect(namedPaths(threeSiteIds.peers.hkUs)).toEqual([
+      ['美国搬瓦工', '香港', threeSiteIds.attachments.hk],
+      ['香港', '美国搬瓦工', threeSiteIds.attachments.us],
+    ]);
+    expect(linksById[threeSiteIds.peers.wrtUs]).toMatchObject({
+      state: 'pending', activeDirectionCount: 0, activePathCount: 0,
+    });
+    expect(namedPaths(threeSiteIds.peers.wrtUs)).toEqual([]);
   });
 });
