@@ -45,6 +45,7 @@ import { downloadEnrollmentBootstrap, enrollmentExpired, validCloudAddress } fro
 import { compatibleEnrollmentArchitecture, defaultEnrollmentArchitecture, enrollmentArchitectureOptions, type EnrollmentPlatform } from '../enrollment-platform';
 import {
   matchingPrefix,
+  matchingSegmentPrefix,
   nextOverlayAddress,
   pathDirection,
   samePair,
@@ -292,10 +293,22 @@ export function QuickSetupWizard({ visible, session, onClose, onChanged }: Props
       const attachmentB = await ensureAttachment(selection.siteB, selection.nodeB, 3);
       const ensurePrefix = async (siteId: string, cidr: string, parsed: ReturnType<typeof parseCidr>) => {
         if (!parsed || matchingPrefix(working.prefixes, siteId, segment!.metadata.id, cidr)) return;
-        const response = await createResource(session.token, tenantId, 'prefixes', {
-          kind: 'PREFIX', spec: { site_id: siteId, segment_id: segment!.metadata.id, prefix: parsed, source: 'CONFIGURED' },
-        });
-        working.prefixes.push(response.resource);
+        const spec = { site_id: siteId, segment_id: segment!.metadata.id, prefix: parsed, source: 'CONFIGURED' };
+        const existing = matchingSegmentPrefix(working.prefixes, segment!.metadata.id, cidr);
+        if (!existing) {
+          const response = await createResource(session.token, tenantId, 'prefixes', { kind: 'PREFIX', spec });
+          working.prefixes.push(response.resource);
+          return;
+        }
+        const response = await replaceResource(
+          session.token,
+          tenantId,
+          'prefixes',
+          existing.metadata.id,
+          existing.metadata.revision,
+          { kind: 'PREFIX', spec },
+        );
+        working.prefixes[working.prefixes.indexOf(existing)] = response.resource;
       };
       await ensurePrefix(selection.siteA, prefixA.trim(), parsedA);
       await ensurePrefix(selection.siteB, prefixB.trim(), parsedB);

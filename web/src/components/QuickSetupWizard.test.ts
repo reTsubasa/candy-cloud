@@ -3,6 +3,7 @@ import type { ControlResource, RuntimeActivationReadiness } from '../types';
 import {
   activationMessage,
   matchingPrefix,
+  matchingSegmentPrefix,
   nextOverlayAddress,
   pathDirection,
   samePair,
@@ -57,6 +58,15 @@ describe('quick setup orchestration helpers', () => {
     });
     expect(matchingPrefix([prefix], 'site-a', 'segment', '192.168.1.0/24')).toBe(prefix);
     expect(matchingPrefix([prefix], 'site-b', 'segment', '192.168.1.0/24')).toBeUndefined();
+  });
+
+  it('finds a segment prefix owned by the wrong site so quick setup can reassign it', () => {
+    const prefix = resource('prefix', 'PREFIX', {
+      site_id: 'site-hong-kong', segment_id: 'segment', prefix: { network: '172.17.0.0', prefix_len: 16 },
+    });
+    expect(matchingPrefix([prefix], 'site-united-states', 'segment', '172.17.0.0/16')).toBeUndefined();
+    expect(matchingSegmentPrefix([prefix], 'segment', '172.17.0.0/16')).toBe(prefix);
+    expect(matchingSegmentPrefix([prefix], 'other-segment', '172.17.0.0/16')).toBeUndefined();
   });
 
   it('turns activation blockers into actionable product language', () => {

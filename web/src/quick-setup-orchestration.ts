@@ -45,8 +45,16 @@ export function matchingPrefix(
   segmentId: string,
   cidr: string,
 ): ControlResource | undefined {
-  return items.find((item) => specText(item, 'site_id') === siteId
-    && specText(item, 'segment_id') === segmentId
+  const existing = matchingSegmentPrefix(items, segmentId, cidr);
+  return specText(existing, 'site_id') === siteId ? existing : undefined;
+}
+
+export function matchingSegmentPrefix(
+  items: ControlResource[],
+  segmentId: string,
+  cidr: string,
+): ControlResource | undefined {
+  return items.find((item) => specText(item, 'segment_id') === segmentId
     && prefixText(item) === cidr);
 }
 
