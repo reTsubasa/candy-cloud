@@ -34,11 +34,22 @@ cat >"$bin/candy-cloud-enroll" <<'EOF'
 #!/bin/sh
 exit 0
 EOF
+for name in candy-core-manager serverd-linux candy-sdwan-agent candy-netd candy-cloud-sync candy-server-health-check; do
+	cp "$bin/candy-cloud-enroll" "$bin/$name"
+done
+unit_dir=$tmp/units
+mkdir -p "$unit_dir"
+for name in candy-server.service candy-netd.service candy-cloud-sync.service candy-cloud-sync.timer; do
+	printf '%s\n' '# fixture' >"$unit_dir/$name"
+done
+printf '%s\n' '# fixture' >"$tmp/candy.tmpfiles"
 chmod 0755 "$bin"/* "$installer"
 
 bootstrap='{"schema_version":1,"cloud_address":"https://cloud.example.test","bootstrap_code":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","expires_at":"2030-01-01T00:00:00Z"}'
 encoded=$(printf '%s' "$bootstrap" | base64 | tr -d '\n')
 FAKE_CALLS=$calls CANDY_INSTALL_TEST_MODE=1 CANDY_SERVER_BIN=$bin/candy-server \
+	CANDY_RUNTIME_BIN_DIR=$bin CANDY_RUNTIME_LIBEXEC_DIR=$bin CANDY_SYSTEMD_UNIT_DIR=$unit_dir \
+	CANDY_TMPFILES_POLICY=$tmp/candy.tmpfiles \
 	CANDY_SDWAN_RUNTIME_PATH=$bin/candy-sdwan-runtime CANDY_ENROLL_CLIENT_PATH=$bin/candy-cloud-enroll \
 	PATH=$bin:$PATH "$installer" --bootstrap-base64-stdin >"$tmp/out" 2>"$tmp/err" <<EOF
 $encoded
@@ -50,6 +61,8 @@ fi
 
 insecure=$(printf '%s' "$bootstrap" | sed 's#https://#http://#' | base64 | tr -d '\n')
 if FAKE_CALLS=$calls CANDY_INSTALL_TEST_MODE=1 CANDY_SERVER_BIN=$bin/candy-server \
+	CANDY_RUNTIME_BIN_DIR=$bin CANDY_RUNTIME_LIBEXEC_DIR=$bin CANDY_SYSTEMD_UNIT_DIR=$unit_dir \
+	CANDY_TMPFILES_POLICY=$tmp/candy.tmpfiles \
 	CANDY_SDWAN_RUNTIME_PATH=$bin/candy-sdwan-runtime CANDY_ENROLL_CLIENT_PATH=$bin/candy-cloud-enroll \
 	PATH=$bin:$PATH "$installer" --bootstrap-base64-stdin >/dev/null 2>&1 <<EOF
 $insecure
@@ -60,16 +73,26 @@ fi
 
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
 	stage=$tmp/runtime-stage
-	mkdir -p "$stage/usr/local/bin" "$stage/usr/local/libexec" "$stage/systemd"
-	cat >"$stage/usr/local/bin/candy-server" <<'EOF'
+	mkdir -p "$stage/usr/local/bin" "$stage/usr/local/libexec" "$stage/systemd" "$stage/install" "$stage/etc/candy"
+cat >"$stage/usr/local/bin/candy-server" <<'EOF'
 #!/bin/sh
+[ "${1:-}" != --help ] || {
+	printf '%s\n' '  candy-server bootstrap FILE'
+	exit 0
+}
 case "$1" in
-	bootstrap) printf '%s\n' bootstrap >>/fixture/product-calls; [ "${CANDY_FAIL_BOOTSTRAP:-0}" != 1 ] || exit 1; rm -f "$2" ;;
+	bootstrap)
+		printf 'launcher=%s action=bootstrap\n' "$0" >>/fixture/product-calls
+		[ -f "$2" ] && [ ! -L "$2" ]
+		[ "$(stat -c %a "$2")" = 600 ]
+		grep -F 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' "$2" >/dev/null
+		[ "${CANDY_FAIL_BOOTSTRAP:-0}" != 1 ] || exit 1
+		;;
 	sdwan) [ "$2" = status ]; printf '%s\n' '{"schema_version":1,"registration":{"state":"registered"},"runtime":{"state":"stopped"}}' ;;
 	*) exit 64 ;;
 esac
 EOF
-	for name in serverd-linux candy-sdwan-runtime candy-sdwan-agent candy-netd candy-cloud-enroll candy-server-health-check; do
+	for name in serverd-linux candy-sdwan-runtime candy-sdwan-agent candy-netd candy-cloud-enroll candy-cloud-sync candy-server-health-check; do
 		cat >"$stage/usr/local/libexec/$name" <<'EOF'
 #!/bin/sh
 exit 0
@@ -79,10 +102,46 @@ EOF
 #!/bin/sh
 exit 0
 EOF
-	for name in candy-netd.service candy-sdwan.service candy.sysusers candy.tmpfiles; do
+	for name in candy-server.service candy-netd.service candy-cloud-sync.service candy-cloud-sync.timer candy.tmpfiles; do
 		printf '%s\n' '# fixture' >"$stage/systemd/$name"
 	done
-	chmod 0755 "$stage/usr/local/bin"/* "$stage/usr/local/libexec"/*
+	cat >"$stage/install/upgrade-candy-server.sh" <<'EOF'
+#!/bin/sh
+set -eu
+bundle=
+sha256=
+version=
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--bundle-file) shift; bundle=$1 ;;
+		--sha256) shift; sha256=$1 ;;
+		--version) shift; version=$1 ;;
+		*) exit 64 ;;
+	esac
+	shift
+done
+[ -f "$bundle" ] && [ ! -L "$bundle" ]
+[ "$(sha256sum "$bundle" | awk '{print $1}')" = "$sha256" ]
+[ "$version" = "$(tar -xOzf "$bundle" ./RUNTIME-RELEASE | tr -d '\r\n')" ]
+printf 'bundle=%s sha256=%s version=%s\n' "$bundle" "$sha256" "$version" >>/fixture/upgrade-calls
+[ "${CANDY_FAIL_UPGRADE:-0}" != 1 ] || exit 70
+release=/opt/candy/releases/$version-fixture
+mkdir -p "$release" /opt/candy
+tar -xOzf "$bundle" ./usr/local/bin/candy-server >"$release/candy-server"
+chmod 0755 "$release/candy-server"
+ln -sfn "$release" /opt/candy/current
+EOF
+	cat >"$stage/install/install-candy-server.sh" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+	printf '%s\n' '0.4.0-test' >"$stage/RUNTIME-RELEASE"
+	printf '%s\n' 'x86_64' >"$stage/RUNTIME-ARCH"
+	printf '%s\n' '0.4.0' >"$stage/VERSION"
+	printf '%s\n' 'fixture' >"$stage/README.md"
+	printf '%s\n' '# fixture' >"$stage/etc/candy/server.toml.example"
+	printf '%s\n' '# fixture' >"$stage/etc/candy/cloud-sync.env.example"
+	chmod 0755 "$stage/usr/local/bin"/* "$stage/usr/local/libexec"/* "$stage/install"/*
 	tar -czf "$tmp/runtime.tar.gz" -C "$stage" .
 	runtime_size=$(wc -c <"$tmp/runtime.tar.gz" | tr -d ' ')
 	runtime_sha=$(sha256sum "$tmp/runtime.tar.gz" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tmp/runtime.tar.gz" | awk '{print $1}')
@@ -121,35 +180,26 @@ case "$url" in
 	*) exit 22 ;;
 esac
 EOF
-	cat >"$tmp/container-bin/systemctl" <<'EOF'
-#!/bin/sh
-printf '%s\n' "$*" >>/fixture/systemctl-calls
-case "$1" in
-	is-active) test -f /fixture/netd-active ;;
-	is-enabled) test -f /fixture/netd-enabled ;;
-	enable) touch /fixture/netd-active /fixture/netd-enabled ;;
-	stop) rm -f /fixture/netd-active ;;
-	disable) rm -f /fixture/netd-enabled ;;
-	*) exit 0 ;;
-esac
-EOF
-	for name in systemd-sysusers systemd-tmpfiles; do
-		cat >"$tmp/container-bin/$name" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
-	done
 	chmod 0755 "$tmp/container-bin"/*
 	container_bootstrap=$(printf '%s' "$bootstrap" | base64 | tr -d '\n')
 	docker run --rm -i --platform linux/amd64 \
 		-v "$tmp:/fixture" -v "$installer:/installer:ro" \
 		-e PATH=/fixture/container-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 		debian:bookworm-slim sh -eu -c '
+			mkdir -p /opt/candy/releases/partial /usr/local/libexec
+			cp /fixture/runtime-stage/usr/local/bin/candy-server /opt/candy/releases/partial/candy-server
+			chmod 0755 /opt/candy/releases/partial/candy-server
+			ln -s /opt/candy/releases/partial /opt/candy/current
+			cp /fixture/runtime-stage/usr/local/libexec/candy-sdwan-runtime /usr/local/libexec/candy-sdwan-runtime
+			cp /fixture/runtime-stage/usr/local/libexec/candy-cloud-enroll /usr/local/libexec/candy-cloud-enroll
 			CANDY_INSTALL_LOG=/fixture/fresh-log/node-install.log /installer --bootstrap-base64-stdin
-			test -x /usr/local/bin/candy-server
-			test -x /usr/local/libexec/candy-cloud-enroll
+			test -L /opt/candy/current
+			test -x /opt/candy/current/candy-server
+			test ! -e /usr/local/bin/candy-server
 			grep -F bootstrap /fixture/product-calls >/dev/null
-			grep -F "enable --now candy-netd.service" /fixture/systemctl-calls >/dev/null
+			grep -F "launcher=/opt/candy/current/candy-server" /fixture/product-calls >/dev/null
+			grep -F "version=0.4.0-test" /fixture/upgrade-calls >/dev/null
+			grep -F "incomplete or incompatible" /fixture/fresh-log/node-install.log >/dev/null
 		' >"$tmp/container.out" 2>"$tmp/container.err" <<EOF
 $container_bootstrap
 EOF
@@ -158,22 +208,40 @@ EOF
 		fail "Bootstrap credential leaked during fresh installation"
 	fi
 	rm -rf "$tmp/fresh-log"
-	rm -f "$tmp/netd-active" "$tmp/netd-enabled" "$tmp/systemctl-calls" "$tmp/product-calls" "$tmp/install.log"
-	if docker run --rm -i --platform linux/amd64 \
+	if grep -F 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' "$tmp/upgrade-calls" >/dev/null 2>&1; then
+		fail "Bootstrap credential leaked to the Runtime transaction"
+	fi
+	rm -f "$tmp/product-calls" "$tmp/upgrade-calls" "$tmp/install.log"
+	docker run --rm -i --platform linux/amd64 \
 		-v "$tmp:/fixture" -v "$installer:/installer:ro" \
 		-e CANDY_FAIL_BOOTSTRAP=1 \
 		-e PATH=/fixture/container-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-		debian:bookworm-slim sh -eu -c 'CANDY_INSTALL_LOG=/fixture/install.log /installer --bootstrap-base64-stdin' \
+		debian:bookworm-slim sh -eu -c '
+			if CANDY_INSTALL_LOG=/fixture/install.log /installer --bootstrap-base64-stdin; then exit 1; fi
+			test -L /opt/candy/current
+			test -x /opt/candy/current/candy-server
+			grep -F "Runtime remains installed" /fixture/install.log >/dev/null
+		' \
 		>"$tmp/failure.out" 2>"$tmp/failure.err" <<EOF
 $container_bootstrap
 EOF
-	then
-		fail "fresh installation unexpectedly succeeded after enrollment failure"
+	if grep -F 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' "$tmp/failure.out" "$tmp/failure.err" "$tmp/install.log" >/dev/null 2>&1; then
+		fail "Bootstrap credential leaked after enrollment failure"
 	fi
-	[ ! -e "$tmp/netd-active" ] || fail "failed installation left candy-netd running"
-	[ ! -e "$tmp/netd-enabled" ] || fail "failed installation left candy-netd enabled"
-	grep -F 'stop candy-netd.service' "$tmp/systemctl-calls" >/dev/null || fail "failed installation did not stop newly started candy-netd"
-	grep -F 'disable candy-netd.service' "$tmp/systemctl-calls" >/dev/null || fail "failed installation did not restore the netd enablement state"
+
+	rm -f "$tmp/product-calls" "$tmp/upgrade-calls" "$tmp/install.log"
+	docker run --rm -i --platform linux/amd64 \
+		-v "$tmp:/fixture" -v "$installer:/installer:ro" \
+		-e CANDY_FAIL_UPGRADE=1 \
+		-e PATH=/fixture/container-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+		debian:bookworm-slim sh -eu -c '
+			if CANDY_INSTALL_LOG=/fixture/install.log /installer --bootstrap-base64-stdin; then exit 1; fi
+			test ! -e /opt/candy/current
+			test ! -e /fixture/product-calls
+			grep -F "Cloud enrollment was not attempted" /fixture/install.log >/dev/null
+		' >"$tmp/upgrade-failure.out" 2>"$tmp/upgrade-failure.err" <<EOF
+$container_bootstrap
+EOF
 fi
 
 printf '%s\n' "Candy node installer tests passed"

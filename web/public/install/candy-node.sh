@@ -5,11 +5,7 @@ MAX_BOOTSTRAP_BASE64_BYTES=24576
 MAX_MANIFEST_BYTES=65536
 MAX_RUNTIME_BYTES=268435456
 INSTALL_LOG=${CANDY_INSTALL_LOG:-/var/log/candy/node-install.log}
-COMMITTED=0
-CHANGED=0
-NETD_WAS_ACTIVE=0
-NETD_WAS_ENABLED=0
-NETD_STARTED=0
+ACTIVE_SERVER=/opt/candy/current/candy-server
 
 log() {
 	printf '%s level=%s stage=%s message=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" >&2
@@ -83,58 +79,9 @@ validate_cloud_address() {
 	case "$1" in *' '*|*'\t'*|*'\r'*|*'\n'*|*'\\'*|*'"'*|*"'"*) fail "Cloud address contains an invalid character" ;; esac
 }
 
-restore_file() {
-	path=$1
-	backup=$backup_dir$path
-	if [ -e "$backup" ] || [ -L "$backup" ]; then
-		mkdir -p "${path%/*}"
-		cp -a "$backup" "$path"
-	else
-		rm -f "$path"
-	fi
-}
-
-backup_file() {
-	path=$1
-	if [ -e "$path" ] || [ -L "$path" ]; then
-		mkdir -p "$backup_dir${path%/*}"
-		cp -a "$path" "$backup_dir$path"
-	fi
-}
-
-rollback() {
-	[ "$CHANGED" -eq 1 ] || return 0
-	log warn rollback "restoring the Runtime state that existed before this installation"
-	for path in \
-		/usr/local/bin/candy-server \
-		/usr/local/bin/candy-core-manager \
-		/usr/local/libexec/serverd-linux \
-		/usr/local/libexec/candy-sdwan-runtime \
-		/usr/local/libexec/candy-sdwan-agent \
-		/usr/local/libexec/candy-netd \
-		/usr/local/libexec/candy-cloud-enroll \
-		/usr/local/libexec/candy-server-health-check \
-		/etc/systemd/system/candy-netd.service \
-		/etc/systemd/system/candy-sdwan.service \
-		/usr/lib/sysusers.d/candy.conf \
-		/usr/lib/tmpfiles.d/candy.conf; do
-		restore_file "$path" || true
-	done
-	if [ "$NETD_STARTED" -eq 1 ] && [ "$NETD_WAS_ACTIVE" -eq 0 ]; then
-		systemctl stop candy-netd.service >/dev/null 2>&1 || true
-	fi
-	if [ "$NETD_STARTED" -eq 1 ] && [ "$NETD_WAS_ENABLED" -eq 0 ]; then
-		systemctl disable candy-netd.service >/dev/null 2>&1 || true
-	fi
-	systemctl daemon-reload >/dev/null 2>&1 || true
-}
-
 cleanup() {
 	status=$?
 	trap - EXIT HUP INT TERM
-	if [ "$status" -ne 0 ] && [ "$COMMITTED" -eq 0 ]; then
-		rollback
-	fi
 	rm -rf "$work_dir"
 	exit "$status"
 }
@@ -148,15 +95,12 @@ need_command tar
 need_command awk
 need_command sed
 need_command base64
-need_command systemctl
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/candy-node-install.XXXXXX") || fail "could not create a private work directory"
 chmod 0700 "$work_dir"
-backup_dir=$work_dir/backup
 bootstrap_file=$work_dir/candy-node-bootstrap.json
 manifest_file=$work_dir/install-manifest.json
 runtime_bundle=$work_dir/runtime.tar.gz
-mkdir -p "$backup_dir"
 trap cleanup EXIT HUP INT TERM
 
 encoded=$(dd bs=24577 count=1 2>/dev/null)
@@ -173,10 +117,15 @@ cloud_address=$(sed -n 's/^.*"cloud_address"[[:space:]]*:[[:space:]]*"\([^"\\]*\
 cloud_address=${cloud_address%/}
 validate_cloud_address "$cloud_address"
 
-installed_server=${CANDY_SERVER_BIN:-$(command -v candy-server 2>/dev/null || true)}
-installed_sdwan_runtime=${CANDY_SDWAN_RUNTIME_PATH:-/usr/local/libexec/candy-sdwan-runtime}
-installed_enroll_client=${CANDY_ENROLL_CLIENT_PATH:-/usr/local/libexec/candy-cloud-enroll}
+installed_server=${CANDY_SERVER_BIN:-$ACTIVE_SERVER}
+runtime_bin_dir=${CANDY_RUNTIME_BIN_DIR:-/usr/local/bin}
+runtime_libexec_dir=${CANDY_RUNTIME_LIBEXEC_DIR:-/usr/local/libexec}
+systemd_unit_dir=${CANDY_SYSTEMD_UNIT_DIR:-/etc/systemd/system}
+tmpfiles_policy=${CANDY_TMPFILES_POLICY:-/usr/lib/tmpfiles.d/candy.conf}
+installed_sdwan_runtime=${CANDY_SDWAN_RUNTIME_PATH:-$runtime_libexec_dir/candy-sdwan-runtime}
+installed_enroll_client=${CANDY_ENROLL_CLIENT_PATH:-$runtime_libexec_dir/candy-cloud-enroll}
 installed_server_supports_bootstrap=0
+installed_runtime_complete=1
 if [ -n "$installed_server" ] && [ -x "$installed_server" ]; then
 	# A pre-0.4 server launcher treats an unknown `bootstrap` argument as
 	# ordinary server options and reports a misleading missing-Core error.
@@ -186,14 +135,34 @@ if [ -n "$installed_server" ] && [ -x "$installed_server" ]; then
 		installed_server_supports_bootstrap=1
 	fi
 fi
-if [ "$installed_server_supports_bootstrap" -eq 1 ] && [ -x "$installed_sdwan_runtime" ] && [ -x "$installed_enroll_client" ]; then
+for executable in \
+	"$runtime_bin_dir/candy-core-manager" \
+	"$runtime_libexec_dir/serverd-linux" \
+	"$installed_sdwan_runtime" \
+	"$runtime_libexec_dir/candy-sdwan-agent" \
+	"$runtime_libexec_dir/candy-netd" \
+	"$installed_enroll_client" \
+	"$runtime_libexec_dir/candy-cloud-sync" \
+	"$runtime_libexec_dir/candy-server-health-check"; do
+	[ -f "$executable" ] && [ -x "$executable" ] && [ ! -L "$executable" ] || installed_runtime_complete=0
+done
+for policy in \
+	"$systemd_unit_dir/candy-server.service" \
+	"$systemd_unit_dir/candy-netd.service" \
+	"$systemd_unit_dir/candy-cloud-sync.service" \
+	"$systemd_unit_dir/candy-cloud-sync.timer" \
+	"$tmpfiles_policy"; do
+	[ -f "$policy" ] && [ ! -L "$policy" ] || installed_runtime_complete=0
+done
+if [ "$installed_server_supports_bootstrap" -eq 1 ] && [ "$installed_runtime_complete" -eq 1 ]; then
 	log info enrollment "Candy is already installed; using the existing Runtime"
-	"$installed_server" bootstrap "$bootstrap_file"
-	COMMITTED=1
+	if ! "$installed_server" bootstrap "$bootstrap_file"; then
+		fail "Cloud enrollment failed; the existing Runtime remains installed and existing network state was not changed"
+	fi
 	exit 0
 fi
 if [ -n "$installed_server" ] && [ -x "$installed_server" ]; then
-	log info upgrade "Existing Candy installation does not support file-based enrollment; upgrading the Runtime before registration"
+	log info upgrade "Existing Candy Runtime is incomplete or incompatible; upgrading it before registration"
 fi
 
 case "$(uname -s)" in Linux) ;; *) fail "automatic installation supports Linux only" ;; esac
@@ -202,9 +171,6 @@ case "$(uname -m)" in
 	aarch64|arm64) architecture=aarch64 ;;
 	*) fail "unsupported processor architecture: $(uname -m)" ;;
 esac
-need_command install
-need_command systemd-sysusers
-need_command systemd-tmpfiles
 
 manifest_url=$cloud_address/install/manifests/linux-$architecture.json
 log info manifest "requesting the architecture-bound installation manifest"
@@ -246,56 +212,45 @@ tar -tvzf "$runtime_bundle" | awk '
 tar -xzf "$runtime_bundle" -C "$stage" --no-same-owner --no-same-permissions
 for member in \
 	usr/local/bin/candy-server \
+	usr/local/bin/candy-core-manager \
+	usr/local/libexec/serverd-linux \
 	usr/local/libexec/candy-sdwan-runtime \
 	usr/local/libexec/candy-sdwan-agent \
 	usr/local/libexec/candy-netd \
 	usr/local/libexec/candy-cloud-enroll \
+	usr/local/libexec/candy-cloud-sync \
+	usr/local/libexec/candy-server-health-check \
+	systemd/candy-server.service \
 	systemd/candy-netd.service \
-	systemd/candy-sdwan.service \
-	systemd/candy.sysusers \
-	systemd/candy.tmpfiles; do
+	systemd/candy-cloud-sync.service \
+	systemd/candy-cloud-sync.timer \
+	systemd/candy.tmpfiles \
+	install/upgrade-candy-server.sh \
+	RUNTIME-RELEASE \
+	RUNTIME-ARCH; do
 	[ -f "$stage/$member" ] && [ ! -L "$stage/$member" ] || fail "Runtime archive is missing $member"
 done
 
-for path in \
-	/usr/local/bin/candy-server \
-	/usr/local/bin/candy-core-manager \
-	/usr/local/libexec/serverd-linux \
-	/usr/local/libexec/candy-sdwan-runtime \
-	/usr/local/libexec/candy-sdwan-agent \
-	/usr/local/libexec/candy-netd \
-	/usr/local/libexec/candy-cloud-enroll \
-	/usr/local/libexec/candy-server-health-check \
-	/etc/systemd/system/candy-netd.service \
-	/etc/systemd/system/candy-sdwan.service \
-	/usr/lib/sysusers.d/candy.conf \
-	/usr/lib/tmpfiles.d/candy.conf; do
-	backup_file "$path"
-done
-CHANGED=1
-install -d -m 0755 /usr/local/bin /usr/local/libexec /etc/systemd/system /usr/lib/sysusers.d /usr/lib/tmpfiles.d
-install -m 0755 "$stage/usr/local/bin/candy-server" /usr/local/bin/candy-server
-for name in serverd-linux candy-sdwan-runtime candy-sdwan-agent candy-netd candy-cloud-enroll candy-server-health-check; do
-	[ ! -f "$stage/usr/local/libexec/$name" ] || install -m 0755 "$stage/usr/local/libexec/$name" "/usr/local/libexec/$name"
-done
-[ ! -f "$stage/usr/local/bin/candy-core-manager" ] || install -m 0755 "$stage/usr/local/bin/candy-core-manager" /usr/local/bin/candy-core-manager
-install -m 0644 "$stage/systemd/candy-netd.service" /etc/systemd/system/candy-netd.service
-install -m 0644 "$stage/systemd/candy-sdwan.service" /etc/systemd/system/candy-sdwan.service
-install -m 0644 "$stage/systemd/candy.sysusers" /usr/lib/sysusers.d/candy.conf
-install -m 0644 "$stage/systemd/candy.tmpfiles" /usr/lib/tmpfiles.d/candy.conf
-systemd-sysusers /usr/lib/sysusers.d/candy.conf
-systemd-tmpfiles --create /usr/lib/tmpfiles.d/candy.conf
-systemctl daemon-reload
-systemctl is-active --quiet candy-netd.service && NETD_WAS_ACTIVE=1 || true
-systemctl is-enabled --quiet candy-netd.service && NETD_WAS_ENABLED=1 || true
-systemctl enable --now candy-netd.service
-NETD_STARTED=1
-systemctl is-active --quiet candy-netd.service || fail "candy-netd did not become active"
+candidate_upgrader=$stage/install/upgrade-candy-server.sh
+[ -x "$candidate_upgrader" ] || fail "Runtime archive upgrader is not executable"
+log info upgrade "installing Candy Runtime $runtime_version through the bundle transaction"
+if ! sh "$candidate_upgrader" \
+	--bundle-file "$runtime_bundle" \
+	--sha256 "$runtime_sha256" \
+	--version "$runtime_version"; then
+	fail "Runtime transaction failed; Cloud enrollment was not attempted and the previous Runtime state was restored"
+fi
+[ -f "$ACTIVE_SERVER" ] && [ -x "$ACTIVE_SERVER" ] ||
+	fail "Runtime transaction completed without activating $ACTIVE_SERVER; Cloud enrollment was not attempted"
 
 log info enrollment "registering the node with Candy Cloud"
-/usr/local/bin/candy-server bootstrap "$bootstrap_file"
-status=$(/usr/local/bin/candy-server sdwan status)
-printf '%s' "$status" | grep -q '"state":"registered"' || fail "node registration did not reach the registered state"
-printf '%s' "$status" | grep -q '"state":"stopped"' || fail "SD-WAN did not remain stopped after registration"
-COMMITTED=1
+if ! "$ACTIVE_SERVER" bootstrap "$bootstrap_file"; then
+	fail "Cloud enrollment failed after the Runtime transaction committed; the Runtime remains installed and enrollment can be retried with a valid Bootstrap document"
+fi
+status=$("$ACTIVE_SERVER" sdwan status) ||
+	fail "Runtime is installed and enrollment was submitted, but node status could not be read"
+printf '%s' "$status" | grep -q '"state":"registered"' ||
+	fail "Runtime is installed, but node registration did not reach the registered state"
+printf '%s' "$status" | grep -q '"state":"stopped"' ||
+	fail "Runtime is installed and the node is registered, but SD-WAN did not remain stopped"
 log info complete "Candy Runtime $runtime_version installed; node registered with SD-WAN stopped"
