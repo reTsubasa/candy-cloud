@@ -6,6 +6,16 @@ cd "$project_dir"
 
 compose_config=$(docker compose --env-file .env.example config)
 printf '%s\n' "$compose_config" | awk '
+  /^  cloud-auth:$/ { auth = 1; next }
+  auth && /^  [[:alnum:]_-]+:$/ { auth = 0 }
+  auth && /^      mysql-privileges:$/ { dependency = 1 }
+  auth && dependency && /condition: service_completed_successfully/ { completed = 1 }
+  END { exit (dependency && completed) ? 0 : 1 }
+' || {
+  echo "cloud-auth does not wait for post-migration MySQL privilege reconciliation" >&2
+  exit 1
+}
+printf '%s\n' "$compose_config" | awk '
   /^  cloud-worker:$/ { worker = 1; next }
   worker && /^  [[:alnum:]_-]+:$/ { worker = 0 }
   worker && /CANDY_ROUTE_SIGNING_KEY_ID: route-signing-1/ { key_id = 1 }
@@ -96,6 +106,45 @@ for _ in $(seq 1 90); do
 done
 test "$health" = healthy
 test "$(docker inspect --format '{{.RestartCount}}' "$worker_id")" = 0
+
+# Reconciliation must be safe on an initialized data volume and cloud-auth
+# must receive DELETE only for the catalog table used by enrollment completion.
+compose exec -T mysql sh -eu -c '
+	case "$MYSQL_DATABASE" in ""|*[!A-Za-z0-9_]*) exit 1 ;; esac
+	exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT DELETE ON \`$MYSQL_DATABASE\`.\`runtime_projection_transport_catalog\` TO '\''cloud_auth'\''@'\''%'\''"
+'
+compose exec -T mysql bash /docker-entrypoint-initdb.d/01-users.sh
+compose exec -T mysql bash /docker-entrypoint-initdb.d/01-users.sh
+auth_grants=$(compose exec -T mysql sh -eu -c '
+	exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names
+' <<'SQL'
+SHOW GRANTS FOR 'cloud_auth'@'%';
+SQL
+)
+printf '%s\n' "$auth_grants" |
+  grep -F 'GRANT SELECT, INSERT, UPDATE ON `candy_cloud`.* TO `cloud_auth`@`%`' >/dev/null
+printf '%s\n' "$auth_grants" |
+  grep -F 'GRANT DELETE ON `candy_cloud`.`runtime_projection_transport_catalog` TO `cloud_auth`@`%`' >/dev/null
+if printf '%s\n' "$auth_grants" |
+  grep -E 'GRANT .*DELETE.* ON `candy_cloud`\.\* TO `cloud_auth`@`%`' >/dev/null; then
+  echo "cloud_auth has database-wide DELETE instead of the required table grant" >&2
+  exit 1
+fi
+compose exec -T mysql sh -eu -c '
+	exec mysql -ucloud_auth -p"$MYSQL_AUTH_PASSWORD" "$MYSQL_DATABASE"
+' <<'SQL'
+DELETE FROM runtime_projection_transport_catalog WHERE 1 = 0;
+SQL
+if compose exec -T mysql sh -eu -c '
+	exec mysql -ucloud_auth -p"$MYSQL_AUTH_PASSWORD" "$MYSQL_DATABASE"
+' <<'SQL'
+DELETE FROM organizations WHERE 1 = 0;
+SQL
+then
+  echo "cloud_auth can delete from a table outside its enrollment responsibility" >&2
+  exit 1
+fi
+
 worker_image=$(docker inspect --format '{{.Image}}' "$worker_id")
 test "$(docker image inspect --format '{{.Architecture}}' "$worker_image")" = amd64
 module_path=/opt/candy/cores/0.3.14/libcandy_core_cloud.so

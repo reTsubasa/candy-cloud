@@ -122,7 +122,7 @@ impl EnrollmentCoordinator {
             .challenges
             .reserve_challenge(&activation_code_hash, &write, now)
             .await
-            .map_err(|_| EnrollmentCoordinatorError::Unavailable)?;
+            .map_err(|error| repository_unavailable("reserve_challenge", error))?;
         match outcome {
             ChallengeCreationOutcome::Created(record) => Ok(EnrollmentChallengeReceipt {
                 challenge_id: record.id,
@@ -157,7 +157,7 @@ impl EnrollmentCoordinator {
             .challenges
             .load_challenge_for_proof(command.challenge_id, now)
             .await
-            .map_err(|_| EnrollmentCoordinatorError::Unavailable)?
+            .map_err(|error| repository_unavailable("load_challenge_for_proof", error))?
             .ok_or(EnrollmentCoordinatorError::ChallengeUnavailable)?;
         let transcript = EnrollmentTranscript::new(
             challenge.id,
@@ -212,7 +212,7 @@ impl EnrollmentCoordinator {
             .completions
             .complete(&write)
             .await
-            .map_err(|_| EnrollmentCoordinatorError::Unavailable)?
+            .map_err(|error| repository_unavailable("complete", error))?
         {
             EnrollmentCompletionOutcome::Issued(record) => Ok(receipt(record, false)),
             EnrollmentCompletionOutcome::Replay(record) => Ok(receipt(record, true)),
@@ -234,7 +234,7 @@ impl EnrollmentCoordinator {
             .completions
             .load_issued(challenge_id, request_id)
             .await
-            .map_err(|_| EnrollmentCoordinatorError::Unavailable)?
+            .map_err(|error| repository_unavailable("load_issued", error))?
         {
             EnrollmentCompletionOutcome::Replay(record) => Ok(receipt(record, true)),
             EnrollmentCompletionOutcome::Conflict => Err(EnrollmentCoordinatorError::Conflict),
@@ -247,6 +247,19 @@ impl EnrollmentCoordinator {
 }
 
 pub use cloud_db::enrollment::hash_activation_credential;
+
+fn repository_unavailable(
+    operation: &'static str,
+    error: cloud_db::RepositoryError,
+) -> EnrollmentCoordinatorError {
+    tracing::error!(
+        event = "enrollment_repository_error",
+        operation,
+        error = ?error,
+        "Enrollment repository operation failed"
+    );
+    EnrollmentCoordinatorError::Unavailable
+}
 
 fn validate_challenge_command(
     command: &EnrollmentChallengeCommand,
@@ -291,4 +304,71 @@ fn receipt(record: EnrollmentCompletionRecord, replayed: bool) -> EnrollmentComp
 
 fn bounded(value: &str, max_len: usize) -> bool {
     !value.is_empty() && value.len() <= max_len
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{self, Write},
+        sync::{Arc, Mutex},
+    };
+
+    use cloud_db::RepositoryError;
+    use serde_json::Value;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    use super::{repository_unavailable, EnrollmentCoordinatorError};
+
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for LogBuffer {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for LogBuffer {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn repository_failures_are_logged_before_mapping_to_unavailable() {
+        let output = LogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(output.clone())
+            .finish();
+
+        let mapped = tracing::subscriber::with_default(subscriber, || {
+            repository_unavailable("complete", RepositoryError::InvalidCompletionRecord)
+        });
+
+        assert_eq!(mapped, EnrollmentCoordinatorError::Unavailable);
+        let bytes = output.0.lock().unwrap().clone();
+        let event: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            event["fields"]["event"],
+            Value::String("enrollment_repository_error".into())
+        );
+        assert_eq!(
+            event["fields"]["operation"],
+            Value::String("complete".into())
+        );
+        assert!(event["fields"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("InvalidCompletionRecord"));
+    }
 }

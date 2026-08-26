@@ -10,10 +10,10 @@ fn cloud_and_core_version_contract_is_pinned() {
     let package = &manifest["workspace"]["package"];
     let candy = &manifest["workspace"]["metadata"]["candy"];
     assert_eq!(package["version"].as_str(), Some("0.1.0"));
-    assert_eq!(candy["core_version"].as_str(), Some("0.3.23"));
+    assert_eq!(candy["core_version"].as_str(), Some("0.3.25"));
     assert_eq!(
         candy["core_revision"].as_str(),
-        Some("1e5afb12696d8a33b5d07be27563dee635c78278")
+        Some("293806f65723e3922c0c26baff6c6c77e3afc8c2")
     );
     assert_eq!(candy["wire_line"].as_str(), Some("0.3"));
     assert_eq!(candy["auth_profile"].as_str(), Some("cloud_grant_v1"));

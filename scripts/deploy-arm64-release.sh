@@ -279,6 +279,13 @@ compose stop reverse-proxy cloud-api cloud-identity cloud-auth cloud-worker clou
 mv -f "$new_override" "$release_override"
 migration_started=1
 compose run --rm migrate
+# The entrypoint initializes users only when MySQL creates a fresh data
+# directory. Reconcile release-required grants after every migration so an
+# existing data volume does not depend on its originally mounted init script.
+compose exec -T mysql sh -eu -c '
+	case "$MYSQL_DATABASE" in ""|*[!A-Za-z0-9_]*) exit 1 ;; esac
+	exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "GRANT DELETE ON \`$MYSQL_DATABASE\`.\`runtime_projection_transport_catalog\` TO '\''cloud_auth'\''@'\''%'\''"
+'
 compose up -d
 
 # The reverse proxy serves a Compose-managed named volume. Docker initializes

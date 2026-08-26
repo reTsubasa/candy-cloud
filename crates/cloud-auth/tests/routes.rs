@@ -74,6 +74,7 @@ fn device_actor(
 struct RecordingEnrollmentService {
     challenges: Mutex<Vec<EnrollmentChallengeCommand>>,
     completions: Mutex<Vec<EnrollmentCompleteCommand>>,
+    complete_error: Mutex<Option<EnrollmentCoordinatorError>>,
 }
 
 struct RecordingRuntimeConfigurationService {
@@ -209,6 +210,9 @@ impl EnrollmentHttpService for RecordingEnrollmentService {
     ) -> ServiceFuture<'_, Result<EnrollmentCompleteReceipt, EnrollmentCoordinatorError>> {
         Box::pin(async move {
             self.completions.lock().unwrap().push(command);
+            if let Some(error) = *self.complete_error.lock().unwrap() {
+                return Err(error);
+            }
             Ok(EnrollmentCompleteReceipt {
                 device_id: Uuid::from_bytes([4; 16]),
                 device_key_id: Uuid::from_bytes([5; 16]),
@@ -293,6 +297,36 @@ async fn public_enrollment_complete_decodes_proof_and_encodes_certificate() {
     assert!(response_body
         .windows(b"+/8=".len())
         .any(|item| item == b"+/8="));
+}
+
+#[tokio::test]
+async fn public_enrollment_complete_preserves_repository_unavailable_contract() {
+    let service = Arc::new(RecordingEnrollmentService {
+        complete_error: Mutex::new(Some(EnrollmentCoordinatorError::Unavailable)),
+        ..Default::default()
+    });
+    let app = enrollment_app(service);
+    let challenge_id = Uuid::new_v4();
+    let proof = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, [9; 64]);
+    let body = format!(
+        r#"{{"challenge_id":"{challenge_id}","request_id":"complete-unavailable","operational_proof":"{proof}"}}"#
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/enrollment/complete")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let response_body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(response_body.as_ref(), br#"{"code":"service_unavailable"}"#);
 }
 
 #[tokio::test]

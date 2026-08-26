@@ -34,6 +34,7 @@ for required in \
 	'compose stop reverse-proxy cloud-api cloud-identity cloud-auth cloud-worker cloud-web' \
 	'compose up -d --no-deps --force-recreate' \
 	'compose run --rm migrate' \
+	'GRANT DELETE ON \`$MYSQL_DATABASE\`.\`runtime_projection_transport_catalog\`' \
 	'web_source_container=$(docker create "$web_image")' \
 	'docker cp "$web_source_container:/srv/." "$web_stage/"' \
 	'--volumes-from "$web_container"' \
@@ -67,11 +68,18 @@ assert_before 'trap '\''on_exit $?'\'' EXIT' 'transaction_started=1'
 assert_before 'transaction_started=1' 'compose run --rm migrate'
 assert_before 'compose stop reverse-proxy cloud-api cloud-identity cloud-auth cloud-worker cloud-web' 'compose run --rm migrate'
 assert_before 'migration_started=1' 'compose run --rm migrate'
+assert_before 'compose run --rm migrate' 'GRANT DELETE ON \`$MYSQL_DATABASE\`.\`runtime_projection_transport_catalog\`'
+reconcile_line=$(line_of 'GRANT DELETE ON \`$MYSQL_DATABASE\`.\`runtime_projection_transport_catalog\`')
+start_line=$(grep -n '^[[:space:]]*compose up -d$' "$script" | cut -d: -f1)
+[ -n "$reconcile_line" ] && [ -n "$start_line" ] && [ "$reconcile_line" -lt "$start_line" ] || {
+	echo "deploy_arm64_release: privilege reconciliation must precede service startup" >&2
+	exit 1
+}
 
 for workflow in "$arm_workflow" "$x86_workflow"; do
-	grep -F 'CORE_MODULE_VERSION: 0.3.23' "$workflow" >/dev/null
-	grep -F 'CORE_MODULE_INPUT_TAG: core-v0.3.23' "$workflow" >/dev/null
-	grep -F 'RUNTIME_RELEASE_TAG: runtime-v0.4.0-r62' "$workflow" >/dev/null
+	grep -F 'CORE_MODULE_VERSION: 0.3.25' "$workflow" >/dev/null
+	grep -F 'CORE_MODULE_INPUT_TAG: core-v0.3.25' "$workflow" >/dev/null
+	grep -F 'RUNTIME_RELEASE_TAG: runtime-v0.4.0-r66' "$workflow" >/dev/null
 	grep -F 'runtime:{release_tag:$runtime_release_tag}' "$workflow" >/dev/null
 done
 

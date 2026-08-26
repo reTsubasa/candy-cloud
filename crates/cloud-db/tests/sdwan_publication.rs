@@ -62,6 +62,190 @@ fn publication(tenant_id: Uuid, segment_id: Uuid) -> SegmentPublicationWrite {
     }
 }
 
+#[tokio::test]
+async fn tunnel_host_catalog_contains_remote_route_owners_and_excludes_local_projection() {
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        return;
+    };
+    let pool = cloud_db::connect(&url).await.unwrap();
+    cloud_db::migrate(&pool).await.unwrap();
+    let organization_id = Uuid::new_v4();
+    let tenant_id = Uuid::new_v4();
+    let segment_id = Uuid::new_v4();
+    let node_pool_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO organizations (id, name) VALUES (?, ?)")
+        .bind(organization_id)
+        .bind(format!("catalog-org-{organization_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tenants (id, organization_id, name) VALUES (?, ?, ?)")
+        .bind(tenant_id)
+        .bind(organization_id)
+        .bind(format!("catalog-tenant-{tenant_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO node_pools (id, tenant_id, service_class, name, audience) VALUES (?, ?, 'PRIVATE', ?, 'private')")
+        .bind(node_pool_id)
+        .bind(tenant_id)
+        .bind(format!("catalog-pool-{node_pool_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO segments (id, tenant_id, name, hub_node_pool_id, overlay_network, overlay_prefix_len) VALUES (?, ?, ?, ?, ?, 24)")
+        .bind(segment_id)
+        .bind(tenant_id)
+        .bind(format!("catalog-segment-{segment_id}"))
+        .bind(node_pool_id)
+        .bind([100_u8, 64, 0, 0].as_slice())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    struct SiteFixture {
+        site_id: Uuid,
+        attachment_id: Uuid,
+        device_id: Uuid,
+        device_key_id: Uuid,
+        node_id: Uuid,
+    }
+    let sites = (0..3)
+        .map(|_| SiteFixture {
+            site_id: Uuid::new_v4(),
+            attachment_id: Uuid::new_v4(),
+            device_id: Uuid::new_v4(),
+            device_key_id: Uuid::new_v4(),
+            node_id: Uuid::new_v4(),
+        })
+        .collect::<Vec<_>>();
+    for (index, site) in sites.iter().enumerate() {
+        sqlx::query("INSERT INTO sites (id, tenant_id, name) VALUES (?, ?, ?)")
+            .bind(site.site_id)
+            .bind(tenant_id)
+            .bind(format!("catalog-site-{}", site.site_id))
+            .execute(&pool)
+            .await
+            .unwrap();
+        if index != 0 {
+            sqlx::query("INSERT INTO site_prefixes (id, tenant_id, site_id, network, prefix_len, state) VALUES (?, ?, ?, ?, 24, 'ACTIVE')")
+                .bind(Uuid::new_v4())
+                .bind(tenant_id)
+                .bind(site.site_id)
+                .bind([10_u8, u8::try_from(index).unwrap(), 0, 0].as_slice())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO devices (id, tenant_id, device_id, display_name, status) VALUES (?, ?, ?, ?, 'ACTIVE')")
+            .bind(site.device_id)
+            .bind(tenant_id)
+            .bind(Uuid::new_v4().to_string())
+            .bind(format!("catalog-device-{}", site.device_id))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO device_keys (id, tenant_id, device_id, key_id, public_key, status) VALUES (?, ?, ?, ?, ?, 'ACTIVE')")
+            .bind(site.device_key_id)
+            .bind(tenant_id)
+            .bind(site.device_id)
+            .bind(format!("catalog-key-{}", site.device_key_id))
+            .bind([u8::try_from(index + 1).unwrap(); 32].as_slice())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (id, tenant_id, device_id, device_key_id, node_pool_id, node_id, status) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')")
+            .bind(site.node_id)
+            .bind(tenant_id)
+            .bind(site.device_id)
+            .bind(site.device_key_id)
+            .bind(node_pool_id)
+            .bind(format!("catalog-node-{}", site.node_id))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO segment_attachments (id, tenant_id, segment_id, site_id, principal_kind, device_id, device_key_id, overlay_router_ipv4, state, epoch_floor) VALUES (?, ?, ?, ?, 'DEVICE', ?, ?, ?, 'ACTIVE', 1)")
+            .bind(site.attachment_id)
+            .bind(tenant_id)
+            .bind(segment_id)
+            .bind(site.site_id)
+            .bind(site.device_id)
+            .bind(site.device_key_id)
+            .bind([100_u8, 64, 0, u8::try_from(index + 1).unwrap()].as_slice())
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let local = &sites[0];
+    let mut write = publication(tenant_id, segment_id);
+    write.expires_at = 4_102_441_200;
+    write.stale_until = 4_102_444_800;
+    write.projections = sites
+        .iter()
+        .enumerate()
+        .map(|(index, site)| SiteProjectionPublicationWrite {
+            publication_id: Uuid::new_v4(),
+            projection_id: site.attachment_id,
+            tenant_id,
+            segment_id,
+            site_id: site.site_id,
+            attachment_id: site.attachment_id,
+            device_id: site.device_id,
+            device_key_id: site.device_key_id,
+            segment_generation: write.generation,
+            segment_content_hash: write.snapshot.content_hash,
+            projection_generation: 1,
+            previous_hash: [0; 32],
+            object: signed(u8::try_from(index + 20).unwrap()),
+            transport_nodes: vec![(local.node_id, local.device_key_id)],
+            runtime_paths: sites
+                .iter()
+                .filter(|peer| peer.attachment_id != site.attachment_id)
+                .map(|peer| RuntimeProjectionPathCatalogWrite {
+                    candidate_id: Uuid::new_v4(),
+                    peer_attachment_id: peer.attachment_id,
+                    path_kind: RuntimePathKind::Direct,
+                })
+                .collect(),
+        })
+        .collect();
+    let local_projection_envelope = write.projections[0].object.signed_envelope.clone();
+    assert_eq!(
+        SdwanRepository::new(pool.clone())
+            .publish(&write)
+            .await
+            .unwrap(),
+        PublicationOutcome::Published
+    );
+
+    let RuntimeConfigurationState::Current(configuration) = SdwanRepository::new(pool)
+        .current_runtime_configuration(&RuntimeConfigurationLookup {
+            tenant_id,
+            device_id: local.device_id,
+            device_key_id: local.device_key_id,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected tunnel-host Runtime configuration");
+    };
+    assert_eq!(
+        configuration.signed_projection_envelope,
+        local_projection_envelope
+    );
+    let catalog_ids = configuration
+        .peer_projection_catalog
+        .iter()
+        .map(|projection| projection.projection_id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        catalog_ids,
+        std::collections::HashSet::from([sites[1].attachment_id, sites[2].attachment_id,])
+    );
+    assert!(!catalog_ids.contains(&local.attachment_id));
+}
+
 fn control_resource(
     tenant_id: Uuid,
     id: Uuid,

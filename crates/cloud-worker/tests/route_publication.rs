@@ -183,28 +183,46 @@ fn fixture() -> RoutePublicationInput {
         expires_at: 1_800_003_600,
         stale_until: 1_800_007_200,
         projections: vec![
-            projection(
-                0x80,
-                local_attachment,
-                local_site,
-                remote_site,
-                remote_attachment,
-                DeviceId([0x30; 16]),
-                DeviceKeyId([0x40; 16]),
-                0x60,
-                peer(remote_site, remote_attachment, 0x90, 0x61),
-            ),
-            projection(
-                0x81,
-                remote_attachment,
-                remote_site,
-                local_site,
-                local_attachment,
-                DeviceId([0x31; 16]),
-                DeviceKeyId([0x41; 16]),
-                0x62,
-                peer(local_site, local_attachment, 0x91, 0x63),
-            ),
+            {
+                let mut projection = projection(
+                    0x80,
+                    local_attachment,
+                    local_site,
+                    remote_site,
+                    remote_attachment,
+                    DeviceId([0x30; 16]),
+                    DeviceKeyId([0x40; 16]),
+                    0x60,
+                    peer(remote_site, remote_attachment, 0x90, 0x61),
+                );
+                projection.peer_paths.push(peer(
+                    tunnel_host_site,
+                    tunnel_host_attachment,
+                    0x94,
+                    0x67,
+                ));
+                projection
+            },
+            {
+                let mut projection = projection(
+                    0x81,
+                    remote_attachment,
+                    remote_site,
+                    local_site,
+                    local_attachment,
+                    DeviceId([0x31; 16]),
+                    DeviceKeyId([0x41; 16]),
+                    0x62,
+                    peer(local_site, local_attachment, 0x91, 0x63),
+                );
+                projection.peer_paths.push(peer(
+                    tunnel_host_site,
+                    tunnel_host_attachment,
+                    0x95,
+                    0x68,
+                ));
+                projection
+            },
             DeviceProjectionInput {
                 publication_id: Uuid::from_bytes([0x82; 16]),
                 attachment_id: tunnel_host_attachment,
@@ -235,7 +253,7 @@ fn fixture() -> RoutePublicationInput {
 
 #[test]
 #[ignore = "requires CANDY_CORE_INTEROP_MODULE"]
-fn builds_and_verifies_direct_first_v1_publication() {
+fn builds_and_verifies_multi_owner_tunnel_host_publication() {
     let key = SigningKey::from_bytes(&[0x77; 32]);
     let core = real_core();
     let built = build_route_publication(
@@ -264,6 +282,18 @@ fn builds_and_verifies_direct_first_v1_publication() {
         .find(|projection| projection.sealed.source.local_prefixes.is_empty())
         .unwrap();
     assert_eq!(tunnel_host.sealed.source.peer_paths.len(), 2);
+    for route_owner in built
+        .projections
+        .iter()
+        .filter(|projection| !projection.sealed.source.local_prefixes.is_empty())
+    {
+        assert!(route_owner
+            .sealed
+            .source
+            .peer_paths
+            .iter()
+            .any(|path| { path.peer_attachment_id == tunnel_host.sealed.source.attachment_id }));
+    }
 }
 
 #[test]

@@ -142,7 +142,8 @@ impl RuntimeConfigurationRecord {
             || self.peer_projection_catalog.len() > MAX_PROJECTIONS
             || self.compatibility_generations.len() > MAX_COMPATIBILITY_GENERATIONS
             || self.peer_projection_catalog.iter().any(|projection| {
-                projection.projection_id.is_nil()
+                projection.projection_id == self.projection_id
+                    || projection.projection_id.is_nil()
                     || projection.projection_generation == 0
                     || projection.projection_content_hash == [0; 32]
                     || projection.signed_projection_envelope.is_empty()
@@ -1695,13 +1696,14 @@ async fn load_current_runtime_configuration(
     let projection_id: Uuid = row.try_get("projection_id")?;
     let segment_generation: u64 = row.try_get("segment_generation")?;
     let catalog_rows = sqlx::query(
-        "SELECT p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope FROM nodes n JOIN runtime_projection_transport_catalog catalog ON catalog.transport_node_id = n.id AND catalog.transport_node_key_id = n.device_key_id AND catalog.tenant_id = n.tenant_id JOIN site_route_projection_publications p ON p.id = catalog.projection_publication_id AND p.tenant_id = catalog.tenant_id AND p.segment_id = catalog.segment_id AND p.segment_generation = catalog.segment_generation AND p.projection_id = catalog.projection_id WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' AND catalog.segment_id = ? AND catalog.segment_generation = ? ORDER BY p.projection_id, p.projection_generation",
+        "SELECT p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope FROM nodes n JOIN runtime_projection_transport_catalog catalog ON catalog.transport_node_id = n.id AND catalog.transport_node_key_id = n.device_key_id AND catalog.tenant_id = n.tenant_id JOIN site_route_projection_publications p ON p.id = catalog.projection_publication_id AND p.tenant_id = catalog.tenant_id AND p.segment_id = catalog.segment_id AND p.segment_generation = catalog.segment_generation AND p.projection_id = catalog.projection_id WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' AND catalog.segment_id = ? AND catalog.segment_generation = ? AND p.projection_id <> ? ORDER BY p.projection_id, p.projection_generation",
     )
     .bind(lookup.tenant_id)
     .bind(lookup.device_id)
     .bind(lookup.device_key_id)
     .bind(segment_id)
     .bind(segment_generation)
+    .bind(projection_id)
     .fetch_all(&mut **transaction)
     .await?;
     if catalog_rows.len() > MAX_PROJECTIONS {

@@ -335,13 +335,13 @@ impl ControlRoutePublisher {
             .map(|(_, path)| path.clone())
             .collect::<Vec<_>>();
         validate_direct_dialers(&path_values, &attachment_nodes, &known_nodes)?;
-        let routable_paths = paths
+        let route_owner_paths = paths
             .iter()
             .filter(|(_, path)| path_targets_route_owner(path, &route_owner_attachment_ids))
             .collect::<Vec<_>>();
         let participating_attachment_ids = participating_attachments(
             &route_owner_attachment_ids,
-            routable_paths.iter().map(|item| &item.1),
+            route_owner_paths.iter().map(|item| &item.1),
         );
         for attachment in &mut core_attachments {
             if attachment.state == AttachmentState::Active
@@ -351,18 +351,22 @@ impl ControlRoutePublisher {
                 attachment.state = AttachmentState::Revoked;
             }
         }
-        let omitted_paths = paths.len().saturating_sub(routable_paths.len());
+        let participating_paths = paths
+            .iter()
+            .filter(|(_, path)| path_connects_participants(path, &participating_attachment_ids))
+            .collect::<Vec<_>>();
+        let omitted_paths = paths.len().saturating_sub(participating_paths.len());
         if omitted_paths > 0 {
             tracing::info!(
-                event = "route_publication_non_owner_paths_omitted",
+                event = "route_publication_non_participant_paths_omitted",
                 tenant_id = %snapshot.tenant_id,
                 segment_id = %snapshot.segment_id,
                 omitted_paths,
-                "omitted peer paths that cannot carry a published site prefix"
+                "omitted peer paths outside the published attachment set"
             );
         }
         let mut path_map: HashMap<Uuid, Vec<QuotaBoundPeerPathCandidate>> = HashMap::new();
-        for (resource, value) in &routable_paths {
+        for (resource, value) in &participating_paths {
             let (_, peer_attachment) = attachment_ids
                 .get(&value.destination_attachment_id)
                 .copied()
@@ -485,11 +489,11 @@ impl ControlRoutePublisher {
             let site = SiteId(attachment.site_id.into_bytes());
             let mut peer_paths = Vec::new();
             let mut outbound_rate_limits_bytes_per_second = Vec::new();
-            for (path_resource, path) in &routable_paths {
+            for (path_resource, path) in &participating_paths {
                 if path_belongs_to_projection(
                     resource.metadata.id,
                     path,
-                    &route_owner_attachment_ids,
+                    &participating_attachment_ids,
                 ) {
                     let candidates = path_map
                         .get(&path_resource.metadata.id)
@@ -666,21 +670,44 @@ fn path_targets_route_owner(
 fn path_belongs_to_projection(
     source_attachment_id: Uuid,
     path: &cloud_control::PathCandidateV1,
-    route_owner_attachment_ids: &HashSet<Uuid>,
+    participating_attachment_ids: &HashSet<Uuid>,
 ) -> bool {
     path.source_attachment_id == source_attachment_id
-        && path_targets_route_owner(path, route_owner_attachment_ids)
+        && path_connects_participants(path, participating_attachment_ids)
+}
+
+fn path_connects_participants(
+    path: &cloud_control::PathCandidateV1,
+    participating_attachment_ids: &HashSet<Uuid>,
+) -> bool {
+    participating_attachment_ids.contains(&path.source_attachment_id)
+        && participating_attachment_ids.contains(&path.destination_attachment_id)
 }
 
 fn participating_attachments<'a>(
     route_owner_attachment_ids: &HashSet<Uuid>,
-    routable_paths: impl Iterator<Item = &'a cloud_control::PathCandidateV1>,
+    route_owner_paths: impl Iterator<Item = &'a cloud_control::PathCandidateV1>,
 ) -> HashSet<Uuid> {
-    route_owner_attachment_ids
-        .iter()
-        .copied()
-        .chain(routable_paths.map(|path| path.source_attachment_id))
-        .collect()
+    let mut participants = route_owner_attachment_ids.clone();
+    let mut destinations_by_source = HashMap::<Uuid, HashSet<Uuid>>::new();
+    for path in route_owner_paths {
+        if route_owner_attachment_ids.contains(&path.destination_attachment_id) {
+            destinations_by_source
+                .entry(path.source_attachment_id)
+                .or_default()
+                .insert(path.destination_attachment_id);
+        }
+    }
+    for (source, destinations) in destinations_by_source {
+        if !route_owner_attachment_ids.contains(&source)
+            && route_owner_attachment_ids
+                .iter()
+                .all(|owner| destinations.contains(owner))
+        {
+            participants.insert(source);
+        }
+    }
+    participants
 }
 
 fn validate_direct_dialers(
@@ -939,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn three_attachment_projections_only_keep_paths_to_route_owners() {
+    fn three_attachment_projections_keep_full_paths_between_participants() {
         let hangzhou = Uuid::from_bytes([3; 16]);
         let hong_kong = Uuid::from_bytes([4; 16]);
         let no_prefix_node = Uuid::from_bytes([5; 16]);
@@ -954,16 +981,23 @@ mod tests {
             direct_path(peer, hong_kong, no_prefix_node, transport_node),
             direct_path(peer, no_prefix_node, hong_kong, transport_node),
         ];
+        let all_participants = HashSet::from([hangzhou, hong_kong, no_prefix_node]);
         let destinations_for = |source| {
             paths
                 .iter()
-                .filter(|path| path_belongs_to_projection(source, path, &route_owners))
+                .filter(|path| path_belongs_to_projection(source, path, &all_participants))
                 .map(|path| path.destination_attachment_id)
                 .collect::<HashSet<_>>()
         };
 
-        assert_eq!(destinations_for(hangzhou), HashSet::from([hong_kong]));
-        assert_eq!(destinations_for(hong_kong), HashSet::from([hangzhou]));
+        assert_eq!(
+            destinations_for(hangzhou),
+            HashSet::from([hong_kong, no_prefix_node])
+        );
+        assert_eq!(
+            destinations_for(hong_kong),
+            HashSet::from([hangzhou, no_prefix_node])
+        );
         assert_eq!(
             destinations_for(no_prefix_node),
             HashSet::from([hangzhou, hong_kong])
@@ -976,6 +1010,14 @@ mod tests {
                     .filter(|path| path_targets_route_owner(path, &route_owners)),
             ),
             HashSet::from([hangzhou, hong_kong, no_prefix_node])
+        );
+
+        let partial_non_owner_paths = paths[..4]
+            .iter()
+            .filter(|path| path_targets_route_owner(path, &route_owners));
+        assert_eq!(
+            participating_attachments(&route_owners, partial_non_owner_paths),
+            HashSet::from([hangzhou, hong_kong])
         );
 
         let active_paths = paths[..2].iter();

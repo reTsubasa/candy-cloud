@@ -749,7 +749,7 @@ pub enum RoutePublicationError {
     IncompleteProjectionSet,
     #[error("projection does not bind the selected DeviceAttachment")]
     ProjectionAttachmentMismatch,
-    #[error("projection contains a peer path that owns no remote route")]
+    #[error("projection has a remote route owner without a peer path")]
     UnroutablePeerPath,
     #[error("expansion object does not bind the selected Segment publication")]
     ExpansionScopeMismatch,
@@ -848,7 +848,7 @@ pub fn build_route_publication(
         if remote_routes.is_empty() {
             return Err(RoutePublicationError::MissingReverseRoute);
         }
-        if !peer_paths_reference_remote_route_owners(&remote_routes, &plan.peer_paths) {
+        if !peer_paths_cover_remote_route_owners(&remote_routes, &plan.peer_paths) {
             return Err(RoutePublicationError::UnroutablePeerPath);
         }
         let sealed = signer.sign_site_projection(SiteRouteProjectionV1 {
@@ -893,17 +893,20 @@ pub fn build_route_publication(
     })
 }
 
-fn peer_paths_reference_remote_route_owners(
+fn peer_paths_cover_remote_route_owners(
     remote_routes: &[RemoteRouteV1],
     peer_paths: &[PeerPathCandidateV1],
 ) -> bool {
-    let route_owners = remote_routes
+    let peer_attachments = peer_paths
         .iter()
-        .flat_map(|route| route.owner_attachment_ids.iter())
+        .map(|path| (path.peer_site_id, path.peer_attachment_id))
         .collect::<std::collections::HashSet<_>>();
-    peer_paths
-        .iter()
-        .all(|path| route_owners.contains(&path.peer_attachment_id))
+    remote_routes.iter().all(|route| {
+        route
+            .owner_attachment_ids
+            .iter()
+            .all(|attachment_id| peer_attachments.contains(&(route.owner_site_id, *attachment_id)))
+    })
 }
 
 fn compile_routes(
@@ -961,10 +964,14 @@ mod tests {
     use super::*;
     use crate::route_types::{NodePoolId, PolicyRefV1, SiteId};
 
-    fn path(peer_attachment_id: AttachmentId, candidate: u8) -> PeerPathCandidateV1 {
+    fn path(
+        peer_site_id: SiteId,
+        peer_attachment_id: AttachmentId,
+        candidate: u8,
+    ) -> PeerPathCandidateV1 {
         PeerPathCandidateV1 {
             candidate_id: crate::route_types::PathCandidateId([candidate; 16]),
-            peer_site_id: SiteId([candidate.wrapping_add(1); 16]),
+            peer_site_id,
             peer_attachment_id,
             kind: crate::route_types::PeerPathKindV1::Direct,
             relay_node: None,
@@ -990,22 +997,30 @@ mod tests {
     }
 
     #[test]
-    fn peer_paths_must_reference_a_remote_route_owner() {
+    fn peer_paths_must_cover_remote_route_owners_and_may_include_tunnel_hosts() {
         let route_owner = AttachmentId([1; 16]);
         let no_prefix_attachment = AttachmentId([2; 16]);
+        let route_owner_site = SiteId([3; 16]);
         let routes = [RemoteRouteV1 {
             destination_prefix: Ipv4PrefixV1::new([192, 168, 1, 0], 24).unwrap(),
-            owner_site_id: SiteId([3; 16]),
+            owner_site_id: route_owner_site,
             owner_attachment_ids: vec![route_owner],
         }];
 
-        assert!(peer_paths_reference_remote_route_owners(
+        assert!(peer_paths_cover_remote_route_owners(
             &routes,
-            &[path(route_owner, 10), path(route_owner, 11)]
+            &[
+                path(route_owner_site, route_owner, 10),
+                path(SiteId([4; 16]), no_prefix_attachment, 11),
+            ]
         ));
-        assert!(!peer_paths_reference_remote_route_owners(
+        assert!(!peer_paths_cover_remote_route_owners(
             &routes,
-            &[path(route_owner, 10), path(no_prefix_attachment, 12)]
+            &[path(SiteId([4; 16]), no_prefix_attachment, 12)]
+        ));
+        assert!(!peer_paths_cover_remote_route_owners(
+            &routes,
+            &[path(SiteId([9; 16]), route_owner, 13)]
         ));
     }
 }
