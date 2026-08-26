@@ -300,7 +300,7 @@ impl ControlRepository {
 
     pub async fn readiness_check(&self) -> Result<(), ControlStoreError> {
         let migration_ready: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version = 26 AND success = TRUE)",
+            "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version = 27 AND success = TRUE)",
         )
         .fetch_one(&self.pool)
         .await?;

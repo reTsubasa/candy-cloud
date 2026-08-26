@@ -135,9 +135,20 @@ fn revoked_attachment_does_not_reserve_overlay_address_forever() {
 }
 
 #[test]
-fn control_plane_readiness_requires_the_latest_telemetry_migration() {
+fn control_plane_readiness_requires_the_latest_migration() {
     let source = include_str!("../src/control.rs");
-    assert!(source.contains("_sqlx_migrations WHERE version = 26 AND success = TRUE"));
+    assert!(source.contains("_sqlx_migrations WHERE version = 27 AND success = TRUE"));
+}
+
+#[test]
+fn complete_peer_catalog_migration_republishes_every_active_segment() {
+    let migration = include_str!("../migrations/0027_republish_complete_peer_catalogs.sql");
+    assert!(migration.contains("complete_peer_catalog_refresh_segments"));
+    assert!(migration.contains("segment.state = 'ACTIVE'"));
+    assert!(migration.contains("head.desired_revision + 1"));
+    assert!(migration.contains("INSERT INTO segment_generation_jobs"));
+    assert!(migration.contains("candy/complete-peer-catalog-v1/"));
+    assert!(!migration.contains("UPDATE sdwan_control_resources"));
 }
 
 #[test]
