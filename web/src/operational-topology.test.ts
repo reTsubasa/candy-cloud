@@ -107,12 +107,66 @@ describe('operational topology', () => {
     expect(snapshot.staleNodeCount).toBe(1);
     expect(snapshot.dataPlaneActiveNodeCount).toBe(1);
     expect(snapshot.telemetryCoverageCount).toBe(1);
-    expect(snapshot.activeLinkCount).toBe(1);
+    expect(snapshot.activeLinkCount).toBe(0);
+    expect(snapshot.links[0].activeDirectionCount).toBe(1);
     expect(snapshot.links[0].activePathCount).toBe(1);
     expect(snapshot.links[0].activePaths[0].sourceSiteId).toBe('site-a');
+    expect(snapshot.links[0].activePaths[0].destinationSiteId).toBe('site-b');
     expect(snapshot.links[0].activePaths[0].sampledAt).toBe(active.reported_at);
     expect(snapshot.averageRttMs).toBe(42);
     expect(snapshot.averagePacketLossPpm).toBe(12_500);
     expect(snapshot.rxBps).toBe(20_000_000);
+  });
+
+  it('marks a link active only with fresh telemetry in both endpoint directions', () => {
+    const now = Date.parse('2026-08-18T10:00:00Z');
+    const path = {
+      candidate_id: null, path_kind: 'direct' as const, transport: 'quic_udp', connection_epoch: 3,
+      rtt_ms: 42, jitter_ms: 7, packet_loss_ppm: 0, rx_bps: 20_000, tx_bps: 10_000,
+      reconnects: 0, path_changes: 0,
+    };
+    const base: RuntimeTelemetry = {
+      device_id: 'device-a', device_key_id: 'key-a', boot_id: 'boot-a', sequence: 1,
+      lifecycle: 'active', configured_peers: 1, active_peers: 1,
+      required_route_owners: 1, ready_route_owners: 1, fail_open_required: false,
+      last_error_code: null, rtt_ms: 42, jitter_ms: 7, packet_loss_ppm: 0,
+      rx_bps: 20_000, tx_bps: 10_000, reconnects: 0, path_changes: 0,
+      paths: [{ ...path, peer_attachment_id: 'attachment-b' }], local_networks: [],
+      reported_at: '2026-08-18T09:59:50Z',
+    };
+    const reverse: RuntimeTelemetry = {
+      ...base, device_id: 'device-b', device_key_id: 'key-b', boot_id: 'boot-b',
+      paths: [{ ...path, peer_attachment_id: 'attachment-a' }],
+    };
+    const snapshot = buildOperationalTopology(fixture(), [], {}, 'segment', [base, reverse], 90, now);
+    expect(snapshot.activeLinkCount).toBe(1);
+    expect(snapshot.links[0].activeDirectionCount).toBe(2);
+    expect(snapshot.links[0].activePaths.map((item) => [item.sourceSiteId, item.destinationSiteId])).toEqual([
+      ['site-a', 'site-b'], ['site-b', 'site-a'],
+    ]);
+  });
+
+  it('does not attach telemetry from a third site to an unrelated peer edge', () => {
+    const thirdSite = resource('site-c', 'SITE', { name: '纽约', kind: 'PRIVATE_CLOUD' });
+    const thirdNode = resource('node-c', 'NODE', { display_name: '纽约节点', site_id: 'site-c', device_id: 'device-c', device_key_id: 'key-c' });
+    const thirdAttachment = resource('attachment-c', 'ATTACHMENT', { segment_id: 'segment', site_id: 'site-c', node_id: 'node-c' });
+    const telemetry: RuntimeTelemetry = {
+      device_id: 'device-c', device_key_id: 'key-c', boot_id: 'boot-c', sequence: 1,
+      lifecycle: 'active', configured_peers: 1, active_peers: 1,
+      required_route_owners: 1, ready_route_owners: 1, fail_open_required: false,
+      last_error_code: null, rtt_ms: 30, jitter_ms: 2, packet_loss_ppm: 0,
+      rx_bps: 100, tx_bps: 100, reconnects: 0, path_changes: 0,
+      paths: [{ peer_attachment_id: 'attachment-b', candidate_id: null, path_kind: 'direct', transport: 'quic_udp', connection_epoch: 1, rtt_ms: 30, jitter_ms: 2, packet_loss_ppm: 0, rx_bps: 100, tx_bps: 100, reconnects: 0, path_changes: 0 }],
+      local_networks: [], reported_at: '2026-08-18T09:59:50Z',
+    };
+    const resources = fixture();
+    const snapshot = buildOperationalTopology({
+      ...resources,
+      sites: [...resources.sites, thirdSite],
+      nodes: [...resources.nodes, thirdNode],
+      attachments: [...resources.attachments, thirdAttachment],
+    }, [], {}, 'segment', [telemetry], 90, Date.parse('2026-08-18T10:00:00Z'));
+    expect(snapshot.links[0].activePathCount).toBe(0);
+    expect(snapshot.links[0].state).toBe('pending');
   });
 });

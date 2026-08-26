@@ -44,6 +44,7 @@ export type OperationalSite = {
 
 export type OperationalPathTelemetry = RuntimePathTelemetry & {
   sourceSiteId: string;
+  destinationSiteId: string;
   sourceNodeName: string;
   sampledAt: string;
 };
@@ -55,6 +56,7 @@ export type OperationalLink = {
   directionCount: number;
   kindLabel: string;
   state: 'active' | 'pending';
+  activeDirectionCount: number;
   activePathCount: number;
   activePaths: OperationalPathTelemetry[];
 };
@@ -219,29 +221,35 @@ export function buildOperationalTopology(
     .map((peer) => {
       const paths = resources.paths.filter((path) => value(path, 'peer_id') === peer.metadata.id && segmentMatches(path));
       const kinds = new Set(paths.map((path) => value(path, 'kind')));
-      const peerAttachmentIds = new Set(
-        selectedAttachments
-          .filter((attachment) => value(attachment, 'site_id') === value(peer, 'site_a_id') || value(attachment, 'site_id') === value(peer, 'site_b_id'))
-          .map((attachment) => attachment.metadata.id),
-      );
+      const siteAId = value(peer, 'site_a_id');
+      const siteBId = value(peer, 'site_b_id');
+      const attachmentIdsBySite = new Map([
+        [siteAId, new Set(selectedAttachments.filter((attachment) => value(attachment, 'site_id') === siteAId).map((attachment) => attachment.metadata.id))],
+        [siteBId, new Set(selectedAttachments.filter((attachment) => value(attachment, 'site_id') === siteBId).map((attachment) => attachment.metadata.id))],
+      ]);
       const activePaths: OperationalPathTelemetry[] = nodes.flatMap((node) => {
-        if (!node.dataPlaneActive) return [];
+        if (!node.dataPlaneActive || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
+        const destinationSiteId = node.siteId === siteAId ? siteBId : siteAId;
+        const destinationAttachmentIds = attachmentIdsBySite.get(destinationSiteId) ?? new Set<string>();
         return (node.telemetry?.paths ?? [])
-          .filter((path) => peerAttachmentIds.has(path.peer_attachment_id))
+          .filter((path) => destinationAttachmentIds.has(path.peer_attachment_id))
           .map((path) => ({
             ...path,
             sourceSiteId: node.siteId,
+            destinationSiteId,
             sourceNodeName: node.name,
             sampledAt: node.telemetry?.reported_at ?? '',
           }));
       });
+      const activeDirectionCount = new Set(activePaths.map((path) => `${path.sourceSiteId}:${path.destinationSiteId}`)).size;
       return {
         id: peer.metadata.id,
-        siteAId: value(peer, 'site_a_id'),
-        siteBId: value(peer, 'site_b_id'),
+        siteAId,
+        siteBId,
         directionCount: Math.min(2, paths.length),
         kindLabel: kinds.has('RELAY') ? '中继' : '直连',
-        state: activePaths.length > 0 ? 'active' : 'pending',
+        state: activeDirectionCount === 2 ? 'active' : 'pending',
+        activeDirectionCount,
         activePathCount: activePaths.length,
         activePaths,
       };

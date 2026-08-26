@@ -159,8 +159,8 @@ export function Overview({ session, onOpenLogs }: Props) {
   }, [resources.segments, selectedSegmentId]);
 
   const topology = useMemo(
-    () => buildOperationalTopology(resources, statuses, readiness, selectedSegmentId, telemetry, telemetryStaleAfter),
-    [readiness, resources, selectedSegmentId, statuses, telemetry, telemetryStaleAfter],
+    () => buildOperationalTopology(resources, statuses, readiness, selectedSegmentId, telemetry, telemetryStaleAfter, clock),
+    [clock, readiness, resources, selectedSegmentId, statuses, telemetry, telemetryStaleAfter],
   );
   const controlReady = health.ready.status === 200;
   const resourceErrorCount = Object.keys(resourceErrors).length;
@@ -299,10 +299,6 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
   const siteById = Object.fromEntries(snapshot.sites.map((site, index) => [site.id, { ...site, x: siteX(index) }]));
   return <div className="topology-canvas" aria-label="SD-WAN 运行拓扑">
     <svg viewBox={`0 0 ${width} ${height}`} role="img" style={{ minWidth: width, height }}>
-      <defs>
-        <marker id="topology-arrow-ok" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto-start-reverse"><path d="M0,0 L0,6 L7,3 z" fill="#00a870" /></marker>
-        <marker id="topology-arrow-warn" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto-start-reverse"><path d="M0,0 L0,6 L7,3 z" fill="#d97706" /></marker>
-      </defs>
       <g className={`topology-control-node ${controlReady ? 'ok' : 'error'}`} transform={`translate(${center - 98} 20)`}>
         <rect width="196" height="48" rx="6" /><circle cx="20" cy="24" r="5" /><text x="34" y="21">Candy Cloud</text><text className="sub" x="34" y="36">控制面 · {controlReady ? '正常' : '异常'}</text>
       </g>
@@ -341,23 +337,22 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const tone = link.state === 'active' ? 'ok' : 'warn';
         const telemetryRows = link.activePaths.slice(0, 2).map((path) => {
           const sourceName = siteById[path.sourceSiteId]?.name ?? path.sourceNodeName;
-          const destinationName = path.sourceSiteId === link.siteAId
-            ? (siteById[link.siteBId]?.name ?? '对端')
-            : (siteById[link.siteAId]?.name ?? '对端');
+          const destinationName = siteById[path.destinationSiteId]?.name ?? '对端';
           const age = path.sampledAt ? formatTelemetryAge(path.sampledAt) : '时间未知';
           return `${sourceName} -> ${destinationName}  RTT ${formatMetric(path.rtt_ms, ' ms')}  丢包 ${path.packet_loss_ppm == null ? '—' : `${(path.packet_loss_ppm / 10_000).toFixed(2)}%`}  ↑${formatRate(path.tx_bps)} ↓${formatRate(path.rx_bps)}  ${age}`;
         });
+        const directionLabel = link.activeDirectionCount === 2 ? '双向' : link.activeDirectionCount === 1 ? '单向遥测' : '等待遥测';
         const pathDetail = telemetryRows.length > 0 ? ` · ${telemetryRows.join(' · ')}` : '';
         const labelWidth = 310;
         const labelHeight = telemetryRows.length > 0 ? 42 : 24;
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
-          <title>{link.activePathCount > 0 ? `双向数据面 · ${link.activePathCount} 条路径 · ${link.kindLabel}${pathDetail}` : '双向线路已编排，暂无数据面遥测'}</title>
-          <path aria-label="双向站点数据线路" d={`M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`} markerStart={`url(#topology-arrow-${tone})`} markerEnd={`url(#topology-arrow-${tone})`} />
+          <title>{link.activePathCount > 0 ? `${directionLabel}数据面 · ${link.activePathCount} 条路径 · ${link.kindLabel}${pathDetail}` : '站点线路已编排，暂无数据面遥测'}</title>
+          <path aria-label="站点数据线路" d={`M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`} />
           <rect x={(left.x + right.x) / 2 - labelWidth / 2} y={y - labelHeight / 2} width={labelWidth} height={labelHeight} rx="7" />
           {telemetryRows.length > 0 ? <>
-            <text x={(left.x + right.x) / 2} y={y - 11} textAnchor="middle">双向 · {link.kindLabel} · {link.activePathCount} 条路径</text>
+            <text x={(left.x + right.x) / 2} y={y - 11} textAnchor="middle">{directionLabel} · {link.kindLabel} · {link.activePathCount} 条路径</text>
             {telemetryRows.map((row, index) => <text className="telemetry" key={row} x={(left.x + right.x) / 2} y={y + 4 + index * 12} textAnchor="middle">{ellipsis(row, 72)}</text>)}
-          </> : <text x={(left.x + right.x) / 2} y={y + 4} textAnchor="middle">双向 · {link.kindLabel} · 暂无遥测</text>}
+          </> : <text x={(left.x + right.x) / 2} y={y + 4} textAnchor="middle">{link.kindLabel} · 暂无遥测</text>}
         </g>;
       })}
       <g className="topology-legend" transform={`translate(${center - 225} ${height - 24})`}>
