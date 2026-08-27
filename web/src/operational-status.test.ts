@@ -32,6 +32,17 @@ describe('operational status boundaries', () => {
     expect(nodeOperationalStatus(node({ failOpenRequired: true }))).toMatchObject({ code: 'fail_open', tone: 'red' });
   });
 
+  it('includes the translated cause and counter evidence in a node fault', () => {
+    expect(nodeOperationalStatus(node({
+      failOpenRequired: true,
+      runtimeErrorCode: 'all_peer_reads_failed',
+      configuredPeers: 2,
+      activePeers: 1,
+      requiredRouteOwners: 1,
+      readyRouteOwners: 0,
+    })).detail).toContain('所有 Peer 接收路径读取失败（all_peer_reads_failed）；Peer 1/2，路由 0/1');
+  });
+
   it('turns a link green only after fresh bidirectional authentication', () => {
     const configured = { configuredPathCount: 2, activeDirectionCount: 0, staleDirectionCount: 0, policyUpdating: false, configurationFailed: false, endpointFailed: false };
     expect(linkOperationalStatus(configured)).toMatchObject({ code: 'authenticating', tone: 'orange' });
@@ -39,6 +50,11 @@ describe('operational status boundaries', () => {
     expect(linkOperationalStatus({ ...configured, activeDirectionCount: 2 })).toMatchObject({ code: 'active', tone: 'green' });
     expect(linkOperationalStatus({ ...configured, activeDirectionCount: 2, policyUpdating: true })).toMatchObject({ code: 'policy_updating', tone: 'orange' });
     expect(linkOperationalStatus({ ...configured, configurationFailed: true })).toMatchObject({ code: 'configuration_failed', tone: 'red' });
+    expect(linkOperationalStatus({
+      ...configured,
+      activeDirectionCount: 1,
+      missingDirectionLabels: ['香港 -> 美国'],
+    }).detail).toBe('缺少 香港 -> 美国 的认证遥测');
   });
 
   it.each([

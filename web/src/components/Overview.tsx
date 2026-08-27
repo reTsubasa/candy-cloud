@@ -160,17 +160,20 @@ export function Overview({ session, onOpenLogs }: Props) {
     if (controlReady && health.degraded.status !== null && health.degraded.status !== 200) items.push({ tone: 'warn', title: '控制面依赖降级', detail: health.degraded.text || '依赖探针返回异常状态，请在系统页查看具体服务' });
     if (resourceErrorCount > 0) items.push({ tone: 'error', title: '资源读取不完整', detail: `${resourceErrorCount} 类资源读取失败，拓扑仅显示已验证数据` });
     if (!telemetryAvailable) items.push({ tone: 'warn', title: '运行遥测不可用', detail: '无法读取 Runtime 最新状态，在线状态不会被推测' });
-    if (topology.segment && topology.readiness && !topology.readiness.ready) {
-      items.push({ tone: 'warn', title: `${topology.segment.name} 尚未完全激活`, detail: topology.readinessLabel });
-    }
     for (const node of topology.nodes.filter((item) => item.status.tone === 'red')) {
       items.push({ tone: 'error', title: `${node.name} · ${node.status.label}`, detail: node.status.detail });
     }
     for (const link of topology.links.filter((item) => item.status.tone === 'red')) {
-      items.push({ tone: 'error', title: `互联链路 · ${link.status.label}`, detail: link.status.detail });
+      items.push({ tone: 'error', title: `${link.siteAName} ↔ ${link.siteBName} · ${link.status.label}`, detail: link.status.detail });
+    }
+    if (topology.segment && topology.readiness && !topology.readiness.ready) {
+      items.push({ tone: 'warn', title: `${topology.segment.name} 尚未完全激活`, detail: topology.readinessLabel });
     }
     for (const node of topology.nodes.filter((item) => item.status.tone === 'orange')) {
       items.push({ tone: 'warn', title: `${node.name} · ${node.status.label}`, detail: node.status.detail });
+    }
+    for (const link of topology.links.filter((item) => item.status.tone === 'orange')) {
+      items.push({ tone: 'warn', title: `${link.siteAName} ↔ ${link.siteBName} · ${link.status.label}`, detail: link.status.detail });
     }
     return items.slice(0, 6);
   }, [controlReady, health, resourceErrorCount, telemetryAvailable, topology]);

@@ -1,4 +1,5 @@
 import type { RuntimeTelemetry } from './types';
+import { runtimeFailureDetail } from './runtime-error';
 
 export type OperationalTone = 'green' | 'orange' | 'red' | 'gray';
 
@@ -54,6 +55,9 @@ export type LinkOperationalInput = {
   policyUpdating: boolean;
   configurationFailed: boolean;
   endpointFailed: boolean;
+  missingDirectionLabels?: string[];
+  staleDirectionLabels?: string[];
+  failedEndpointLabels?: string[];
 };
 
 export const NODE_STATUS_BOUNDARIES = [
@@ -70,10 +74,16 @@ export const LINK_STATUS_BOUNDARIES = [
 
 export function nodeOperationalStatus(input: NodeOperationalInput): OperationalStatus<NodeOperationalCode> {
   if (!input.registered) return { code: 'unregistered', label: '未注册', detail: 'Cloud 中没有有效的节点身份', tone: 'gray' };
-  if (input.applyState === 'rejected') return { code: 'policy_rejected', label: '策略应用失败', detail: input.errorCode || '节点拒绝了当前策略', tone: 'red' };
-  if (input.failOpenRequired) return { code: 'fail_open', label: '故障开放', detail: input.runtimeErrorCode || 'Candy 数据面已退出，基础网络保持可用', tone: 'red' };
+  const counters = {
+    configuredPeers: input.configuredPeers,
+    activePeers: input.activePeers,
+    requiredRouteOwners: input.requiredRouteOwners,
+    readyRouteOwners: input.readyRouteOwners,
+  };
+  if (input.applyState === 'rejected') return { code: 'policy_rejected', label: '策略应用失败', detail: runtimeFailureDetail(input.errorCode, counters, '节点拒绝了当前策略，但未上报错误码'), tone: 'red' };
+  if (input.failOpenRequired) return { code: 'fail_open', label: '故障开放', detail: `${runtimeFailureDetail(input.runtimeErrorCode, counters, 'Runtime 未上报明确错误码')}；Candy 数据面已退出，基础网络保持可用`, tone: 'red' };
   if (input.telemetryState === 'online' && (input.lifecycle === 'degraded' || input.lifecycle === 'stopped')) {
-    return { code: 'runtime_fault', label: '运行异常', detail: input.runtimeErrorCode || `Runtime 状态：${input.lifecycle}`, tone: 'red' };
+    return { code: 'runtime_fault', label: '运行异常', detail: runtimeFailureDetail(input.runtimeErrorCode, counters, `Runtime 状态：${input.lifecycle}`), tone: 'red' };
   }
   if (!input.attached) return { code: 'registered', label: '已注册', detail: '节点身份已签发，尚未接入 SD-WAN 网络', tone: 'green' };
   if (input.applyState === 'pending') return { code: 'policy_updating', label: '策略更新中', detail: '等待 Cloud 发布或节点确认当前策略', tone: 'orange' };
@@ -97,11 +107,11 @@ export function nodeOperationalStatus(input: NodeOperationalInput): OperationalS
 
 export function linkOperationalStatus(input: LinkOperationalInput): OperationalStatus<LinkOperationalCode> {
   if (input.configuredPathCount === 0) return { code: 'not_configured', label: '线路未配置', detail: '互联关系已建立，但尚未设置候选线路', tone: 'orange' };
-  if (input.configurationFailed) return { code: 'configuration_failed', label: '配置失败', detail: '至少一个端点拒绝了当前互联策略', tone: 'red' };
-  if (input.endpointFailed) return { code: 'endpoint_failed', label: '端点故障', detail: '至少一端没有可工作的节点', tone: 'red' };
+  if (input.configurationFailed) return { code: 'configuration_failed', label: '配置失败', detail: input.failedEndpointLabels?.length ? `${input.failedEndpointLabels.join('、')}拒绝了当前互联策略` : '至少一个端点拒绝了当前互联策略', tone: 'red' };
+  if (input.endpointFailed) return { code: 'endpoint_failed', label: '端点故障', detail: input.failedEndpointLabels?.length ? `${input.failedEndpointLabels.join('、')}没有可工作的节点` : '至少一端没有可工作的节点', tone: 'red' };
   if (input.policyUpdating) return { code: 'policy_updating', label: '策略更新中', detail: '互联配置正在发布或等待端点确认', tone: 'orange' };
   if (input.activeDirectionCount === 2) return { code: 'active', label: '双向已认证', detail: '两端协商认证完成，双向路径遥测新鲜', tone: 'green' };
-  if (input.activeDirectionCount === 1) return { code: 'one_way', label: '单向已认证', detail: '只有一个方向完成协商认证，不能判定为健康互联', tone: 'orange' };
-  if (input.staleDirectionCount > 0) return { code: 'telemetry_stale', label: '链路状态过期', detail: '曾收到路径状态，但已超过遥测新鲜度窗口', tone: 'orange' };
-  return { code: 'authenticating', label: '协商认证中', detail: '线路已配置，等待两端完成身份认证和路径建立', tone: 'orange' };
+  if (input.activeDirectionCount === 1) return { code: 'one_way', label: '单向已认证', detail: input.missingDirectionLabels?.length ? `缺少 ${input.missingDirectionLabels.join('、')} 的认证遥测` : '只有一个方向完成协商认证，不能判定为健康互联', tone: 'orange' };
+  if (input.staleDirectionCount > 0) return { code: 'telemetry_stale', label: '链路状态过期', detail: input.staleDirectionLabels?.length ? `${input.staleDirectionLabels.join('、')} 的路径遥测已超过新鲜度窗口` : '曾收到路径状态，但已超过遥测新鲜度窗口', tone: 'orange' };
+  return { code: 'authenticating', label: '协商认证中', detail: input.missingDirectionLabels?.length ? `等待 ${input.missingDirectionLabels.join('、')} 完成身份认证和路径建立` : '线路已配置，等待两端完成身份认证和路径建立', tone: 'orange' };
 }

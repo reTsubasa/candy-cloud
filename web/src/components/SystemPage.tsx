@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Descriptions, Drawer, Empty, Input, Select, Spin, Table, Tabs, Tag, Typography } from '@arco-design/web-react';
 import { IconRefresh } from '@arco-design/web-react/icon';
 import { fetchHealth, listAuditEvents } from '../api';
+import { runtimeAuditEventDescription } from '../runtime-audit';
 import type { AuditEvent, HealthState, Session } from '../types';
 
 const healthMeta = {
@@ -119,8 +120,8 @@ const fieldLabels: Record<string, string> = {
 };
 
 function eventDescription(event: AuditEvent): string {
+  const metadata = auditMetadata(event);
   if (/^CONTROL_RESOURCE_(CREATED|UPDATED|DELETED)$/.test(event.action)) {
-    const metadata = auditMetadata(event);
     const name = typeof metadata.resource_name === 'string' && metadata.resource_name ? `“${metadata.resource_name}”` : '';
     const fields = Array.isArray(metadata.changed_fields)
       ? metadata.changed_fields.filter((value): value is string => typeof value === 'string').map((value) => fieldLabels[value] ?? value)
@@ -128,6 +129,8 @@ function eventDescription(event: AuditEvent): string {
     const verb = event.action.endsWith('CREATED') ? '创建了' : event.action.endsWith('UPDATED') ? '更新了' : '删除了';
     return `用户${verb}${objectLabel(event.object_type)}${name}${fields.length ? `，涉及：${fields.join('、')}` : ''}。`;
   }
+  const runtimeDescription = runtimeAuditEventDescription(event.action, metadata, eventLabels[event.action]?.detail ?? null);
+  if (runtimeDescription) return runtimeDescription;
   return eventLabels[event.action]?.detail ?? '控制面记录了一项运行或配置事件。';
 }
 

@@ -1,4 +1,5 @@
 import type { RuntimeActivationReadiness } from './types';
+import { runtimeErrorReason } from './runtime-error';
 
 export type ActivationDisplay = {
   label: string;
@@ -6,13 +7,8 @@ export type ActivationDisplay = {
   tone: 'green' | 'orange' | 'red' | 'gray' | 'arcoblue';
 };
 
-const applyErrorLabels: Record<string, string> = {
-  core_discovery_failed: '未找到可用的 Candy Core',
-  core_verification_failed: 'Candy Core 验证失败',
-};
-
 function applyFailureDetail(readiness: RuntimeActivationReadiness): string {
-  const errors = (readiness.apply_error_codes ?? []).map((code) => applyErrorLabels[code] ?? code);
+  const errors = (readiness.apply_error_codes ?? []).map((code) => runtimeErrorReason(code) ?? code);
   const reason = [...new Set(errors)].join('、');
   return String(readiness.failed_apply_count || 1) + ' 个节点未能应用配置' + (reason ? '：' + reason : '');
 }

@@ -61,6 +61,8 @@ export type OperationalLink = {
   id: string;
   siteAId: string;
   siteBId: string;
+  siteAName: string;
+  siteBName: string;
   directionCount: number;
   kindLabel: string;
   state: LinkOperationalCode;
@@ -244,6 +246,7 @@ export function buildOperationalTopology(
   const aggregateReadinessLabel = !selectedSegmentId && resources.segments.length > 0
     ? readiness ? (readiness.ready ? '全部网络已就绪' : `${resources.segments.filter((segment) => readinessBySegment[segment.metadata.id]?.ready).length}/${resources.segments.length} 个网络已就绪 · ${readinessLabel(readiness)}`) : `${resources.segments.length} 个网络分段 · 全局视图`
     : readinessLabel(readiness);
+  const siteNameById = new Map(sites.map((site) => [site.id, site.name]));
   const links: OperationalLink[] = resources.peers
     .filter(segmentMatches)
     .map((peer) => {
@@ -251,6 +254,8 @@ export function buildOperationalTopology(
       const kinds = new Set(paths.map((path) => value(path, 'kind')));
       const siteAId = value(peer, 'site_a_id');
       const siteBId = value(peer, 'site_b_id');
+      const siteAName = siteNameById.get(siteAId) ?? '端点 A';
+      const siteBName = siteNameById.get(siteBId) ?? '端点 B';
       const attachmentIdsBySite = new Map([
         [siteAId, new Set(selectedAttachments.filter((attachment) => value(attachment, 'site_id') === siteAId).map((attachment) => attachment.metadata.id))],
         [siteBId, new Set(selectedAttachments.filter((attachment) => value(attachment, 'site_id') === siteBId).map((attachment) => attachment.metadata.id))],
@@ -269,7 +274,8 @@ export function buildOperationalTopology(
             sampledAt: node.telemetry?.reported_at ?? '',
           }));
       });
-      const activeDirectionCount = new Set(activePaths.map((path) => `${path.sourceSiteId}:${path.destinationSiteId}`)).size;
+      const activeDirections = new Set(activePaths.map((path) => `${path.sourceSiteId}:${path.destinationSiteId}`));
+      const activeDirectionCount = activeDirections.size;
       const staleDirections = nodes.flatMap((node) => {
         if (node.telemetryState !== 'stale' || !node.telemetry || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
         const destinationSiteId = node.siteId === siteAId ? siteBId : siteAId;
@@ -278,16 +284,27 @@ export function buildOperationalTopology(
           .filter((path) => destinationAttachmentIds.has(path.peer_attachment_id))
           .map(() => `${node.siteId}:${destinationSiteId}`);
       });
-      const staleDirectionCount = new Set(staleDirections).size;
+      const staleDirectionKeys = new Set(staleDirections);
+      const staleDirectionCount = staleDirectionKeys.size;
       const peerReadiness = readinessBySegment[value(peer, 'segment_id')];
       const endpointNodes = [nodes.filter((node) => node.siteId === siteAId), nodes.filter((node) => node.siteId === siteBId)];
+      const rejectedNodes = endpointNodes.flat().filter((node) => node.applyState === 'rejected');
+      const failedEndpointLabels = endpointNodes.flatMap((siteNodes, index) => (
+        siteNodes.length > 0 && siteNodes.every((node) => node.status.tone === 'red')
+          ? [index === 0 ? siteAName : siteBName]
+          : []
+      ));
       const configurationFailed = peerReadiness?.reason_codes.includes('node_apply_failed') === true
-        || endpointNodes.some((siteNodes) => siteNodes.some((node) => node.applyState === 'rejected'));
-      const endpointFailed = endpointNodes.some((siteNodes) => siteNodes.length > 0 && siteNodes.every((node) => node.status.tone === 'red'));
+        || rejectedNodes.length > 0;
+      const endpointFailed = failedEndpointLabels.length > 0;
       const policyUpdating = !configurationFailed && (
         peerReadiness?.reason_codes.some((code) => code === 'config_pending' || code === 'node_apply_pending') === true
         || endpointNodes.some((siteNodes) => siteNodes.some((node) => node.applyState === 'pending'))
       );
+      const expectedDirections = [
+        { key: `${siteAId}:${siteBId}`, label: `${siteAName} -> ${siteBName}` },
+        { key: `${siteBId}:${siteAId}`, label: `${siteBName} -> ${siteAName}` },
+      ];
       const operationalStatus = linkOperationalStatus({
         configuredPathCount: paths.length,
         activeDirectionCount,
@@ -295,11 +312,16 @@ export function buildOperationalTopology(
         policyUpdating,
         configurationFailed,
         endpointFailed,
+        missingDirectionLabels: expectedDirections.filter((direction) => !activeDirections.has(direction.key)).map((direction) => direction.label),
+        staleDirectionLabels: expectedDirections.filter((direction) => staleDirectionKeys.has(direction.key)).map((direction) => direction.label),
+        failedEndpointLabels: rejectedNodes.length > 0 ? rejectedNodes.map((node) => node.name) : failedEndpointLabels,
       });
       return {
         id: peer.metadata.id,
         siteAId,
         siteBId,
+        siteAName,
+        siteBName,
         directionCount: Math.min(2, paths.length),
         kindLabel: kinds.has('RELAY') ? '中继' : '直连',
         state: operationalStatus.code,
