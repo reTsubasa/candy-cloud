@@ -1131,6 +1131,21 @@ impl SdwanRepository {
             transaction.rollback().await?;
             return Err(RuntimeConfigurationError::StaleConfiguration);
         }
+        let device_name: String = sqlx::query_scalar(
+            "SELECT display_name FROM devices WHERE tenant_id = ? AND id = ? AND status = 'ACTIVE'",
+        )
+        .bind(status.lookup.tenant_id)
+        .bind(status.lookup.device_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let previous_status: Option<(Uuid, String, Option<String>)> = sqlx::query_as(
+            "SELECT projection_publication_id, apply_state, error_code FROM runtime_configuration_status WHERE tenant_id = ? AND device_id = ? AND device_key_id = ? FOR UPDATE",
+        )
+        .bind(status.lookup.tenant_id)
+        .bind(status.lookup.device_id)
+        .bind(status.lookup.device_key_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
         let now = Utc::now();
         sqlx::query(
             "INSERT INTO runtime_configuration_status (tenant_id, device_id, device_key_id, projection_publication_id, envelope_sha256, apply_state, error_code, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE projection_publication_id = VALUES(projection_publication_id), envelope_sha256 = VALUES(envelope_sha256), apply_state = VALUES(apply_state), error_code = VALUES(error_code), reported_at = VALUES(reported_at)",
@@ -1155,6 +1170,85 @@ impl SdwanRepository {
             transaction.rollback().await?;
             return Err(RuntimeConfigurationError::StaleConfiguration);
         }
+
+        let apply_state = status.apply_state.database_value();
+        let status_changed = previous_status.as_ref().is_none_or(
+            |(publication_id, previous_state, previous_error)| {
+                *publication_id != configuration.projection_publication_id
+                    || previous_state != apply_state
+                    || previous_error.as_deref() != status.error_code.as_deref()
+            },
+        );
+        if status_changed {
+            let action = match status.apply_state {
+                RuntimeConfigurationApplyState::Active => "RUNTIME_CONFIGURATION_ACTIVATED",
+                RuntimeConfigurationApplyState::Rejected => "RUNTIME_CONFIGURATION_REJECTED",
+            };
+            sqlx::query(
+                "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'DEVICE', ?, ?, 'DEVICE', ?, JSON_OBJECT('device_name', ?, 'projection_publication_id', ?, 'segment_generation', ?, 'projection_generation', ?, 'previous_state', ?, 'state', ?, 'error_code', ?))",
+            )
+            .bind(Uuid::now_v7())
+            .bind(status.lookup.tenant_id)
+            .bind(status.lookup.device_id.to_string())
+            .bind(action)
+            .bind(status.lookup.device_id.to_string())
+            .bind(&device_name)
+            .bind(configuration.projection_publication_id.to_string())
+            .bind(configuration.segment_generation)
+            .bind(configuration.projection_generation)
+            .bind(previous_status.as_ref().map(|(_, state, _)| state.as_str()))
+            .bind(apply_state)
+            .bind(status.error_code.as_deref())
+            .execute(&mut *transaction)
+            .await?;
+        }
+
+        let rollout_member: Option<(u32, u32)> = sqlx::query_as(
+            "SELECT member.rollout_ordinal, rollout.member_count FROM segment_route_publication_members member JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = member.tenant_id AND rollout.segment_id = ? AND rollout.segment_generation = ? WHERE member.tenant_id = ? AND member.projection_publication_id = ? FOR UPDATE",
+        )
+        .bind(configuration.segment_id)
+        .bind(configuration.segment_generation)
+        .bind(status.lookup.tenant_id)
+        .bind(configuration.projection_publication_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some((ordinal, member_count)) = rollout_member {
+            match status.apply_state {
+                RuntimeConfigurationApplyState::Active if ordinal >= member_count => {
+                    sqlx::query(
+                        "UPDATE runtime_configuration_rollouts SET state = 'COMPLETE', allowed_ordinal = member_count WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND allowed_ordinal = ?",
+                    )
+                    .bind(status.lookup.tenant_id)
+                    .bind(configuration.segment_id)
+                    .bind(configuration.segment_generation)
+                    .bind(ordinal)
+                    .execute(&mut *transaction)
+                    .await?;
+                }
+                RuntimeConfigurationApplyState::Active => {
+                    sqlx::query(
+                        "UPDATE runtime_configuration_rollouts SET state = 'ACTIVE', allowed_ordinal = allowed_ordinal + 1 WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND state = 'ACTIVE' AND allowed_ordinal = ?",
+                    )
+                    .bind(status.lookup.tenant_id)
+                    .bind(configuration.segment_id)
+                    .bind(configuration.segment_generation)
+                    .bind(ordinal)
+                    .execute(&mut *transaction)
+                    .await?;
+                }
+                RuntimeConfigurationApplyState::Rejected => {
+                    sqlx::query(
+                        "UPDATE runtime_configuration_rollouts SET state = 'BLOCKED' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND allowed_ordinal = ?",
+                    )
+                    .bind(status.lookup.tenant_id)
+                    .bind(configuration.segment_id)
+                    .bind(configuration.segment_generation)
+                    .bind(ordinal)
+                    .execute(&mut *transaction)
+                    .await?;
+                }
+            }
+        }
         transaction.commit().await?;
         Ok(())
     }
@@ -1165,18 +1259,18 @@ impl SdwanRepository {
     ) -> Result<(), RuntimeConfigurationError> {
         telemetry.validate()?;
         let mut transaction = self.pool.begin().await?;
-        let identity_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM devices d JOIN device_keys k ON k.tenant_id = d.tenant_id AND k.device_id = d.id WHERE d.tenant_id = ? AND d.id = ? AND d.status = 'ACTIVE' AND k.id = ? AND k.status = 'ACTIVE')",
+        let device_name = sqlx::query_scalar::<_, String>(
+            "SELECT d.display_name FROM devices d JOIN device_keys k ON k.tenant_id = d.tenant_id AND k.device_id = d.id WHERE d.tenant_id = ? AND d.id = ? AND d.status = 'ACTIVE' AND k.id = ? AND k.status = 'ACTIVE' LIMIT 1",
         )
         .bind(telemetry.lookup.tenant_id)
         .bind(telemetry.lookup.device_id)
         .bind(telemetry.lookup.device_key_id)
-        .fetch_one(&mut *transaction)
+        .fetch_optional(&mut *transaction)
         .await?;
-        if !identity_exists {
+        let Some(device_name) = device_name else {
             transaction.rollback().await?;
             return Err(RuntimeConfigurationError::InvalidScope);
-        }
+        };
         let mut persisted_paths = telemetry.paths.as_slice();
         if !telemetry.paths.is_empty() {
             let committed_projection: Option<(Uuid, Uuid)> = sqlx::query_as(
@@ -1248,17 +1342,20 @@ impl SdwanRepository {
                 }
             }
         }
-        let current: Option<(Uuid, u64)> = sqlx::query_as(
-            "SELECT boot_id, sequence FROM runtime_telemetry_latest WHERE tenant_id = ? AND device_id = ? AND device_key_id = ? FOR UPDATE",
+        let current: Option<(Uuid, u64, String, bool, Option<String>)> = sqlx::query_as(
+            "SELECT boot_id, sequence, lifecycle, fail_open_required, last_error_code FROM runtime_telemetry_latest WHERE tenant_id = ? AND device_id = ? AND device_key_id = ? FOR UPDATE",
         )
         .bind(telemetry.lookup.tenant_id)
         .bind(telemetry.lookup.device_id)
         .bind(telemetry.lookup.device_key_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        if current.is_some_and(|(boot_id, sequence)| {
-            boot_id == telemetry.boot_id && sequence >= telemetry.sequence
-        }) {
+        if current
+            .as_ref()
+            .is_some_and(|(boot_id, sequence, _, _, _)| {
+                *boot_id == telemetry.boot_id && *sequence >= telemetry.sequence
+            })
+        {
             transaction.commit().await?;
             return Ok(());
         }
@@ -1298,6 +1395,59 @@ impl SdwanRepository {
         .bind(local_networks_present)
         .execute(&mut *transaction)
         .await?;
+        let lifecycle = telemetry.lifecycle.database_value();
+        let transition = current.as_ref().and_then(
+            |(_, _, previous_lifecycle, previous_fail_open, previous_error)| {
+                if *previous_fail_open != telemetry.fail_open_required {
+                    Some(if telemetry.fail_open_required {
+                        "RUNTIME_FAIL_OPEN_ENTERED"
+                    } else {
+                        "RUNTIME_FAIL_OPEN_RECOVERED"
+                    })
+                } else if previous_lifecycle != lifecycle
+                    || previous_error.as_deref() != telemetry.last_error_code.as_deref()
+                {
+                    Some(if lifecycle == "ACTIVE" {
+                        "RUNTIME_LIFECYCLE_RECOVERED"
+                    } else {
+                        "RUNTIME_LIFECYCLE_DEGRADED"
+                    })
+                } else {
+                    None
+                }
+            },
+        );
+        let first_unhealthy = current.is_none()
+            && (telemetry.fail_open_required
+                || !matches!(telemetry.lifecycle, RuntimeLifecycle::Active));
+        if let Some(action) =
+            transition.or(first_unhealthy.then_some(if telemetry.fail_open_required {
+                "RUNTIME_FAIL_OPEN_ENTERED"
+            } else {
+                "RUNTIME_LIFECYCLE_DEGRADED"
+            }))
+        {
+            sqlx::query(
+                "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'DEVICE', ?, ?, 'DEVICE', ?, JSON_OBJECT('device_name', ?, 'previous_lifecycle', ?, 'lifecycle', ?, 'fail_open_required', ?, 'previous_error_code', ?, 'error_code', ?, 'configured_peers', ?, 'active_peers', ?, 'required_route_owners', ?, 'ready_route_owners', ?))",
+            )
+            .bind(Uuid::now_v7())
+            .bind(telemetry.lookup.tenant_id)
+            .bind(telemetry.lookup.device_id.to_string())
+            .bind(action)
+            .bind(telemetry.lookup.device_id.to_string())
+            .bind(&device_name)
+            .bind(current.as_ref().map(|(_, _, lifecycle, _, _)| lifecycle.as_str()))
+            .bind(lifecycle)
+            .bind(telemetry.fail_open_required)
+            .bind(current.as_ref().and_then(|(_, _, _, _, error)| error.as_deref()))
+            .bind(telemetry.last_error_code.as_deref())
+            .bind(telemetry.configured_peers)
+            .bind(telemetry.active_peers)
+            .bind(telemetry.required_route_owners)
+            .bind(telemetry.ready_route_owners)
+            .execute(&mut *transaction)
+            .await?;
+        }
         sqlx::query(
             "UPDATE devices SET last_seen_at = ? WHERE tenant_id = ? AND id = ? AND status = 'ACTIVE'",
         )
@@ -1645,11 +1795,38 @@ impl SdwanRepository {
         .execute(&mut *transaction)
         .await?;
 
-        for projection in &write.projections {
-            insert_projection(&mut transaction, write.publication_id, projection).await?;
+        for (index, projection) in write.projections.iter().enumerate() {
+            let rollout_ordinal = u32::try_from(index + 1).map_err(|_| SdwanError::InvalidScope)?;
+            insert_projection(
+                &mut transaction,
+                write.publication_id,
+                projection,
+                rollout_ordinal,
+            )
+            .await?;
         }
         for expansion in &write.expansions {
             insert_expansion(&mut transaction, write.publication_id, expansion).await?;
+        }
+
+        let member_count =
+            u32::try_from(write.projections.len()).map_err(|_| SdwanError::InvalidScope)?;
+        if member_count > 0 {
+            let allowed_ordinal = if write.expected_previous_generation == 0 {
+                member_count
+            } else {
+                1
+            };
+            sqlx::query(
+                "INSERT INTO runtime_configuration_rollouts (tenant_id, segment_id, segment_generation, allowed_ordinal, member_count, state) VALUES (?, ?, ?, ?, ?, 'ACTIVE')",
+            )
+            .bind(write.tenant_id)
+            .bind(write.segment_id)
+            .bind(write.generation)
+            .bind(allowed_ordinal)
+            .bind(member_count)
+            .execute(&mut *transaction)
+            .await?;
         }
 
         let advanced = sqlx::query(
@@ -1709,7 +1886,7 @@ async fn load_current_runtime_configuration(
     }
 
     let projection_query = format!(
-        "SELECT p.id AS projection_publication_id, p.projection_id, p.tenant_id, p.segment_id, p.site_id, p.attachment_id, p.device_id, p.device_key_id, p.segment_generation, p.segment_content_hash, p.projection_generation, p.content_hash AS projection_content_hash, publication.signed_envelope AS signed_segment_envelope, p.signed_envelope AS signed_projection_envelope FROM segment_attachments a JOIN tenants t ON t.id = a.tenant_id AND t.status = 'ACTIVE' JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = seg.current_generation AND p.segment_content_hash = seg.current_content_hash JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY'){suffix}"
+        "SELECT p.id AS projection_publication_id, p.projection_id, p.tenant_id, p.segment_id, p.site_id, p.attachment_id, p.device_id, p.device_key_id, p.segment_generation, p.segment_content_hash, p.projection_generation, p.content_hash AS projection_content_hash, publication.signed_envelope AS signed_segment_envelope, p.signed_envelope AS signed_projection_envelope FROM segment_attachments a JOIN tenants t ON t.id = a.tenant_id AND t.status = 'ACTIVE' JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = seg.current_generation AND p.segment_content_hash = seg.current_content_hash JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = p.tenant_id AND rollout.segment_id = p.segment_id AND rollout.segment_generation = p.segment_generation WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY') AND member.rollout_ordinal <= rollout.allowed_ordinal{suffix}"
     );
     let rows = sqlx::query(&projection_query)
         .bind(lookup.tenant_id)
@@ -2081,6 +2258,7 @@ async fn insert_projection(
     transaction: &mut Transaction<'_, MySql>,
     segment_publication_id: Uuid,
     projection: &SiteProjectionPublicationWrite,
+    rollout_ordinal: u32,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO site_route_projection_publications (id, publication_id, projection_id, tenant_id, segment_id, site_id, attachment_id, device_id, device_key_id, segment_generation, segment_content_hash, projection_generation, previous_hash, content_hash, signed_envelope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2103,13 +2281,14 @@ async fn insert_projection(
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO segment_route_publication_members (tenant_id, segment_publication_id, projection_publication_id, projection_id, attachment_id) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO segment_route_publication_members (tenant_id, segment_publication_id, projection_publication_id, projection_id, attachment_id, rollout_ordinal) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(projection.tenant_id)
     .bind(segment_publication_id)
     .bind(projection.publication_id)
     .bind(projection.projection_id)
     .bind(projection.attachment_id)
+    .bind(rollout_ordinal)
     .execute(&mut **transaction)
     .await?;
     for (transport_node_id, transport_node_key_id) in &projection.transport_nodes {

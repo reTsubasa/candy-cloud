@@ -38,6 +38,7 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "segment_route_publication_members",
         "segment_expansion_publications",
         "runtime_configuration_status",
+        "runtime_configuration_rollouts",
         "runtime_telemetry_latest",
         "sdwan_control_resources",
         "sdwan_control_resource_references",
@@ -137,7 +138,16 @@ fn revoked_attachment_does_not_reserve_overlay_address_forever() {
 #[test]
 fn control_plane_readiness_requires_the_latest_migration() {
     let source = include_str!("../src/control.rs");
-    assert!(source.contains("_sqlx_migrations WHERE version = 27 AND success = TRUE"));
+    assert!(source.contains("_sqlx_migrations WHERE version = 28 AND success = TRUE"));
+}
+
+#[test]
+fn runtime_activation_rollout_is_ordered_and_fail_stopping() {
+    let migration = include_str!("../migrations/0028_runtime_rolling_activation.sql");
+    assert!(migration.contains("rollout_ordinal"));
+    assert!(migration.contains("allowed_ordinal"));
+    assert!(migration.contains("ENUM('ACTIVE','BLOCKED','COMPLETE')"));
+    assert!(migration.contains("CHECK (allowed_ordinal <= member_count)"));
 }
 
 #[test]

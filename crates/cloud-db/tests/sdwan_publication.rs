@@ -219,7 +219,8 @@ async fn tunnel_host_catalog_contains_remote_route_owners_and_excludes_local_pro
         PublicationOutcome::Published
     );
 
-    let RuntimeConfigurationState::Current(configuration) = SdwanRepository::new(pool)
+    let repository = SdwanRepository::new(pool.clone());
+    let RuntimeConfigurationState::Current(configuration) = repository
         .current_runtime_configuration(&RuntimeConfigurationLookup {
             tenant_id,
             device_id: local.device_id,
@@ -244,6 +245,19 @@ async fn tunnel_host_catalog_contains_remote_route_owners_and_excludes_local_pro
         std::collections::HashSet::from([sites[1].attachment_id, sites[2].attachment_id,])
     );
     assert!(!catalog_ids.contains(&local.attachment_id));
+
+    let second_lookup = RuntimeConfigurationLookup {
+        tenant_id,
+        device_id: sites[1].device_id,
+        device_key_id: sites[1].device_key_id,
+    };
+    let RuntimeConfigurationState::Current(_) = repository
+        .current_runtime_configuration(&second_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("initial generation must bootstrap all members without a rollout deadlock");
+    };
 }
 
 fn control_resource(
@@ -952,6 +966,17 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     .await
     .unwrap();
     assert_eq!(legacy_paths_json, "[]");
+    let peer_runtime_lookup = RuntimeConfigurationLookup {
+        tenant_id,
+        device_id: peer_device_id,
+        device_key_id: peer_device_key_id,
+    };
+    assert!(matches!(
+        repository
+            .current_runtime_configuration(&peer_runtime_lookup)
+            .await,
+        Err(RuntimeConfigurationError::MissingCurrentProjection)
+    ));
     repository
         .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
             lookup: runtime_lookup.clone(),
@@ -968,11 +993,6 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         repository.record_runtime_telemetry(&forged).await,
         Err(RuntimeConfigurationError::InvalidScope)
     ));
-    let peer_runtime_lookup = RuntimeConfigurationLookup {
-        tenant_id,
-        device_id: peer_device_id,
-        device_key_id: peer_device_key_id,
-    };
     let RuntimeConfigurationState::Current(peer_runtime) = repository
         .current_runtime_configuration(&peer_runtime_lookup)
         .await

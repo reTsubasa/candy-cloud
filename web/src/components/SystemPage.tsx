@@ -21,6 +21,7 @@ type LogLevel = 'error' | 'warning' | 'info';
 
 function eventLevel(action: string): LogLevel {
   const normalized = action.toUpperCase();
+  if (normalized === 'RUNTIME_FAIL_OPEN_ENTERED') return 'error';
   if (/(FAILED|FAILURE|REJECTED|ERROR|DENIED)/.test(normalized)) return 'error';
   if (/(REVOKED|EXPIRED|DEGRADED|DISABLED)/.test(normalized)) return 'warning';
   return 'info';
@@ -44,6 +45,11 @@ const eventLabels: Record<string, { title: string; detail: string }> = {
   CONTROL_RESOURCE_UPDATED: { title: '配置已更新', detail: '控制面更新了一项网络配置。' },
   CONTROL_RESOURCE_DELETED: { title: '配置已删除', detail: '控制面删除了一项网络配置。' },
   RUNTIME_CONFIGURATION_REJECTED: { title: '节点拒绝配置', detail: '节点收到配置后未能应用，需检查节点运行日志。' },
+  RUNTIME_CONFIGURATION_ACTIVATED: { title: '节点配置已激活', detail: '节点已平滑接管本批次配置，Cloud 将继续放行下一个节点。' },
+  RUNTIME_FAIL_OPEN_ENTERED: { title: '节点进入故障开放', detail: 'Candy 数据面已退出，基础网络保持可用。' },
+  RUNTIME_FAIL_OPEN_RECOVERED: { title: '节点已退出故障开放', detail: 'Candy 数据面已经恢复运行。' },
+  RUNTIME_LIFECYCLE_DEGRADED: { title: '节点运行状态异常', detail: 'Runtime 上报了停止、启动中或降级状态。' },
+  RUNTIME_LIFECYCLE_RECOVERED: { title: '节点运行状态恢复', detail: 'Runtime 已恢复为活跃状态。' },
 };
 
 const objectLabels: Record<string, string> = {
@@ -87,6 +93,15 @@ function formatEventTime(value: string, now = new Date()): string {
 function formatMetadata(value: string): string {
   if (!value) return '暂无结构化详情';
   try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
+}
+
+function eventObjectName(event: AuditEvent): string | null {
+  try {
+    const metadata = JSON.parse(event.metadata_json) as { device_name?: unknown };
+    return typeof metadata.device_name === 'string' && metadata.device_name.trim() ? metadata.device_name : null;
+  } catch {
+    return null;
+  }
 }
 
 export function SystemPage({ session, initialTab = 'status' }: Props) {
@@ -157,7 +172,7 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
           <div className="table-surface operation-log-table">{filtered.length === 0 && !loading ? <Empty description={events.length ? '没有符合筛选条件的日志' : '暂无运行日志'} /> : <Table rowKey="id" loading={loading} data={filtered} pagination={filtered.length > 50 ? { pageSize: 50, sizeCanChange: true } : false} onRow={(item) => ({ onClick: () => setSelectedEvent(item), className: 'log-row-clickable' })} columns={[
             { title: '级别', width: 88, render: (_: unknown, item: AuditEvent) => { const meta = levelMeta[eventLevel(item.action)]; return <Tag color={meta.color}>{meta.label}</Tag>; } },
             { title: '事件', dataIndex: 'action', width: 330, render: (value: string) => <div className="log-event-cell"><strong>{eventLabel(value)}</strong><small>{eventDescription(value)}</small><code>{value}</code></div> },
-            { title: '对象', width: 150, render: (_: unknown, item: AuditEvent) => <div className="log-object-cell"><strong>{objectLabel(item.object_type)}</strong><small>{item.object_id ? `${item.object_id.slice(0, 8)}…` : '全局事件'}</small></div> },
+            { title: '对象', width: 150, render: (_: unknown, item: AuditEvent) => <div className="log-object-cell"><strong>{eventObjectName(item) ?? objectLabel(item.object_type)}</strong><small>{eventObjectName(item) ? objectLabel(item.object_type) : item.object_id ? `${item.object_id.slice(0, 8)}…` : '全局事件'}</small></div> },
             { title: '来源', width: 130, render: (_: unknown, item: AuditEvent) => actorLabel(item.actor_type) },
             { title: '发生时间', width: 180, render: (_: unknown, item: AuditEvent) => <Typography.Text>{formatEventTime(item.created_at)}</Typography.Text> },
           ]} />}</div>

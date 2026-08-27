@@ -438,7 +438,7 @@ pub async fn runtime_telemetry(
         .collect();
     Ok(Json(RuntimeTelemetryResponse {
         schema_version: CONTROL_SCHEMA_V1,
-        stale_after_seconds: 90,
+        stale_after_seconds: 60,
         items,
     }))
 }

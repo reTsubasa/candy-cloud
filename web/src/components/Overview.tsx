@@ -75,7 +75,7 @@ export function Overview({ session, onOpenLogs }: Props) {
   const [resourceErrors, setResourceErrors] = useState<ResourceLoadErrors>({});
   const [statuses, setStatuses] = useState<RuntimeConfigurationStatus[]>([]);
   const [telemetry, setTelemetry] = useState<RuntimeTelemetry[]>([]);
-  const [telemetryStaleAfter, setTelemetryStaleAfter] = useState(90);
+  const [telemetryStaleAfter, setTelemetryStaleAfter] = useState(60);
   const [telemetryAvailable, setTelemetryAvailable] = useState(true);
   const [readiness, setReadiness] = useState<Record<string, RuntimeActivationReadiness>>({});
   const [health, setHealth] = useState<HealthState>(initialHealth);
@@ -124,7 +124,7 @@ export function Overview({ session, onOpenLogs }: Props) {
       fetchRuntimeConfigurationStatuses(session.token, tenantId).catch(() => ({ schema_version: 1 as const, items: [] })),
       fetchRuntimeTelemetry(session.token, tenantId)
         .then((result) => ({ result, available: true }))
-        .catch(() => ({ result: { schema_version: 1, stale_after_seconds: 90, items: [] as RuntimeTelemetry[] }, available: false })),
+        .catch(() => ({ result: { schema_version: 1, stale_after_seconds: 60, items: [] as RuntimeTelemetry[] }, available: false })),
       Promise.all(nextResources.segments.map(async (segment) => {
         try {
           return [segment.metadata.id, await fetchRuntimeActivationReadiness(session.token, tenantId, segment.metadata.id)] as const;
@@ -338,8 +338,8 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const telemetryRows = link.activePaths.slice(0, 2).map((path) => {
           const sourceName = siteById[path.sourceSiteId]?.name ?? path.sourceNodeName;
           const destinationName = siteById[path.destinationSiteId]?.name ?? '对端';
-          const age = path.sampledAt ? formatTelemetryAge(path.sampledAt) : '时间未知';
-          return `${sourceName} -> ${destinationName}  RTT ${formatMetric(path.rtt_ms, ' ms')}  丢包 ${path.packet_loss_ppm == null ? '—' : `${(path.packet_loss_ppm / 10_000).toFixed(2)}%`}  ↑${formatRate(path.tx_bps)} ↓${formatRate(path.rx_bps)}  ${age}`;
+          const staleLabel = path.sampledAt ? formatStaleTelemetry(path.sampledAt) : '';
+          return `${sourceName} -> ${destinationName}  RTT ${formatMetric(path.rtt_ms, ' ms')}  丢包 ${path.packet_loss_ppm == null ? '—' : `${(path.packet_loss_ppm / 10_000).toFixed(2)}%`}  ↑${formatRate(path.tx_bps)} ↓${formatRate(path.rx_bps)}${staleLabel ? `  ${staleLabel}` : ''}`;
         });
         const directionLabel = link.activeDirectionCount === 2 ? '双向' : link.activeDirectionCount === 1 ? '单向遥测' : '等待遥测';
         const pathDetail = telemetryRows.length > 0 ? ` · ${telemetryRows.join(' · ')}` : '';
@@ -380,9 +380,9 @@ function formatRate(value: number | null): string {
   return `${value} bps`;
 }
 
-function formatTelemetryAge(value: string): string {
+function formatStaleTelemetry(value: string): string {
   const reported = Date.parse(value);
-  if (!Number.isFinite(reported)) return '时间未知';
+  if (!Number.isFinite(reported)) return '';
   const seconds = Math.max(0, Math.round((Date.now() - reported) / 1000));
-  return seconds < 60 ? `${seconds} 秒前` : `${Math.floor(seconds / 60)} 分钟前`;
+  return seconds <= 60 ? '' : `遥测 ${Math.floor(seconds / 60)} 分钟未更新`;
 }
