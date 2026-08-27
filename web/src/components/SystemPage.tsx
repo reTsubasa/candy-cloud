@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Descriptions, Drawer, Empty, Input, Select, Spin, Table, Tabs, Tag, Typography } from '@arco-design/web-react';
+import { Button, Descriptions, Drawer, Empty, Input, Select, Spin, Table, Tag, Typography } from '@arco-design/web-react';
 import { IconRefresh } from '@arco-design/web-react/icon';
 import { fetchHealth, listAuditEvents } from '../api';
 import { runtimeAuditEventDescription } from '../runtime-audit';
@@ -224,8 +224,7 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
         <div><Typography.Title heading={4}>{initialTab === 'logs' ? '日志' : '系统'}</Typography.Title><Typography.Text type="secondary">{initialTab === 'logs' ? '控制面、配置与节点事件的统一记录' : '控制面状态与管理会话'}</Typography.Text></div>
         <Button icon={<IconRefresh />} loading={loading} onClick={() => void load()}>刷新</Button>
       </header>
-      <Tabs defaultActiveTab={initialTab} className="system-tabs single-tab">
-        {initialTab !== 'logs' && <Tabs.TabPane key="status" title="运行状态"><Spin loading={loading} block>
+      {initialTab === 'status' ? <Spin loading={loading} block>
           <div className="system-grid">
             <section className="detail-surface"><Typography.Title heading={5}>控制面健康</Typography.Title><Descriptions column={1} data={(['live', 'ready', 'degraded'] as const).map((key) => ({ label: healthMeta[key].label, value: <div className="health-detail"><span><Tag color={health[key].status === 200 ? 'green' : health[key].status === null ? 'red' : 'orange'}>{health[key].status === 200 ? '正常' : health[key].status === null ? '不可达' : '异常'}</Tag> {health[key].text || '—'}</span><code>{healthMeta[key].endpoint}</code></div> }))} /></section>
             <section className="detail-surface"><Typography.Title heading={5}>管理会话</Typography.Title><Descriptions column={1} data={[
@@ -236,8 +235,7 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
               { label: '会话到期', value: session.claims.exp ? new Date(session.claims.exp * 1000).toLocaleString() : '未提供' },
             ]} /></section>
           </div>
-        </Spin></Tabs.TabPane>}
-        {initialTab !== 'status' && <Tabs.TabPane key="logs" title="统一日志">
+        </Spin> : <>
           <div className="log-toolbar"><div><Typography.Text bold>运行日志</Typography.Text><Typography.Text type="secondary">点击任意记录查看完整内容 · 最近 {events.length} 条</Typography.Text></div><Typography.Text type="secondary">{filtered.length} / {events.length} 条</Typography.Text></div>
           <div className="log-filters">
             <Select value={categoryFilter} onChange={(value) => setCategoryFilter(value as LogCategory)} aria-label="日志分类" style={{ width: 150 }}><Select.Option value="all">全部有效事件</Select.Option><Select.Option value="operations">产品操作</Select.Option><Select.Option value="runtime">运行事件</Select.Option><Select.Option value="security">身份安全</Select.Option></Select>
@@ -253,8 +251,7 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
             { title: '来源', width: 190, render: (_: unknown, item: AuditEvent) => <div className="log-object-cell"><strong>{eventActorLabel(item)}</strong><small>{item.actor_email && item.actor_email !== eventActorLabel(item) ? item.actor_email : actorLabel(item.actor_type)}</small></div> },
             { title: '发生时间', width: 180, render: (_: unknown, item: AuditEvent) => <Typography.Text>{formatEventTime(item.created_at)}</Typography.Text> },
           ]} />}</div>
-        </Tabs.TabPane>}
-      </Tabs>
+        </>}
       <Drawer width={520} title={selectedEvent ? eventLabel(selectedEvent) : '日志详情'} visible={selectedEvent !== null} onCancel={() => setSelectedEvent(null)} footer={null}>
         {selectedEvent && <div className="log-detail-drawer">
           <div className="log-detail-summary"><Tag color={levelMeta[eventLevel(selectedEvent.action)].color}>{levelMeta[eventLevel(selectedEvent.action)].label}</Tag><div><strong>{eventDescription(selectedEvent)}</strong><span>{formatEventTime(selectedEvent.created_at)} · {new Date(selectedEvent.created_at).toLocaleString('zh-CN')}</span></div></div>

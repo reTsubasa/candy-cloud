@@ -94,7 +94,6 @@ button, input, textarea { font: inherit; }
 .workspace-section { min-width: 0; }
 .peer-tabs > .arco-tabs-header { margin-bottom: 20px; }
 .peer-tabs > .arco-tabs-content { overflow: visible; }
-.system-tabs.single-tab > .arco-tabs-header { display: none; }
 .page-header, .section-heading-row, .toolbar-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .page-header { margin-bottom: 20px; }
 .page-header h4, .section-heading-row h5 { margin: 0 0 4px; }
