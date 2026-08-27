@@ -971,12 +971,18 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         device_id: peer_device_id,
         device_key_id: peer_device_key_id,
     };
-    assert!(matches!(
-        repository
-            .current_runtime_configuration(&peer_runtime_lookup)
-            .await,
-        Err(RuntimeConfigurationError::MissingCurrentProjection)
-    ));
+    let RuntimeConfigurationState::Current(peer_previous_runtime) = repository
+        .current_runtime_configuration(&peer_runtime_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("expected the peer to retain its previous Runtime configuration during rollout");
+    };
+    assert_eq!(peer_previous_runtime.segment_generation, 1);
+    assert_eq!(
+        peer_previous_runtime.projection_publication_id,
+        write.projections[1].publication_id
+    );
     repository
         .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
             lookup: runtime_lookup.clone(),
