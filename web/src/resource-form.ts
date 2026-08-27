@@ -101,6 +101,10 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
     spec.max_sessions = positiveInteger(editor.max_sessions);
     spec.max_bits_per_second = Math.round(Number(editor.capacity_mbps) * 1_000_000);
   }
+  if (kind === 'RELAY') {
+    spec.name = cleanText(editor.name);
+    spec.region = cleanText(editor.region);
+  }
   if (kind === 'PATH_CANDIDATE') {
     spec.priority = positiveInteger(editor.priority);
     spec.relay_id = editor.kind === 'RELAY' ? cleanText(editor.relay_id) : null;
@@ -177,6 +181,7 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
     if (!Number.isInteger(Number(spec.max_sessions)) || Number(spec.max_sessions) < 1) errors.push('max_sessions:positive');
     if (!(Number(spec.capacity_mbps) > 0)) errors.push('capacity_mbps:positive');
   }
+  if (kind === 'RELAY' && Array.from(cleanText(spec.region)).length > 80) errors.push('region:length');
   if (kind === 'PATH_CANDIDATE') {
     if (!Number.isInteger(Number(spec.priority)) || Number(spec.priority) < 1 || Number(spec.priority) > 65535) errors.push('priority:range');
     if (spec.source_attachment_id === spec.destination_attachment_id) errors.push('destination_attachment_id:different');

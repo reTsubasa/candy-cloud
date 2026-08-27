@@ -18,6 +18,30 @@ describe('resource form contract mapping', () => {
     });
   });
 
+  it('accepts localized relay regions and normalizes display text', () => {
+    const uuid = '019ff9c1-ac24-7303-a6c3-905768fe5901';
+    const editor = {
+      service_node_id: uuid, name: ' 美国搬瓦工 ', region: ' 美国 ',
+      max_sessions: 10000, capacity_mbps: 1000,
+    };
+    expect(validateResourceEditor('RELAY', editor)).toEqual([]);
+    expect(buildResourceSpec('RELAY', editor)).toEqual({
+      kind: 'RELAY',
+      spec: {
+        service_node_id: uuid, name: '美国搬瓦工', region: '美国',
+        max_sessions: 10000, max_bits_per_second: 1_000_000_000,
+      },
+    });
+  });
+
+  it('rejects relay regions longer than the V1 contract limit', () => {
+    const uuid = '019ff9c1-ac24-7303-a6c3-905768fe5901';
+    expect(validateResourceEditor('RELAY', {
+      service_node_id: uuid, name: 'Relay', region: '区'.repeat(81),
+      max_sessions: 10000, capacity_mbps: 1000,
+    })).toContain('region:length');
+  });
+
   it('serializes structured policy rules and remote egress action', () => {
     vi.stubGlobal('crypto', { randomUUID: () => '019ff9c1-ac24-7303-a6c3-905768fe5905' });
     expect(buildResourceSpec('SERVICE_POLICY', {

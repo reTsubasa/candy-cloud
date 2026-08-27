@@ -135,12 +135,12 @@ function errorMessage(errors: string[]): string {
     site_a_id: '站点 A', site_b_id: '站点 B', service_node_id: '服务节点', attachment_id: '接入关系',
     source_attachment_id: '源接入', destination_attachment_id: '目标接入', peer_id: '对等关系', relay_id: '中继',
     endpoint: '公网端点', transport_node_id: '提供公网传输的节点', priority: '优先级', max_sessions: '会话容量', capacity_mbps: '带宽容量',
-    generation: '配置代次', zone: '内部域', value: '记录值', ttl_seconds: 'TTL', domains: '域名', destination_cidrs: '目标网段',
+    generation: '配置代次', region: '部署区域', zone: '内部域', value: '记录值', ttl_seconds: 'TTL', domains: '域名', destination_cidrs: '目标网段',
   };
   const reasonLabels: Record<string, string> = {
     required: '不能为空', uuid: '格式无效', cidr: '必须是规范 IPv4 CIDR', different: '不能与前一项相同', mismatch: '与所选站点不匹配',
     positive: '必须大于 0', range: '超出允许范围', endpoint: '必须是有效的 IP:端口', unique: '必须为非负且不能重复', domain: '域名格式无效',
-    ipv4: '必须是有效 IPv4 地址', ipv6: '必须是有效 IPv6 地址',
+    ipv4: '必须是有效 IPv4 地址', ipv6: '必须是有效 IPv6 地址', length: '长度超出限制',
   };
   return errors.slice(0, 4).map((value) => {
     const [path, reason] = value.split(':');

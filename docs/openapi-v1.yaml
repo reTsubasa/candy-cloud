@@ -1290,7 +1290,7 @@ components:
       properties:
         service_node_id: { $ref: "#/components/schemas/Uuid" }
         name: { type: string, minLength: 1, maxLength: 200 }
-        region: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }
+        region: { type: string, minLength: 1, maxLength: 80 }
         max_sessions: { type: integer, minimum: 1 }
         max_bits_per_second: { $ref: "#/components/schemas/PositiveInteger" }
     PathCandidateSpec:

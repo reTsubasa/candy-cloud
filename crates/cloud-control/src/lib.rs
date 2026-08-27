@@ -431,7 +431,7 @@ impl ResourceSpecV1 {
             Self::Relay(value) => {
                 require_ids([value.service_node_id])?;
                 validate_name(&value.name)?;
-                validate_token(&value.region, 80)?;
+                validate_display_text(&value.region, 80)?;
                 require_capacity(value.max_sessions, value.max_bits_per_second)
             }
             Self::PathCandidate(value) => {
@@ -571,10 +571,14 @@ fn require_capacity(sessions: u32, bits_per_second: u64) -> Result<(), ContractE
 }
 
 fn validate_name(value: &str) -> Result<(), ContractError> {
+    validate_display_text(value, MAX_NAME_LEN)
+}
+
+fn validate_display_text(value: &str, max_len: usize) -> Result<(), ContractError> {
     let trimmed = value.trim();
     if trimmed != value
         || value.is_empty()
-        || value.len() > MAX_NAME_LEN
+        || value.chars().count() > max_len
         || value.chars().any(char::is_control)
     {
         Err(ContractError::InvalidName)
@@ -711,6 +715,18 @@ mod tests {
             ..base
         };
         assert_eq!(ResourceSpecV1::PathCandidate(relay).validate(), Ok(()));
+    }
+
+    #[test]
+    fn relay_region_accepts_localized_display_text() {
+        let relay = ResourceSpecV1::Relay(RelayV1 {
+            service_node_id: id(1),
+            name: "美国搬瓦工".to_owned(),
+            region: "美国".to_owned(),
+            max_sessions: 10_000,
+            max_bits_per_second: 1_000_000_000,
+        });
+        assert_eq!(relay.validate(), Ok(()));
     }
 
     #[test]
