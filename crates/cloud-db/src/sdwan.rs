@@ -38,6 +38,13 @@ pub struct RuntimeDeviceProfile {
     pub segment_id: Option<Uuid>,
     pub segment_name: Option<String>,
     pub attachment_id: Option<Uuid>,
+    pub peer_sites: Vec<RuntimePeerSiteProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimePeerSiteProfile {
+    pub site_id: Uuid,
+    pub site_name: String,
 }
 
 impl RuntimeConfigurationLookup {
@@ -1064,6 +1071,31 @@ impl SdwanRepository {
             });
         }
         let row = &rows[0];
+        let site_id: Option<Uuid> = row.try_get("site_id")?;
+        let segment_id: Option<Uuid> = row.try_get("segment_id")?;
+        let peer_sites = if let (Some(site_id), Some(segment_id)) = (site_id, segment_id) {
+            sqlx::query(
+                "SELECT DISTINCT a.site_id, s.name AS site_name FROM segment_attachments a JOIN sites s ON s.tenant_id = a.tenant_id AND s.id = a.site_id AND s.state = 'ACTIVE' WHERE a.tenant_id = ? AND a.segment_id = ? AND a.site_id <> ? AND a.state IN ('ACTIVE','STANDBY') ORDER BY s.name, a.site_id LIMIT 4097",
+            )
+            .bind(lookup.tenant_id)
+            .bind(segment_id)
+            .bind(site_id)
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|peer| {
+                Ok(RuntimePeerSiteProfile {
+                    site_id: peer.try_get("site_id")?,
+                    site_name: peer.try_get("site_name")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()?
+        } else {
+            Vec::new()
+        };
+        if peer_sites.len() > MAX_PROJECTIONS {
+            return Err(RuntimeConfigurationError::InvalidScope);
+        }
         Ok(RuntimeDeviceProfile {
             organization_id: row.try_get("organization_id")?,
             organization_name: row.try_get("organization_name")?,
@@ -1072,11 +1104,12 @@ impl SdwanRepository {
             device_id: row.try_get("device_id")?,
             device_key_id: row.try_get("device_key_id")?,
             device_name: row.try_get("device_name")?,
-            site_id: row.try_get("site_id")?,
+            site_id,
             site_name: row.try_get("site_name")?,
-            segment_id: row.try_get("segment_id")?,
+            segment_id,
             segment_name: row.try_get("segment_name")?,
             attachment_id: row.try_get("attachment_id")?,
+            peer_sites,
         })
     }
 

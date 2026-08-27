@@ -252,6 +252,13 @@ pub struct RuntimeProfileDelivery {
     pub segment_id: Option<Uuid>,
     pub segment_name: Option<String>,
     pub attachment_id: Option<Uuid>,
+    pub peer_sites: Vec<RuntimePeerSiteDelivery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuntimePeerSiteDelivery {
+    pub site_id: Uuid,
+    pub site_name: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

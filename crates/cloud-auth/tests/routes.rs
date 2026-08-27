@@ -16,9 +16,9 @@ use cloud_auth::{
         GrantIssueCommand, GrantServiceError, RuntimeConfigurationApplyState,
         RuntimeConfigurationDelivery, RuntimeConfigurationService,
         RuntimeConfigurationServiceError, RuntimeConfigurationStatusCommand,
-        RuntimeProfileDelivery, RuntimeTelemetryCommand, RuntimeTransportEndpointDelivery,
-        RuntimeTransportIdentityCommand, RuntimeTransportIdentityDelivery, ServiceFuture,
-        TenantAuthService,
+        RuntimePeerSiteDelivery, RuntimeProfileDelivery, RuntimeTelemetryCommand,
+        RuntimeTransportEndpointDelivery, RuntimeTransportIdentityCommand,
+        RuntimeTransportIdentityDelivery, ServiceFuture, TenantAuthService,
     },
 };
 use http_body_util::BodyExt;
@@ -128,6 +128,10 @@ impl RuntimeConfigurationService for RecordingRuntimeConfigurationService {
                 segment_id: None,
                 segment_name: None,
                 attachment_id: None,
+                peer_sites: vec![RuntimePeerSiteDelivery {
+                    site_id: Uuid::from_bytes([5; 16]),
+                    site_name: "Shanghai office".into(),
+                }],
             })
         })
     }
@@ -185,6 +189,35 @@ impl RuntimeConfigurationService for RecordingRuntimeConfigurationService {
             Ok(())
         })
     }
+}
+
+#[tokio::test]
+async fn runtime_profile_returns_human_names_for_peer_sites() {
+    let service = Arc::new(RecordingRuntimeConfigurationService::with_delivery(None));
+    let actor = device_actor(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+    let response = runtime_configuration_app(service)
+        .oneshot(
+            Request::builder()
+                .uri("/v1/runtime/profile")
+                .extension(actor)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["peer_sites"][0]["site_name"], "Shanghai office");
+    assert_eq!(
+        body["peer_sites"][0]["site_id"],
+        Uuid::from_bytes([5; 16]).to_string()
+    );
 }
 
 impl EnrollmentHttpService for RecordingEnrollmentService {

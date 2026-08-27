@@ -1618,7 +1618,7 @@ components:
     RuntimeProfile:
       type: object
       additionalProperties: false
-      required: [organization_id, organization_name, tenant_id, tenant_name, device_id, device_key_id, device_name, site_id, site_name, segment_id, segment_name, attachment_id]
+      required: [organization_id, organization_name, tenant_id, tenant_name, device_id, device_key_id, device_name, site_id, site_name, segment_id, segment_name, attachment_id, peer_sites]
       properties:
         organization_id: { $ref: "#/components/schemas/Uuid" }
         organization_name: { type: string, minLength: 1, maxLength: 200 }
@@ -1632,6 +1632,16 @@ components:
         segment_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
         segment_name: { oneOf: [{ type: string, minLength: 1, maxLength: 200 }, { type: "null" }] }
         attachment_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
+        peer_sites:
+          type: array
+          maxItems: 4096
+          items:
+            type: object
+            additionalProperties: false
+            required: [site_id, site_name]
+            properties:
+              site_id: { $ref: "#/components/schemas/Uuid" }
+              site_name: { type: string, minLength: 1, maxLength: 200 }
     RuntimeConfiguration:
       type: object
       additionalProperties: false

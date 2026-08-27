@@ -191,6 +191,14 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                 segment_id: profile.segment_id,
                 segment_name: profile.segment_name,
                 attachment_id: profile.attachment_id,
+                peer_sites: profile
+                    .peer_sites
+                    .into_iter()
+                    .map(|peer| crate::routes::RuntimePeerSiteDelivery {
+                        site_id: peer.site_id,
+                        site_name: peer.site_name,
+                    })
+                    .collect(),
             })
         })
     }
