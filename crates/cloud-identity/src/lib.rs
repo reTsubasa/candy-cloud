@@ -1193,7 +1193,7 @@ async fn invite_member(
         tracing::error!(event = "identity_invitation_delivery_failed", error = %error);
         state
             .repository
-            .revoke_organization_invitation(invitation.id, access.organization_id)
+            .revoke_organization_invitation(invitation.id, access.organization_id, access.user_id)
             .await
             .map_err(ApiError::Repository)?;
         return Err(ApiError::Unavailable);

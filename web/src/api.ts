@@ -354,8 +354,8 @@ export async function fetchRuntimeTelemetry(
   };
 }
 
-export function listAuditEvents(token: string, tenantId: string, limit = 200): Promise<AuditEventResponse> {
-  return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/audit-events?limit=${limit}`, token);
+export function listAuditEvents(token: string, tenantId: string, limit = 500): Promise<AuditEventResponse> {
+  return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/audit-events?limit=${limit}&include_routine=false`, token);
 }
 
 export function getResource(token: string, tenantId: string, collection: string, id: string): Promise<ControlResource> {

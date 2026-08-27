@@ -270,14 +270,17 @@ impl ControlRepository {
         &self,
         tenant_id: Uuid,
         limit: u16,
+        include_routine: bool,
     ) -> Result<Vec<AuditEventRecord>, ControlStoreError> {
         if tenant_id.is_nil() || limit == 0 {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT id, actor_type, actor_id, action, object_type, object_id, CAST(metadata_json AS CHAR) AS metadata_json, created_at FROM audit_events WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            "SELECT id, actor_type, actor_id, action, object_type, object_id, CAST(metadata_json AS CHAR) AS metadata_json, created_at FROM audit_events WHERE (tenant_id = ? OR (tenant_id IS NULL AND organization_id = (SELECT organization_id FROM tenants WHERE id = ?))) AND (? = TRUE OR action <> 'IDENTITY_REFRESH_SUCCEEDED') ORDER BY created_at DESC, id DESC LIMIT ?",
         )
         .bind(tenant_id)
+        .bind(tenant_id)
+        .bind(include_routine)
         .bind(limit.min(500) as u32)
         .fetch_all(&self.pool)
         .await?;
@@ -980,6 +983,24 @@ impl ControlRepository {
             transaction.commit().await?;
             return Ok(MutationOutcome::Replayed(replayed));
         }
+        let previous = if let Some(expected_revision) = expected {
+            let row = sqlx::query(
+                "SELECT CAST(document_json AS CHAR) AS document_json FROM sdwan_control_resources WHERE tenant_id = ? AND resource_kind = ? AND id = ? AND revision = ? AND state <> 'DELETED' FOR UPDATE",
+            )
+            .bind(metadata.tenant_id)
+            .bind(mutation.resource.resource.kind().database_value())
+            .bind(metadata.id)
+            .bind(expected_revision)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let Some(row) = row else {
+                transaction.rollback().await?;
+                return Err(ControlStoreError::RevisionConflict);
+            };
+            Some(decode_resource(row.try_get("document_json")?)?)
+        } else {
+            None
+        };
         let mut affected_segments = dependent_segments(
             &mut transaction,
             metadata.tenant_id,
@@ -1065,10 +1086,98 @@ impl ControlRepository {
             )
             .await?;
         }
+        insert_resource_audit(&mut transaction, mutation, previous.as_ref()).await?;
         insert_idempotency(&mut transaction, mutation).await?;
         transaction.commit().await?;
         Ok(MutationOutcome::Applied(mutation.resource.clone()))
     }
+}
+
+async fn insert_resource_audit(
+    transaction: &mut Transaction<'_, MySql>,
+    mutation: &ResourceMutation,
+    previous: Option<&ControlResourceV1>,
+) -> Result<(), ControlStoreError> {
+    let resource = &mutation.resource;
+    let kind = resource.resource.kind();
+    let operation = if resource.metadata.state == ResourceState::Deleted {
+        "delete"
+    } else if previous.is_some() {
+        "update"
+    } else {
+        "create"
+    };
+    let action = match operation {
+        "create" => "CONTROL_RESOURCE_CREATED",
+        "update" => "CONTROL_RESOURCE_UPDATED",
+        _ => "CONTROL_RESOURCE_DELETED",
+    };
+    let mut changed_fields =
+        changed_resource_fields(previous.map(|item| &item.resource), &resource.resource);
+    if previous.is_some_and(|item| item.metadata.state != resource.metadata.state) {
+        changed_fields.push("state".into());
+    }
+    let metadata = serde_json::json!({
+        "operation": operation,
+        "collection": kind.api_collection(),
+        "resource_name": resource_audit_name(&resource.resource),
+        "revision": resource.metadata.revision,
+        "previous_revision": previous.map(|item| item.metadata.revision),
+        "changed_fields": changed_fields,
+        "state": resource_state(resource.metadata.state),
+        "request_method": mutation.context.request_method,
+    });
+    let metadata = serde_json::to_string(&metadata)
+        .map_err(|error| ControlStoreError::InvalidResource(error.to_string()))?;
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'USER', ?, ?, ?, ?, CAST(? AS JSON))",
+    )
+    .bind(Uuid::now_v7())
+    .bind(resource.metadata.tenant_id)
+    .bind(&mutation.context.actor_id)
+    .bind(action)
+    .bind(kind.database_value())
+    .bind(resource.metadata.id.to_string())
+    .bind(metadata)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+fn resource_audit_name(resource: &ResourceSpecV1) -> Option<String> {
+    match resource {
+        ResourceSpecV1::Node(value) => Some(value.display_name.clone()),
+        ResourceSpecV1::Site(value) => Some(value.name.clone()),
+        ResourceSpecV1::Segment(value) => Some(value.name.clone()),
+        ResourceSpecV1::Prefix(value) => Some(format!(
+            "{}/{}",
+            value.prefix.network, value.prefix.prefix_len
+        )),
+        ResourceSpecV1::Relay(value) => Some(value.name.clone()),
+        ResourceSpecV1::PathCandidate(_) => None,
+        ResourceSpecV1::Egress(value) => Some(value.name.clone()),
+        ResourceSpecV1::ServicePolicy(_) => None,
+        ResourceSpecV1::DnsIntent(value) => Some(value.zone.clone()),
+        ResourceSpecV1::Attachment(_) | ResourceSpecV1::Peer(_) => None,
+    }
+}
+
+fn changed_resource_fields(
+    previous: Option<&ResourceSpecV1>,
+    current: &ResourceSpecV1,
+) -> Vec<String> {
+    let current = serde_json::to_value(current).ok();
+    let previous = previous.and_then(|value| serde_json::to_value(value).ok());
+    let current_spec = current.as_ref().and_then(|value| value.get("spec"));
+    let previous_spec = previous.as_ref().and_then(|value| value.get("spec"));
+    let Some(fields) = current_spec.and_then(serde_json::Value::as_object) else {
+        return Vec::new();
+    };
+    fields
+        .iter()
+        .filter(|(key, value)| previous_spec.and_then(|item| item.get(*key)) != Some(*value))
+        .map(|(key, _)| key.clone())
+        .collect()
 }
 
 async fn retire_deleted_segment(

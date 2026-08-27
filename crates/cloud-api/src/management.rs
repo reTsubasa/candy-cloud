@@ -271,6 +271,8 @@ pub struct AuditEventItem {
 #[derive(Debug, Deserialize)]
 pub struct AuditEventQuery {
     pub limit: Option<u16>,
+    #[serde(default)]
+    pub include_routine: bool,
 }
 
 pub async fn audit_events(
@@ -287,7 +289,7 @@ pub async fn audit_events(
         message: "control plane storage is not configured",
     })?;
     let items = repository
-        .audit_events(tenant_id, query.limit.unwrap_or(200))
+        .audit_events(tenant_id, query.limit.unwrap_or(200), query.include_routine)
         .await
         .map_err(ApiError::from_store)?
         .into_iter()

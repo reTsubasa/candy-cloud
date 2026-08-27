@@ -629,6 +629,10 @@ impl IdentityRepository {
             .bind(invitation.id).bind(invitation.organization_id).bind(&invitation.email)
             .bind(invitation.role.database_value()).bind(token_hash).bind(invited_by)
             .bind(invitation.expires_at).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO audit_events (id, organization_id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, NULL, 'USER', ?, 'ORGANIZATION_INVITATION_CREATED', 'ORGANIZATION_INVITATION', ?, JSON_OBJECT('email', ?, 'role', ?, 'expires_at', ?))")
+            .bind(Uuid::now_v7()).bind(invitation.organization_id).bind(invited_by.to_string())
+            .bind(invitation.id.to_string()).bind(&invitation.email).bind(invitation.role.database_value())
+            .bind(invitation.expires_at).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -670,6 +674,15 @@ impl IdentityRepository {
             .bind(invitation.id)
             .execute(&mut *tx)
             .await?;
+        append_identity_audit(
+            &mut tx,
+            invitation.organization_id,
+            user_id,
+            "ORGANIZATION_INVITATION_ACCEPTED",
+            "ORGANIZATION_INVITATION",
+            invitation.id,
+        )
+        .await?;
         tx.commit().await?;
         Ok(Some(invitation))
     }
@@ -717,6 +730,15 @@ impl IdentityRepository {
             .bind(row.try_get::<Uuid, _>("id")?)
             .execute(&mut *tx)
             .await?;
+        append_identity_audit(
+            &mut tx,
+            organization_id,
+            registration.user_id,
+            "ORGANIZATION_INVITATION_ACCEPTED",
+            "ORGANIZATION_INVITATION",
+            row.try_get("id")?,
+        )
+        .await?;
         let user = HumanUser {
             id: registration.user_id,
             email,
@@ -740,12 +762,26 @@ impl IdentityRepository {
         &self,
         invitation_id: Uuid,
         organization_id: Uuid,
+        actor_id: Uuid,
     ) -> Result<(), IdentityRepositoryError> {
-        if invitation_id.is_nil() || organization_id.is_nil() {
+        if invitation_id.is_nil() || organization_id.is_nil() || actor_id.is_nil() {
             return Err(IdentityRepositoryError::InvalidInput);
         }
-        sqlx::query("UPDATE organization_invitations SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(6)) WHERE id = ? AND organization_id = ? AND accepted_at IS NULL")
-            .bind(invitation_id).bind(organization_id).execute(&self.pool).await?;
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query("UPDATE organization_invitations SET revoked_at = CURRENT_TIMESTAMP(6) WHERE id = ? AND organization_id = ? AND accepted_at IS NULL AND revoked_at IS NULL")
+            .bind(invitation_id).bind(organization_id).execute(&mut *tx).await?;
+        if result.rows_affected() == 1 {
+            append_identity_audit(
+                &mut tx,
+                organization_id,
+                actor_id,
+                "ORGANIZATION_INVITATION_REVOKED",
+                "ORGANIZATION_INVITATION",
+                invitation_id,
+            )
+            .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
