@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Empty, Select, Space, Spin, Switch, Tag, Typography } from '@arco-design/web-react';
+import { Alert, Button, Empty, Select, Space, Spin, Switch, Tag } from '@arco-design/web-react';
 import {
   IconBranch,
   IconCheckCircle,
@@ -9,6 +9,7 @@ import {
   IconRight,
   IconStorage,
   IconThunderbolt,
+  IconWifi,
 } from '@arco-design/web-react/icon';
 import {
   fetchHealth,
@@ -21,6 +22,8 @@ import {
   buildOperationalTopology,
   emptyOperationalResources,
   type OperationalResources,
+  type OperationalLink,
+  type OperationalNode,
   type OperationalResourceKey,
   type OperationalTopologySnapshot,
   type ResourceLoadErrors,
@@ -28,6 +31,16 @@ import {
 import { LINK_STATUS_BOUNDARIES, NODE_STATUS_BOUNDARIES, type OperationalTone } from '../operational-status';
 import { pathDefinition, resourceDefinitions } from '../resource-definitions';
 import type { ControlResource, HealthState, RuntimeActivationReadiness, RuntimeConfigurationStatus, RuntimeTelemetry, Session } from '../types';
+import {
+  BarChart,
+  Gauge,
+  GradientStatusBar,
+  NavigationTabs,
+  NervPanel,
+  PhaseStatusStack,
+  type NervTone,
+  type PhaseItem,
+} from '../vendor/nerv-ui';
 import { QuickSetupWizard } from './QuickSetupWizard';
 
 type Props = { session: Session; onOpenLogs?: () => void };
@@ -75,6 +88,7 @@ export function Overview({ session, onOpenLogs }: Props) {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [clock, setClock] = useState(() => Date.now());
   const [selectedSegmentId, setSelectedSegmentId] = useState('');
+  const [activeView, setActiveView] = useState('network');
   const [setupVisible, setSetupVisible] = useState(false);
   const tenantId = session.claims.tenant_id;
 
@@ -178,9 +192,31 @@ export function Overview({ session, onOpenLogs }: Props) {
     return items.slice(0, 6);
   }, [controlReady, health, resourceErrorCount, telemetryAvailable, topology]);
 
+  const overallTone: NervTone = !controlReady || topology.errorNodeCount > 0 || topology.failedLinkCount > 0
+    ? 'red'
+    : topology.warningNodeCount > 0 || topology.warningLinkCount > 0 || incidents.length > 0 ? 'orange' : 'green';
+  const overallLabel = topology.nodes.length === 0
+    ? '等待接入'
+    : overallTone === 'red' ? '存在故障' : overallTone === 'orange' ? '需要关注' : '全网正常';
+  const healthyNodePercent = topology.nodes.length > 0 ? Math.round(topology.healthyNodeCount / topology.nodes.length * 100) : 0;
+  const activeLinkPercent = topology.links.length > 0 ? Math.round(topology.activeLinkCount / topology.links.length * 100) : 0;
+  const throughputBars = topology.nodes.flatMap((node) => {
+    const rxBps = node.telemetry?.rx_bps ?? null;
+    const txBps = node.telemetry?.tx_bps ?? null;
+    if (rxBps === null && txBps === null) return [];
+    return [{ label: node.name, value: ((rxBps ?? 0) + (txBps ?? 0)) / 1_000_000, color: node.status.tone === 'red' ? '#ff4d3d' : node.status.tone === 'orange' ? '#ff9f1a' : '#22d3ee', detail: `接收 ${formatRate(rxBps)} · 发送 ${formatRate(txBps)}` }];
+  });
+  const phaseItems: PhaseItem[] = [
+    { label: '控制面', value: controlReady ? '就绪' : '异常', status: controlReady ? 'ok' : 'danger' },
+    { label: '配置发布', value: topology.readinessLabel, status: topology.readiness?.ready ? 'ok' : topology.rejectedNodeCount > 0 ? 'danger' : 'warning' },
+    { label: '节点数据面', value: `${topology.healthyNodeCount}/${topology.nodes.length}`, status: topology.errorNodeCount > 0 ? 'danger' : topology.warningNodeCount > 0 || topology.nodes.length === 0 ? 'warning' : 'ok' },
+    { label: '互联认证', value: `${topology.activeLinkCount}/${topology.links.length}`, status: topology.failedLinkCount > 0 ? 'danger' : topology.warningLinkCount > 0 || topology.links.length === 0 ? 'warning' : 'ok' },
+  ];
+
   return (
     <section className="workspace-section operational-overview">
       <header className="page-header operational-header">
+        <div className="nerv-command-heading"><small>SD-WAN OPERATIONS</small><strong>运行状态监控</strong><span>{selectedSegmentId ? topology.segment?.name ?? '当前网络' : '全租户网络态势'}</span></div>
         <Space>
           <span className="live-refresh-control"><Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} /><span>实时更新</span></span>
           <Button icon={<IconRefresh />} loading={refreshing} onClick={() => void load(true)}>刷新</Button>
@@ -189,76 +225,42 @@ export function Overview({ session, onOpenLogs }: Props) {
       </header>
       {!tenantId && <Alert type="error" showIcon content="当前会话缺少租户范围，无法读取网络运行状态。" />}
       <Spin loading={loading} block>
-        <div className="operational-status-strip">
-          <StatusMetric icon={<IconCloud />} label="控制面" value={controlReady ? '正常' : '异常'} detail={controlPlaneDetail(health)} tone={controlReady ? 'ok' : 'error'} />
-          <StatusMetric icon={<IconDesktop />} label="节点状态" value={`${topology.registeredNodeCount} 已注册`} detail={`${topology.healthyNodeCount} 正常 · ${topology.warningNodeCount} 处理中 · ${topology.errorNodeCount} 异常`} tone={topology.errorNodeCount > 0 ? 'error' : topology.nodes.length === 0 ? 'neutral' : topology.warningNodeCount > 0 ? 'warn' : 'ok'} />
-          <StatusMetric icon={<IconBranch />} label="互联链路" value={`${topology.activeLinkCount} / ${topology.links.length} 已认证`} detail={`${topology.warningLinkCount} 协商/更新 · ${topology.failedLinkCount} 故障`} tone={topology.failedLinkCount > 0 ? 'error' : topology.links.length === 0 ? 'neutral' : topology.warningLinkCount > 0 ? 'warn' : 'ok'} />
-          <StatusMetric icon={<IconStorage />} label="路由与出口" value={`${topology.routeCount} 条路由`} detail={`${topology.egressCount} 个出口 · ${topology.policyRuleCount} 条策略规则`} tone="neutral" />
-          <StatusMetric icon={<IconThunderbolt />} label="性能遥测" value={topology.nodes.length > 0 ? `${topology.telemetryCoverageCount} / ${topology.nodes.length}` : '未接入'} detail={!telemetryAvailable ? 'Cloud 遥测接口当前不可用' : topology.telemetryCoverageCount > 0 ? '仅统计新鲜且有来源的性能样本' : 'Runtime 在线状态已接入，等待 Core 性能指标'} tone="neutral" />
-        </div>
+        <div className="nerv-dashboard-shell">
+          <section className={`nerv-command-strip tone-${overallTone}`}>
+            <div className="nerv-primary-state"><small>NETWORK STATE</small><strong>{overallLabel}</strong><span>{incidents.length > 0 ? `${incidents.length} 项事件需要处理` : `${topology.onlineNodeCount} 个节点持续上报，未发现明确故障`}</span></div>
+            <GradientStatusBar
+              value={healthyNodePercent}
+              zones={[{ start: 0, end: 60, color: '#ff4d3d', label: '故障' }, { start: 60, end: 90, color: '#ff9f1a', label: '恢复中' }, { start: 90, end: 100, color: '#1bd98a', label: '正常' }]}
+              label="节点健康覆盖"
+              detail={`${topology.healthyNodeCount} / ${topology.nodes.length} 个节点数据面正常`}
+            />
+            <div className="nerv-live-throughput"><small>LIVE THROUGHPUT</small><div><span>RX<strong>{formatRate(topology.rxBps)}</strong></span><span>TX<strong>{formatRate(topology.txBps)}</strong></span></div><footer><i className={autoRefresh ? 'active' : ''} />{relativeTime(lastUpdated, clock)}{refreshing ? ' · 同步中' : ''}</footer></div>
+          </section>
 
-        <div className="operational-layout">
-          <div className="operational-main-column">
-            <section className="topology-workspace">
-            <header className="topology-toolbar">
-              <div>
-                <Typography.Title heading={5}>实时网络拓扑</Typography.Title>
-                <div className="topology-toolbar-meta">
-                  <span className="topology-update-state"><i className={autoRefresh ? 'active' : ''} />{relativeTime(lastUpdated, clock)}{refreshing ? ' · 同步中' : ''}</span>
-                  <span className="topology-scope">{selectedSegmentId ? `${topology.segment?.name ?? '当前网络'} · ${topology.segment?.overlayCidr ?? ''}` : `全部网络 · ${topology.sites.length} 个站点`}</span>
-                </div>
-              </div>
-              <Select
-                value={selectedSegmentId || 'all'}
-                options={[{ label: '全部网络', value: 'all' }, ...resources.segments.map((segment) => ({ label: String(segment.resource.spec.name ?? segment.metadata.id), value: segment.metadata.id }))]}
-                onChange={(value) => setSelectedSegmentId(value === 'all' ? '' : value)}
-                placeholder="筛选网络分段"
-                className="segment-selector"
-              />
-            </header>
-            {topology.segment ? <TopologyCanvas snapshot={topology} controlReady={controlReady} /> : (
-              <div className="topology-empty"><Empty description="尚未建立可展示的网络分段" /><Button type="primary" onClick={() => setSetupVisible(true)}>开始配置</Button></div>
-            )}
-            </section>
-
-            {topology.segment && <section className="resource-observability">
-              <header><div><Typography.Title heading={5}>资源与路由状态</Typography.Title><Typography.Text type="secondary">{selectedSegmentId ? '当前网络分段的实际配置关系' : '所有网络分段的实际配置关系'}</Typography.Text></div><Tag color={topology.readiness?.ready ? 'green' : 'orange'}>{topology.readinessLabel}</Tag></header>
-              <div className="resource-observability-grid">
-                <ResourceSignal label="站点" value={topology.sites.length} detail={topology.sites.map((site) => site.name).join('、') || '未接入'} />
-                <ResourceSignal label="节点" value={topology.nodes.length} detail={`${topology.registeredNodeCount} 个已注册 · ${topology.healthyNodeCount} 个运行正常`} />
-                <ResourceSignal label="路由前缀" value={topology.routeCount} detail={topology.routeLabels.join('、') || '未发布'} mono />
-                <ResourceSignal label="互联网出口" value={topology.egressCount} detail={topology.egressLabels.join('、') || '未配置'} />
-                <ResourceSignal label="流量策略" value={topology.policyRuleCount} detail={`${topology.policyRuleCount > 0 ? topology.policyRuleCount : 0} 条规则`} />
-                <ResourceSignal label="DNS" value={topology.dnsRecordCount} detail={`${topology.dnsZoneCount} 个内部区域`} />
-              </div>
-            </section>}
+          <div className="nerv-dashboard-nav">
+            <NavigationTabs tabs={[{ id: 'network', label: '全网态势' }, { id: 'nodes', label: '节点与性能' }, { id: 'links', label: '链路与策略' }]} activeTab={activeView} onTabChange={setActiveView} />
+            <Select
+              value={selectedSegmentId || 'all'}
+              options={[{ label: '全部网络', value: 'all' }, ...resources.segments.map((segment) => ({ label: String(segment.resource.spec.name ?? segment.metadata.id), value: segment.metadata.id }))]}
+              onChange={(value) => setSelectedSegmentId(value === 'all' ? '' : value)}
+              className="segment-selector"
+            />
           </div>
 
-          <aside className="telemetry-rail">
-            <section>
-              <header><strong>运行事件</strong><span className="incident-header-actions"><Tag color={incidents.length > 0 ? 'orange' : 'green'}>{incidents.length > 0 ? `${incidents.length} 项关注` : '无异常'}</Tag>{onOpenLogs && <Button type="text" size="mini" onClick={onOpenLogs}>查看日志</Button>}</span></header>
-              {incidents.length === 0 ? <div className="quiet-state"><IconCheckCircle /><span>当前未发现控制面或配置应用异常</span></div> : (
-                <div className="incident-list">{incidents.map((incident, index) => <div className={`incident-item ${incident.tone}`} key={`${incident.title}-${index}`}><i /><div><strong>{incident.title}</strong><span>{incident.detail}</span></div></div>)}</div>
-              )}
-            </section>
-            <section>
-              <header><strong>数据面遥测</strong><Tag color={topology.onlineNodeCount > 0 ? 'green' : 'gray'}>{topology.onlineNodeCount > 0 ? `${topology.onlineNodeCount} 个节点在线` : '无新鲜上报'}</Tag></header>
-              <div className="telemetry-grid">
-                <div><span>往返时延</span><strong>{formatMetric(topology.averageRttMs, ' ms')}</strong></div>
-                <div><span>丢包</span><strong>{topology.averagePacketLossPpm === null ? '—' : `${(topology.averagePacketLossPpm / 10_000).toFixed(2)}%`}</strong></div>
-                <div><span>接收速率</span><strong>{formatRate(topology.rxBps)}</strong></div>
-                <div><span>发送速率</span><strong>{formatRate(topology.txBps)}</strong></div>
-              </div>
-              <p className="telemetry-source-note">在线、自动降级、Peer 与路由状态来自 Runtime 心跳；时延、丢包和速率仅在 Core 提供真实采样时显示。</p>
-            </section>
-            <section>
-              <header><strong>控制面探针</strong><span className="probe-time">{relativeTime(lastUpdated, clock)}</span></header>
-              <div className="probe-list">{(['live', 'ready', 'degraded'] as const).map((key) => {
-                const meta = healthLabel(health[key].status);
-                return <div key={key}><span><i className={meta.tone} />{key}</span><strong>{meta.label}</strong></div>;
-              })}</div>
-            </section>
-          </aside>
+          {activeView === 'network' && <NetworkDashboard
+            topology={topology}
+            controlReady={controlReady}
+            health={health}
+            telemetryAvailable={telemetryAvailable}
+            incidents={incidents}
+            phaseItems={phaseItems}
+            throughputBars={throughputBars}
+            activeLinkPercent={activeLinkPercent}
+            onOpenLogs={onOpenLogs}
+            onStartSetup={() => setSetupVisible(true)}
+          />}
+          {activeView === 'nodes' && <NodeDashboard topology={topology} telemetryAvailable={telemetryAvailable} clock={clock} />}
+          {activeView === 'links' && <LinkDashboard topology={topology} />}
         </div>
       </Spin>
       <QuickSetupWizard visible={setupVisible} session={session} onClose={() => { setSetupVisible(false); void load(); }} onChanged={() => void load()} />
@@ -266,12 +268,123 @@ export function Overview({ session, onOpenLogs }: Props) {
   );
 }
 
-function StatusMetric({ icon, label, value, detail, tone }: { icon: React.ReactNode; label: string; value: string; detail: string; tone: 'ok' | 'warn' | 'error' | 'neutral' }) {
-  return <div className={`status-metric ${tone}`}><span className="status-metric-icon">{icon}</span><div><span>{label}</span><strong>{value}</strong><small title={detail}>{detail}</small></div></div>;
+type Incident = { tone: 'error' | 'warn'; title: string; detail: string };
+
+function NetworkDashboard({ topology, controlReady, health, telemetryAvailable, incidents, phaseItems, throughputBars, activeLinkPercent, onOpenLogs, onStartSetup }: {
+  topology: OperationalTopologySnapshot;
+  controlReady: boolean;
+  health: HealthState;
+  telemetryAvailable: boolean;
+  incidents: Incident[];
+  phaseItems: PhaseItem[];
+  throughputBars: Array<{ label: string; value: number; color: string; detail: string }>;
+  activeLinkPercent: number;
+  onOpenLogs?: () => void;
+  onStartSetup: () => void;
+}) {
+  return <div className="nerv-dashboard-view" role="tabpanel">
+    <div className="nerv-signal-grid">
+      <DashboardSignal icon={<IconCloud />} label="控制面" value={controlReady ? '服务就绪' : '服务异常'} detail={controlPlaneDetail(health)} tone={controlReady ? 'green' : 'red'} />
+      <DashboardSignal icon={<IconDesktop />} label="节点" value={`${topology.healthyNodeCount} / ${topology.nodes.length} 正常`} detail={`${topology.warningNodeCount} 处理中 · ${topology.errorNodeCount} 故障`} tone={topology.errorNodeCount > 0 ? 'red' : topology.warningNodeCount > 0 ? 'orange' : topology.nodes.length > 0 ? 'green' : 'muted'} />
+      <DashboardSignal icon={<IconBranch />} label="互联" value={`${topology.activeLinkCount} / ${topology.links.length} 已认证`} detail={`${topology.warningLinkCount} 协商中 · ${topology.failedLinkCount} 故障`} tone={topology.failedLinkCount > 0 ? 'red' : topology.warningLinkCount > 0 ? 'orange' : topology.links.length > 0 ? 'green' : 'muted'} />
+      <DashboardSignal icon={<IconStorage />} label="策略与出口" value={`${topology.policyRuleCount} 条规则`} detail={`${topology.routeCount} 条路由 · ${topology.egressCount} 个出口`} tone="cyan" />
+      <DashboardSignal icon={<IconThunderbolt />} label="性能样本" value={`${topology.telemetryCoverageCount} / ${topology.nodes.length}`} detail={telemetryAvailable ? '仅统计新鲜 Core 采样' : '遥测接口不可用'} tone={telemetryAvailable ? 'cyan' : 'red'} />
+    </div>
+
+    <div className="nerv-network-layout">
+      <NervPanel label="NETWORK MAP" title="实时网络拓扑" className="nerv-topology-panel" action={<Tag color={topology.readiness?.ready ? 'green' : 'orange'}>{topology.readinessLabel}</Tag>}>
+        {topology.segment ? <TopologyCanvas snapshot={topology} controlReady={controlReady} /> : <div className="topology-empty"><Empty description="尚未建立可展示的网络分段" /><Button type="primary" onClick={onStartSetup}>开始配置</Button></div>}
+      </NervPanel>
+      <aside className="nerv-operations-rail">
+        <NervPanel label="INCIDENT QUEUE" title="运行事件" action={onOpenLogs && <Button type="text" size="mini" onClick={onOpenLogs}>查看日志</Button>}>
+          {incidents.length === 0 ? <div className="nerv-quiet-state"><IconCheckCircle /><span><strong>未发现明确故障</strong><small>节点、链路与配置发布均在可接受边界内</small></span></div> : <div className="nerv-incident-list">{incidents.map((incident, index) => <div className={incident.tone} key={`${incident.title}-${index}`}><i /><span><strong>{incident.title}</strong><small>{incident.detail}</small></span></div>)}</div>}
+        </NervPanel>
+        <NervPanel label="SYSTEM PHASES" title="运行阶段">
+          <PhaseStatusStack title="CONTROL TO DATA PLANE" phases={phaseItems} />
+          <div className="nerv-probe-list">{(['live', 'ready', 'degraded'] as const).map((key) => { const meta = healthLabel(health[key].status); return <span key={key}><i className={meta.tone} />{key}<strong>{meta.label}</strong></span>; })}</div>
+        </NervPanel>
+      </aside>
+    </div>
+
+    <NervPanel label="DATA PLANE" title="实时性能">
+      <div className="nerv-performance-layout">
+        <div className="nerv-gauge-pair">
+          <Gauge label="平均 RTT" value={topology.averageRttMs} max={300} unit="ms" tone="cyan" threshold={150} />
+          <Gauge label="平均丢包" value={topology.averagePacketLossPpm === null ? null : Number((topology.averagePacketLossPpm / 10_000).toFixed(2))} max={5} unit="%" tone="green" threshold={1} />
+        </div>
+        <BarChart title="节点实时吞吐" bars={throughputBars} unit="Mbps" />
+        <div className="nerv-link-integrity"><GradientStatusBar value={activeLinkPercent} label="链路双向认证覆盖" detail={`${topology.activeLinkCount} / ${topology.links.length} 条互联已完成双向认证`} zones={[{ start: 0, end: 60, color: '#ff4d3d', label: '不可用' }, { start: 60, end: 90, color: '#ff9f1a', label: '部分可用' }, { start: 90, end: 100, color: '#1bd98a', label: '已认证' }]} /><p>在线与自动降级来自 Runtime 心跳；RTT、丢包、RX/TX 只展示 Core 实际上报，不补零、不推测。</p></div>
+      </div>
+    </NervPanel>
+  </div>;
 }
 
-function ResourceSignal({ label, value, detail, mono = false }: { label: string; value: number; detail: string; mono?: boolean }) {
-  return <div className="resource-signal"><span>{label}</span><strong>{value}</strong><small className={mono ? 'mono' : ''} title={detail}>{detail}</small></div>;
+function DashboardSignal({ icon, label, value, detail, tone }: { icon: React.ReactNode; label: string; value: string; detail: string; tone: NervTone }) {
+  return <div className={`nerv-dashboard-signal tone-${tone}`}><span>{icon}</span><div><small>{label}</small><strong>{value}</strong><p title={detail}>{detail}</p></div></div>;
+}
+
+function NodeDashboard({ topology, telemetryAvailable, clock }: { topology: OperationalTopologySnapshot; telemetryAvailable: boolean; clock: number }) {
+  return <div className="nerv-dashboard-view" role="tabpanel">
+    <div className="nerv-view-summary"><div><small>NODE INVENTORY</small><strong>{topology.nodes.length} 个节点</strong><span>{topology.onlineNodeCount} 个新鲜上报 · {topology.staleNodeCount} 个状态中断 · {topology.failOpenNodeCount} 个已降级</span></div><Tag color={telemetryAvailable ? 'green' : 'red'}>{telemetryAvailable ? '遥测接口正常' : '遥测接口异常'}</Tag></div>
+    {topology.nodes.length === 0 ? <div className="nerv-view-empty"><Empty description="当前范围没有节点" /></div> : <div className="nerv-node-grid">{topology.nodes.map((node) => <NodeMonitorCard key={node.id} node={node} siteName={topology.sites.find((site) => site.id === node.siteId)?.name ?? '未关联站点'} clock={clock} />)}</div>}
+  </div>;
+}
+
+function NodeMonitorCard({ node, siteName, clock }: { node: OperationalNode; siteName: string; clock: number }) {
+  const telemetry = node.telemetry;
+  const peerPercent = node.configuredPeers > 0 ? Math.round(node.activePeers / node.configuredPeers * 100) : node.activePeers > 0 ? 100 : 0;
+  const routePercent = node.requiredRouteOwners > 0 ? Math.round(node.readyRouteOwners / node.requiredRouteOwners * 100) : node.readyRouteOwners > 0 ? 100 : 0;
+  return <article className={`nerv-node-card tone-${node.status.tone}`}>
+    <header><div><small>{siteName}</small><strong>{node.name}</strong></div><span><i />{node.status.label}</span></header>
+    <p className="nerv-node-status-detail">{node.status.detail}</p>
+    <div className="nerv-node-vitals">
+      <Metric label="RX" value={formatRate(telemetry?.rx_bps ?? null)} />
+      <Metric label="TX" value={formatRate(telemetry?.tx_bps ?? null)} />
+      <Metric label="RTT" value={formatMetric(telemetry?.rtt_ms ?? null, ' ms')} />
+      <Metric label="抖动" value={formatMetric(telemetry?.jitter_ms ?? null, ' ms')} />
+      <Metric label="丢包" value={telemetry?.packet_loss_ppm == null ? '—' : `${(telemetry.packet_loss_ppm / 10_000).toFixed(2)}%`} />
+      <Metric label="重连 / 切换" value={`${telemetry?.reconnects ?? '—'} / ${telemetry?.path_changes ?? '—'}`} />
+    </div>
+    <div className="nerv-readiness-bars"><ReadinessRow label="Peer 会话" value={peerPercent} detail={`${node.activePeers}/${node.configuredPeers}`} /><ReadinessRow label="路由就绪" value={routePercent} detail={`${node.readyRouteOwners}/${node.requiredRouteOwners}`} /></div>
+    <footer><span>{node.telemetryState === 'stale' && telemetry ? formatStaleTelemetryAt(telemetry.reported_at, clock) : node.telemetryState === 'online' ? '遥测持续更新' : '尚未收到遥测'}</span><div>{telemetry?.local_networks.slice(0, 3).map((network) => <code key={network.network_id}>{network.cidr}</code>)}{(telemetry?.local_networks.length ?? 0) > 3 && <code>+{(telemetry?.local_networks.length ?? 0) - 3}</code>}</div></footer>
+  </article>;
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function ReadinessRow({ label, value, detail }: { label: string; value: number; detail: string }) {
+  return <div><span>{label}</span><div><i style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></div><strong>{detail}</strong></div>;
+}
+
+function LinkDashboard({ topology }: { topology: OperationalTopologySnapshot }) {
+  return <div className="nerv-dashboard-view" role="tabpanel">
+    <div className="nerv-resource-band">
+      <ResourceDatum icon={<IconWifi />} label="站点" value={topology.sites.length} detail={topology.sites.map((site) => site.name).join('、') || '未接入'} />
+      <ResourceDatum icon={<IconBranch />} label="互联" value={topology.links.length} detail={`${topology.activeLinkCount} 条已认证`} />
+      <ResourceDatum icon={<IconStorage />} label="路由前缀" value={topology.routeCount} detail={topology.routeLabels.join('、') || '未发布'} mono />
+      <ResourceDatum icon={<IconCloud />} label="互联网出口" value={topology.egressCount} detail={topology.egressLabels.join('、') || '未配置'} />
+      <ResourceDatum icon={<IconThunderbolt />} label="策略 / DNS" value={topology.policyRuleCount} detail={`${topology.policyRuleCount} 条策略 · ${topology.dnsRecordCount} 条 DNS`} />
+    </div>
+    {topology.links.length === 0 ? <div className="nerv-view-empty"><Empty description="当前范围没有站点互联" /></div> : <div className="nerv-link-grid">{topology.links.map((link) => <LinkMonitorCard key={link.id} link={link} />)}</div>}
+  </div>;
+}
+
+function ResourceDatum({ icon, label, value, detail, mono = false }: { icon: React.ReactNode; label: string; value: number; detail: string; mono?: boolean }) {
+  return <div><span>{icon}</span><small>{label}</small><strong>{value}</strong><p className={mono ? 'mono' : ''} title={detail}>{detail}</p></div>;
+}
+
+function LinkMonitorCard({ link }: { link: OperationalLink }) {
+  return <article className={`nerv-link-card tone-${link.status.tone}`}>
+    <header><div><small>{link.kindLabel} · {link.activePathCount} 条活跃路径</small><strong>{link.siteAName}<i>↔</i>{link.siteBName}</strong></div><span>{link.status.label}</span></header>
+    <p>{link.status.detail}</p>
+    <div className="nerv-link-direction"><span><strong>{link.activeDirectionCount} / 2</strong> 双向认证</span><span><strong>{link.staleDirectionCount}</strong> 方向数据过期</span></div>
+    {link.activePaths.length === 0 ? <div className="nerv-path-empty">没有新鲜路径遥测</div> : <div className="nerv-path-list">{link.activePaths.map((path) => <section key={`${path.sourceSiteId}-${path.destinationSiteId}-${path.candidate_id ?? path.connection_epoch}`}>
+      <header><strong>{path.sourceNodeName} → {path.destinationSiteId === link.siteAId ? link.siteAName : link.siteBName}</strong><span>{path.path_kind === 'relay' ? '中继' : '直连'} · {path.transport}</span></header>
+      <div><Metric label="RTT" value={formatMetric(path.rtt_ms, ' ms')} /><Metric label="抖动" value={formatMetric(path.jitter_ms, ' ms')} /><Metric label="丢包" value={path.packet_loss_ppm == null ? '—' : `${(path.packet_loss_ppm / 10_000).toFixed(2)}%`} /><Metric label="RX" value={formatRate(path.rx_bps)} /><Metric label="TX" value={formatRate(path.tx_bps)} /></div>
+    </section>)}</div>}
+  </article>;
 }
 
 function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopologySnapshot; controlReady: boolean }) {
@@ -391,8 +504,12 @@ function formatRate(value: number | null): string {
 }
 
 function formatStaleTelemetry(value: string): string {
+  return formatStaleTelemetryAt(value, Date.now());
+}
+
+function formatStaleTelemetryAt(value: string, now: number): string {
   const reported = Date.parse(value);
   if (!Number.isFinite(reported)) return '';
-  const seconds = Math.max(0, Math.round((Date.now() - reported) / 1000));
+  const seconds = Math.max(0, Math.round((now - reported) / 1000));
   return seconds <= 60 ? '' : `遥测 ${Math.floor(seconds / 60)} 分钟未更新`;
 }
