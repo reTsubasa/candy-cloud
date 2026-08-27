@@ -326,6 +326,13 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
     setError(null);
     try {
       const document = buildResourceSpec(definition.kind, spec);
+      if (definition.kind === 'SERVICE_POLICY' && resource) {
+        const currentGeneration = Number((resource.resource.spec as Spec).generation);
+        if (!Number.isSafeInteger(currentGeneration) || currentGeneration < 1 || currentGeneration >= Number.MAX_SAFE_INTEGER) {
+          throw new Error('策略代次无效，无法安全发布新配置');
+        }
+        document.spec.generation = currentGeneration + 1;
+      }
       const response = resource
         ? await replaceResource(session.token, tenantId, definition.collection, resource.metadata.id, resource.metadata.revision, document)
         : await createResource(session.token, tenantId, definition.collection, document);
@@ -515,7 +522,6 @@ function PolicyFields({ spec, update, updateList, removeListItem, references, re
       update('segment_id', value);
       update('rules', rules.map((rule) => ({ ...rule, source_site_ids: [], egress_id: rule.action_type === 'REMOTE_EGRESS' ? '' : rule.egress_id })));
     }, '选择网络分段')}</Form.Item>
-    <Collapse className="advanced-collapse"><Collapse.Item name="generation" header="高级：策略代次"><Form.Item label="配置代次" required><InputNumber min={1} precision={0} value={Number(spec.generation)} onChange={(value) => update('generation', value)} /></Form.Item><FieldHelp>用于控制策略发布顺序。普通修改保持当前值即可，系统仍会通过资源修订防止覆盖并发变更。</FieldHelp></Collapse.Item></Collapse>
     <div className="collection-heading"><div><Typography.Title heading={6}>流量规则</Typography.Title><Typography.Text type="secondary">优先级数字越小越先匹配；条件留空表示不限制。</Typography.Text></div><Button icon={<IconPlus />} onClick={() => update('rules', [...rules, { id: crypto.randomUUID(), priority: rules.length * 100 + 100, source_site_ids: [], destination_cidrs: [], domains: [], traffic_classes: [], action_type: 'LOCAL_EGRESS', egress_id: '' }])}>添加规则</Button></div>
     {rules.length === 0 ? <div className="inline-empty">尚未添加覆盖规则，所有流量保持本站出口。</div> : <div className="structured-list">{rules.map((rule, index) => <section className="structured-item" key={String(rule.id ?? index)}>
       <header><div><strong>规则 {index + 1}</strong><span>优先级 {String(rule.priority)}</span></div><Button type="text" status="danger" icon={<IconDelete />} aria-label={`删除规则 ${index + 1}`} onClick={() => removeListItem('rules', index)} /></header>
