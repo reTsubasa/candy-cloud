@@ -62,6 +62,14 @@ function telemetry(
   };
 }
 
+function configurationStatus(device: string): RuntimeConfigurationStatus {
+  return {
+    device_id: `device-${device}`, device_key_id: `key-${device}`,
+    projection_publication_id: `projection-${device}`, state: 'active',
+    error_code: null, reported_at: '2026-08-26T05:59:45Z', current: true,
+  };
+}
+
 function threeSiteFixture(): { resources: OperationalResources; telemetry: RuntimeTelemetry[] } {
   const { segment, sites, nodes, attachments, peers } = threeSiteIds;
   const peer = (id: string, siteAId: string, siteBId: string): ControlResource => resource(id, 'PEER', {
@@ -133,7 +141,8 @@ describe('operational topology', () => {
 
   it('does not present a configured path as active before readiness', () => {
     const snapshot = buildOperationalTopology(fixture(), [], {}, 'segment');
-    expect(snapshot.links[0].state).toBe('pending');
+    expect(snapshot.links[0].state).toBe('policy_updating');
+    expect(snapshot.links[0].status.tone).toBe('orange');
     expect(snapshot.readinessLabel).toBe('等待 Cloud 生成配置');
   });
 
@@ -180,7 +189,7 @@ describe('operational topology', () => {
       reported_at: '2026-08-18T09:59:40Z',
     };
     const stale = { ...active, device_id: 'device-b', device_key_id: 'key-b', reported_at: '2026-08-18T09:57:00Z' };
-    const snapshot = buildOperationalTopology(fixture(), [], {}, 'segment', [active, stale], 90, now);
+    const snapshot = buildOperationalTopology(fixture(), [configurationStatus('a'), configurationStatus('b')], {}, 'segment', [active, stale], 90, now);
     expect(snapshot.onlineNodeCount).toBe(1);
     expect(snapshot.staleNodeCount).toBe(1);
     expect(snapshot.dataPlaneActiveNodeCount).toBe(1);
@@ -216,7 +225,7 @@ describe('operational topology', () => {
       ...base, device_id: 'device-b', device_key_id: 'key-b', boot_id: 'boot-b',
       paths: [{ ...path, peer_attachment_id: 'attachment-a' }],
     };
-    const snapshot = buildOperationalTopology(fixture(), [], {}, 'segment', [base, reverse], 90, now);
+    const snapshot = buildOperationalTopology(fixture(), [configurationStatus('a'), configurationStatus('b')], {}, 'segment', [base, reverse], 90, now);
     expect(snapshot.activeLinkCount).toBe(1);
     expect(snapshot.links[0].activeDirectionCount).toBe(2);
     expect(snapshot.links[0].activePaths.map((item) => [item.sourceSiteId, item.destinationSiteId])).toEqual([
@@ -243,15 +252,15 @@ describe('operational topology', () => {
       sites: [...resources.sites, thirdSite],
       nodes: [...resources.nodes, thirdNode],
       attachments: [...resources.attachments, thirdAttachment],
-    }, [], {}, 'segment', [telemetry], 90, Date.parse('2026-08-18T10:00:00Z'));
+    }, [configurationStatus('a'), configurationStatus('b')], {}, 'segment', [telemetry], 90, Date.parse('2026-08-18T10:00:00Z'));
     expect(snapshot.links[0].activePathCount).toBe(0);
-    expect(snapshot.links[0].state).toBe('pending');
+    expect(snapshot.links[0].state).toBe('authenticating');
   });
 
   it('binds the three-site field telemetry to the correct peer endpoints', () => {
     const { resources, telemetry: runtimeTelemetry } = threeSiteFixture();
     const snapshot = buildOperationalTopology(
-      resources, [], {}, threeSiteIds.segment, runtimeTelemetry, 90,
+      resources, [configurationStatus('wrt'), configurationStatus('us'), configurationStatus('hk')], {}, threeSiteIds.segment, runtimeTelemetry, 90,
       Date.parse('2026-08-26T06:00:00Z'),
     );
     const linksById = Object.fromEntries(snapshot.links.map((link) => [link.id, link]));
@@ -272,7 +281,7 @@ describe('operational topology', () => {
       ['香港', '美国搬瓦工', threeSiteIds.attachments.us],
     ]);
     expect(linksById[threeSiteIds.peers.wrtUs]).toMatchObject({
-      state: 'pending', activeDirectionCount: 0, activePathCount: 0,
+      state: 'authenticating', activeDirectionCount: 0, activePathCount: 0,
     });
     expect(namedPaths(threeSiteIds.peers.wrtUs)).toEqual([]);
   });

@@ -1,4 +1,11 @@
 import type { ControlResource, RuntimeActivationReadiness, RuntimeConfigurationStatus, RuntimePathTelemetry, RuntimeTelemetry } from './types';
+import {
+  linkOperationalStatus,
+  nodeOperationalStatus,
+  type LinkOperationalCode,
+  type NodeOperationalCode,
+  type OperationalStatus,
+} from './operational-status';
 
 export type OperationalResourceKey = 'sites' | 'nodes' | 'segments' | 'attachments' | 'prefixes' | 'peers' | 'paths' | 'egress' | 'policies' | 'dns' | 'relays';
 export type OperationalResources = Record<OperationalResourceKey, ControlResource[]>;
@@ -25,6 +32,7 @@ export type OperationalNode = {
   readyRouteOwners: number;
   failOpenRequired: boolean;
   telemetry: RuntimeTelemetry | null;
+  status: OperationalStatus<NodeOperationalCode>;
 };
 
 export type OperationalSite = {
@@ -55,8 +63,10 @@ export type OperationalLink = {
   siteBId: string;
   directionCount: number;
   kindLabel: string;
-  state: 'active' | 'pending';
+  state: LinkOperationalCode;
+  status: OperationalStatus<LinkOperationalCode>;
   activeDirectionCount: number;
+  staleDirectionCount: number;
   activePathCount: number;
   activePaths: OperationalPathTelemetry[];
 };
@@ -69,6 +79,10 @@ export type OperationalTopologySnapshot = {
   nodes: OperationalNode[];
   links: OperationalLink[];
   activeNodeCount: number;
+  registeredNodeCount: number;
+  healthyNodeCount: number;
+  warningNodeCount: number;
+  errorNodeCount: number;
   onlineNodeCount: number;
   staleNodeCount: number;
   dataPlaneActiveNodeCount: number;
@@ -76,6 +90,8 @@ export type OperationalTopologySnapshot = {
   rejectedNodeCount: number;
   pendingNodeCount: number;
   activeLinkCount: number;
+  warningLinkCount: number;
+  failedLinkCount: number;
   pathCount: number;
   routeCount: number;
   routeLabels: string[];
@@ -144,13 +160,24 @@ export function buildOperationalTopology(
     const telemetryState = !runtime || !Number.isFinite(reportedMs)
       ? 'unreported'
       : nowMs - reportedMs <= staleAfterSeconds * 1000 ? 'online' : 'stale';
-    const dataPlaneActive = telemetryState === 'online'
-      && runtime?.lifecycle === 'active'
-      && !runtime.fail_open_required
-      && runtime.ready_route_owners === runtime.required_route_owners;
     const applyState = status?.current && status.state === 'active'
       ? 'active'
       : status?.current && status.state === 'rejected' ? 'rejected' : 'pending';
+    const operationalStatus = nodeOperationalStatus({
+      registered: item.metadata.state === 'ACTIVE',
+      attached: attachedNodeIds.has(item.metadata.id),
+      applyState,
+      errorCode: status?.error_code ?? null,
+      telemetryState,
+      lifecycle: runtime?.lifecycle ?? null,
+      configuredPeers: runtime?.configured_peers ?? 0,
+      activePeers: runtime?.active_peers ?? 0,
+      requiredRouteOwners: runtime?.required_route_owners ?? 0,
+      readyRouteOwners: runtime?.ready_route_owners ?? 0,
+      failOpenRequired: runtime?.fail_open_required ?? false,
+      runtimeErrorCode: runtime?.last_error_code ?? null,
+    });
+    const dataPlaneActive = operationalStatus.code === 'healthy';
     return {
       id: item.metadata.id,
       name: name(item),
@@ -167,6 +194,7 @@ export function buildOperationalTopology(
       readyRouteOwners: runtime?.ready_route_owners ?? 0,
       failOpenRequired: runtime?.fail_open_required ?? false,
       telemetry: runtime,
+      status: operationalStatus,
     };
   });
   const selectedPrefixes = resources.prefixes.filter(segmentMatches);
@@ -228,7 +256,7 @@ export function buildOperationalTopology(
         [siteBId, new Set(selectedAttachments.filter((attachment) => value(attachment, 'site_id') === siteBId).map((attachment) => attachment.metadata.id))],
       ]);
       const activePaths: OperationalPathTelemetry[] = nodes.flatMap((node) => {
-        if (!node.dataPlaneActive || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
+        if (node.telemetryState !== 'online' || node.lifecycle !== 'active' || node.failOpenRequired || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
         const destinationSiteId = node.siteId === siteAId ? siteBId : siteAId;
         const destinationAttachmentIds = attachmentIdsBySite.get(destinationSiteId) ?? new Set<string>();
         return (node.telemetry?.paths ?? [])
@@ -242,14 +270,42 @@ export function buildOperationalTopology(
           }));
       });
       const activeDirectionCount = new Set(activePaths.map((path) => `${path.sourceSiteId}:${path.destinationSiteId}`)).size;
+      const staleDirections = nodes.flatMap((node) => {
+        if (node.telemetryState !== 'stale' || !node.telemetry || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
+        const destinationSiteId = node.siteId === siteAId ? siteBId : siteAId;
+        const destinationAttachmentIds = attachmentIdsBySite.get(destinationSiteId) ?? new Set<string>();
+        return node.telemetry.paths
+          .filter((path) => destinationAttachmentIds.has(path.peer_attachment_id))
+          .map(() => `${node.siteId}:${destinationSiteId}`);
+      });
+      const staleDirectionCount = new Set(staleDirections).size;
+      const peerReadiness = readinessBySegment[value(peer, 'segment_id')];
+      const endpointNodes = [nodes.filter((node) => node.siteId === siteAId), nodes.filter((node) => node.siteId === siteBId)];
+      const configurationFailed = peerReadiness?.reason_codes.includes('node_apply_failed') === true
+        || endpointNodes.some((siteNodes) => siteNodes.some((node) => node.applyState === 'rejected'));
+      const endpointFailed = endpointNodes.some((siteNodes) => siteNodes.length > 0 && siteNodes.every((node) => node.status.tone === 'red'));
+      const policyUpdating = !configurationFailed && (
+        peerReadiness?.reason_codes.some((code) => code === 'config_pending' || code === 'node_apply_pending') === true
+        || endpointNodes.some((siteNodes) => siteNodes.some((node) => node.applyState === 'pending'))
+      );
+      const operationalStatus = linkOperationalStatus({
+        configuredPathCount: paths.length,
+        activeDirectionCount,
+        staleDirectionCount,
+        policyUpdating,
+        configurationFailed,
+        endpointFailed,
+      });
       return {
         id: peer.metadata.id,
         siteAId,
         siteBId,
         directionCount: Math.min(2, paths.length),
         kindLabel: kinds.has('RELAY') ? '中继' : '直连',
-        state: activeDirectionCount === 2 ? 'active' : 'pending',
+        state: operationalStatus.code,
+        status: operationalStatus,
         activeDirectionCount,
+        staleDirectionCount,
         activePathCount: activePaths.length,
         activePaths,
       };
@@ -285,6 +341,10 @@ export function buildOperationalTopology(
     nodes,
     links,
     activeNodeCount: nodes.filter((node) => node.applyState === 'active').length,
+    registeredNodeCount: nodes.filter((node) => node.status.code !== 'unregistered').length,
+    healthyNodeCount: nodes.filter((node) => node.status.code === 'healthy').length,
+    warningNodeCount: nodes.filter((node) => node.status.tone === 'orange').length,
+    errorNodeCount: nodes.filter((node) => node.status.tone === 'red').length,
     onlineNodeCount: nodes.filter((node) => node.telemetryState === 'online').length,
     staleNodeCount: nodes.filter((node) => node.telemetryState === 'stale').length,
     dataPlaneActiveNodeCount: nodes.filter((node) => node.dataPlaneActive).length,
@@ -292,6 +352,8 @@ export function buildOperationalTopology(
     rejectedNodeCount: nodes.filter((node) => node.applyState === 'rejected').length,
     pendingNodeCount: nodes.filter((node) => node.applyState === 'pending').length,
     activeLinkCount: links.filter((link) => link.state === 'active').length,
+    warningLinkCount: links.filter((link) => link.status.tone === 'orange').length,
+    failedLinkCount: links.filter((link) => link.status.tone === 'red').length,
     pathCount: resources.paths.filter(segmentMatches).length,
     routeCount: selectedPrefixes.length,
     routeLabels,

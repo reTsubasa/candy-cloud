@@ -72,13 +72,13 @@ export function ActivationStatusBar({ resources, session }: Props) {
     };
   }, [load]);
 
-  return <section className="activation-status-bar" aria-label="网络激活状态">
+  return <section className="activation-status-bar" aria-label="配置发布状态">
     <div className="activation-status-heading">
       <span className="activation-status-icon"><IconCheckCircle /></span>
-      <div><strong>配置保存后自动发布</strong><span>节点同步并验证成功后会自动启用数据面，无需额外开关。</span></div>
+      <div><strong>配置发布状态</strong><span>此处只表示配置已被节点接受；链路仍需两端协商认证并持续上报后才会显示绿色。</span></div>
       <Button type="text" size="small" icon={<IconRefresh />} loading={loading} onClick={() => void load()}>检查状态</Button>
     </div>
-    {segmentIds.length === 0 ? <div className="activation-status-empty">建立站点互联和双向线路后，启用状态会显示在这里。</div> : <div className="activation-status-items">
+    {segmentIds.length === 0 ? <div className="activation-status-empty">建立站点互联和双向线路后，配置发布状态会显示在这里。</div> : <div className="activation-status-items">
       {segmentIds.map((segmentId) => {
         const display = activationDisplay(readiness[segmentId], null, loading);
         return <div className="activation-status-item" key={segmentId}>

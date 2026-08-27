@@ -1,0 +1,80 @@
+import { describe, expect, it } from 'vitest';
+import { linkOperationalStatus, nodeOperationalStatus, type NodeOperationalInput } from './operational-status';
+
+const node = (overrides: Partial<NodeOperationalInput> = {}): NodeOperationalInput => ({
+  registered: true,
+  attached: true,
+  applyState: 'active',
+  errorCode: null,
+  telemetryState: 'online',
+  lifecycle: 'active',
+  configuredPeers: 2,
+  activePeers: 2,
+  requiredRouteOwners: 2,
+  readyRouteOwners: 2,
+  failOpenRequired: false,
+  runtimeErrorCode: null,
+  ...overrides,
+});
+
+describe('operational status boundaries', () => {
+  it('keeps registration green without claiming SD-WAN is active', () => {
+    expect(nodeOperationalStatus(node({ attached: false, applyState: 'pending', telemetryState: 'unreported' }))).toMatchObject({
+      code: 'registered', label: '已注册', tone: 'green',
+    });
+  });
+
+  it('uses yellow for transitions and red only for explicit faults', () => {
+    expect(nodeOperationalStatus(node({ applyState: 'pending' })).code).toBe('policy_updating');
+    expect(nodeOperationalStatus(node({ activePeers: 1 })).code).toBe('peer_negotiating');
+    expect(nodeOperationalStatus(node({ telemetryState: 'stale' })).tone).toBe('orange');
+    expect(nodeOperationalStatus(node({ applyState: 'rejected', errorCode: 'invalid_policy' }))).toMatchObject({ code: 'policy_rejected', tone: 'red' });
+    expect(nodeOperationalStatus(node({ failOpenRequired: true }))).toMatchObject({ code: 'fail_open', tone: 'red' });
+  });
+
+  it('turns a link green only after fresh bidirectional authentication', () => {
+    const configured = { configuredPathCount: 2, activeDirectionCount: 0, staleDirectionCount: 0, policyUpdating: false, configurationFailed: false, endpointFailed: false };
+    expect(linkOperationalStatus(configured)).toMatchObject({ code: 'authenticating', tone: 'orange' });
+    expect(linkOperationalStatus({ ...configured, activeDirectionCount: 1 })).toMatchObject({ code: 'one_way', tone: 'orange' });
+    expect(linkOperationalStatus({ ...configured, activeDirectionCount: 2 })).toMatchObject({ code: 'active', tone: 'green' });
+    expect(linkOperationalStatus({ ...configured, activeDirectionCount: 2, policyUpdating: true })).toMatchObject({ code: 'policy_updating', tone: 'orange' });
+    expect(linkOperationalStatus({ ...configured, configurationFailed: true })).toMatchObject({ code: 'configuration_failed', tone: 'red' });
+  });
+
+  it.each([
+    ['unregistered', { registered: false }, 'gray'],
+    ['registered', { attached: false }, 'green'],
+    ['policy_updating', { applyState: 'pending' }, 'orange'],
+    ['waiting_telemetry', { telemetryState: 'unreported' }, 'orange'],
+    ['telemetry_stale', { telemetryState: 'stale' }, 'orange'],
+    ['starting', { lifecycle: 'starting' }, 'orange'],
+    ['peer_negotiating', { activePeers: 1 }, 'orange'],
+    ['healthy', {}, 'green'],
+    ['policy_rejected', { applyState: 'rejected' }, 'red'],
+    ['fail_open', { failOpenRequired: true }, 'red'],
+    ['runtime_fault', { lifecycle: 'degraded' }, 'red'],
+  ] as const)('classifies node state %s', (code, overrides, tone) => {
+    expect(nodeOperationalStatus(node(overrides))).toMatchObject({ code, tone });
+  });
+
+  it.each([
+    ['not_configured', { configuredPathCount: 0 }, 'orange'],
+    ['policy_updating', { policyUpdating: true }, 'orange'],
+    ['authenticating', {}, 'orange'],
+    ['one_way', { activeDirectionCount: 1 }, 'orange'],
+    ['telemetry_stale', { staleDirectionCount: 1 }, 'orange'],
+    ['active', { activeDirectionCount: 2 }, 'green'],
+    ['configuration_failed', { configurationFailed: true }, 'red'],
+    ['endpoint_failed', { endpointFailed: true }, 'red'],
+  ] as const)('classifies link state %s', (code, overrides, tone) => {
+    expect(linkOperationalStatus({
+      configuredPathCount: 2,
+      activeDirectionCount: 0,
+      staleDirectionCount: 0,
+      policyUpdating: false,
+      configurationFailed: false,
+      endpointFailed: false,
+      ...overrides,
+    })).toMatchObject({ code, tone });
+  });
+});

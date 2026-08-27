@@ -14,8 +14,11 @@ import {
   Typography,
 } from '@arco-design/web-react';
 import { IconDelete, IconEdit, IconPlus, IconRefresh, IconRight, IconSafe, IconSearch, IconSync } from '@arco-design/web-react/icon';
-import { CloudApiError, deleteResource, fetchRuntimeConfigurationStatuses, getResource, listAllResources, listResourceReferences, listResources } from '../api';
-import type { ControlResource, ResourceDefinition, ResourceReference, RuntimeConfigurationStatus, Session } from '../types';
+import { CloudApiError, deleteResource, fetchRuntimeActivationReadiness, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, getResource, listAllResources, listResourceReferences, listResources } from '../api';
+import { buildOperationalTopology, emptyOperationalResources, type OperationalResourceKey, type OperationalResources, type OperationalTopologySnapshot } from '../operational-topology';
+import type { OperationalStatus } from '../operational-status';
+import { pathDefinition, resourceDefinitions } from '../resource-definitions';
+import type { ControlResource, ResourceDefinition, ResourceReference, RuntimeActivationReadiness, Session } from '../types';
 import { attachmentTableValues } from '../resource-table';
 import { compactPolicyValues, summarizePolicy, type PolicyReferences } from '../policy-summary';
 import { ResourceEditor } from './ResourceEditor';
@@ -134,6 +137,39 @@ function stateColor(state: string): string {
   return 'gray';
 }
 
+const operationalKinds = new Set(['NODE', 'PEER', 'PATH_CANDIDATE']);
+const operationalResourceKeys = new Set(['sites', 'nodes', 'segments', 'attachments', 'peers', 'paths']);
+const operationalRequests = [...resourceDefinitions, pathDefinition].filter((item) => operationalResourceKeys.has(item.key));
+
+async function loadOperationalSnapshot(token: string, tenantId: string): Promise<OperationalTopologySnapshot> {
+  const [resourceEntries, statuses, telemetry] = await Promise.all([
+    Promise.all(operationalRequests.map(async (item) => [item.key, await listAllResources(token, tenantId, item.collection)] as const)),
+    fetchRuntimeConfigurationStatuses(token, tenantId),
+    fetchRuntimeTelemetry(token, tenantId),
+  ]);
+  const resources = { ...emptyOperationalResources } as OperationalResources;
+  resourceEntries.forEach(([key, items]) => {
+    resources[key as OperationalResourceKey] = items.filter((item) => item.metadata.state === 'ACTIVE');
+  });
+  const readinessEntries = await Promise.all(resources.segments.map(async (segment) => [
+    segment.metadata.id,
+    await fetchRuntimeActivationReadiness(token, tenantId, segment.metadata.id),
+  ] as const));
+  return buildOperationalTopology(
+    resources,
+    statuses.items,
+    Object.fromEntries(readinessEntries) as Record<string, RuntimeActivationReadiness>,
+    '',
+    telemetry.items,
+    telemetry.stale_after_seconds,
+  );
+}
+
+function statusTag(status: OperationalStatus | undefined, fallback: string) {
+  if (!status) return <Tag color="gray">{fallback}</Tag>;
+  return <Tooltip content={status.detail}><Tag color={status.tone}>{status.label}</Tag></Tooltip>;
+}
+
 const emptyPolicyReferences: PolicyReferences = { segments: {}, sites: {}, egresses: {} };
 
 function namesById(items: ControlResource[], field: string): Record<string, string> {
@@ -159,7 +195,8 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
   const [policyReferences, setPolicyReferences] = useState<PolicyReferences>(emptyPolicyReferences);
   const [policyReferencesLoading, setPolicyReferencesLoading] = useState(false);
   const [policyReferenceError, setPolicyReferenceError] = useState<string | null>(null);
-  const [runtimeStatuses, setRuntimeStatuses] = useState<Record<string, RuntimeConfigurationStatus>>({});
+  const [operationalSnapshot, setOperationalSnapshot] = useState<OperationalTopologySnapshot | null>(null);
+  const [operationalStatusError, setOperationalStatusError] = useState<string | null>(null);
   const tenantId = session.claims.tenant_id;
 
   const load = useCallback(async () => {
@@ -171,17 +208,18 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
     setLoading(true);
     setError(null);
     try {
-      const [response, statuses] = await Promise.all([
+      const [response, operationalResult] = await Promise.all([
         listResources(session.token, tenantId, definition.collection),
-        definition.kind === 'NODE'
-          ? fetchRuntimeConfigurationStatuses(session.token, tenantId)
-          : Promise.resolve({ schema_version: 1, items: [] }),
+        operationalKinds.has(definition.kind)
+          ? loadOperationalSnapshot(session.token, tenantId)
+            .then((snapshot) => ({ snapshot, error: null }))
+            .catch((reason) => ({ snapshot: null, error: reason instanceof Error ? reason.message : '运行状态读取失败' }))
+          : Promise.resolve({ snapshot: null, error: null }),
       ]);
       setItems(response.items);
       setNextCursor(response.next_cursor);
-      setRuntimeStatuses(Object.fromEntries(
-        statuses.items.map((status) => [`${status.device_id}:${status.device_key_id}`, status]),
-      ));
+      setOperationalSnapshot(operationalResult.snapshot);
+      setOperationalStatusError(operationalResult.error);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '资源加载失败');
     } finally {
@@ -261,6 +299,12 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
     if (!needle) return items;
     return items.filter((item) => JSON.stringify(item).toLowerCase().includes(needle));
   }, [items, query]);
+  const operationalNodes = useMemo(() => Object.fromEntries(
+    (operationalSnapshot?.nodes ?? []).map((node) => [node.id, node.status]),
+  ), [operationalSnapshot]);
+  const operationalLinks = useMemo(() => Object.fromEntries(
+    (operationalSnapshot?.links ?? []).map((link) => [link.id, link.status]),
+  ), [operationalSnapshot]);
 
   const remove = async () => {
     if (!tenantId || !deleteTarget) return;
@@ -340,7 +384,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
         </div>)}</div>;
       },
     },
-    { title: '状态', width: 104, render: (_: unknown, record: ControlResource) => <Tag color={stateColor(record.metadata.state)}>{label(record.metadata.state)}</Tag> },
+    { title: '配置状态', width: 104, render: (_: unknown, record: ControlResource) => <Tag color={stateColor(record.metadata.state)}>{record.metadata.state === 'ACTIVE' ? '已配置' : label(record.metadata.state)}</Tag> },
     actionColumn,
   ];
   const defaultColumns = [
@@ -353,20 +397,20 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
       ),
     },
     { title: definition.kind === 'ATTACHMENT' ? '节点隧道 IP' : '范围 / 类型', render: (_: unknown, record: ControlResource) => <Typography.Text>{resourceScope(record)}</Typography.Text> },
-    { title: '状态', width: 104, render: (_: unknown, record: ControlResource) => <Tag color={stateColor(record.metadata.state)}>{label(record.metadata.state)}</Tag> },
-    ...(definition.kind === 'NODE' ? [{
-      title: 'SD-WAN',
+    {
+      title: definition.kind === 'NODE' ? '注册状态' : '配置状态',
+      width: 104,
+      render: (_: unknown, record: ControlResource) => <Tag color={stateColor(record.metadata.state)}>{record.metadata.state === 'ACTIVE' ? (definition.kind === 'NODE' ? '已注册' : '已配置') : label(record.metadata.state)}</Tag>,
+    },
+    ...(operationalKinds.has(definition.kind) ? [{
+      title: definition.kind === 'NODE' ? '运行状态' : '链路状态',
       width: 136,
       render: (_: unknown, record: ControlResource) => {
-        const deviceId = String(record.resource.spec.device_id ?? '');
-        const deviceKeyId = String(record.resource.spec.device_key_id ?? '');
-        const status = runtimeStatuses[`${deviceId}:${deviceKeyId}`];
-        if (!status || !status.current) return <Tag color="gray">等待激活</Tag>;
-        return (
-          <Tooltip content={status.state === 'rejected' ? `激活失败：${status.error_code ?? 'unknown'}` : `配置已于 ${new Date(status.reported_at).toLocaleString()} 生效`}>
-            <Tag color={status.state === 'active' ? 'green' : 'red'}>{status.state === 'active' ? '已启用' : '激活失败'}</Tag>
-          </Tooltip>
-        );
+        if (record.metadata.state !== 'ACTIVE') return <Tag color="gray">已停用</Tag>;
+        const status = definition.kind === 'NODE'
+          ? operationalNodes[record.metadata.id]
+          : operationalLinks[definition.kind === 'PEER' ? record.metadata.id : String(record.resource.spec.peer_id ?? '')];
+        return statusTag(status, operationalStatusError ? '状态不可用' : definition.kind === 'NODE' ? '等待上报' : '等待协商');
       },
     }] : []),
     actionColumn,
@@ -407,6 +451,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
       </div>
       {error && <Alert type="error" showIcon content={error} action={<Button size="small" onClick={() => void load()}>重试</Button>} />}
       {policyReferenceError && <Alert type="warning" showIcon content={policyReferenceError} action={<Button size="small" onClick={() => void loadPolicyReferences()}>重试</Button>} />}
+      {operationalStatusError && operationalKinds.has(definition.kind) && <Alert type="warning" showIcon content={`运行状态读取失败：${operationalStatusError}`} action={<Button size="small" onClick={() => void load()}>重试</Button>} />}
       <div className="table-surface">
         <Spin loading={loading || policyReferencesLoading} block>
           {!loading && !policyReferencesLoading && !error && filtered.length === 0 ? (
