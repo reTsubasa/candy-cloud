@@ -875,6 +875,15 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
             .unwrap(),
         Some((2, [18_u8; 32]))
     );
+    let rollout: (u32, u32, String) = sqlx::query_as(
+        "SELECT allowed_ordinal, member_count, state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = 2",
+    )
+    .bind(tenant_id)
+    .bind(segment_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rollout, (2, 2, "ACTIVE".into()));
     let RuntimeConfigurationState::Current(second_runtime) = repository
         .current_runtime_configuration(&runtime_lookup)
         .await
@@ -971,17 +980,17 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         device_id: peer_device_id,
         device_key_id: peer_device_key_id,
     };
-    let RuntimeConfigurationState::Current(peer_previous_runtime) = repository
+    let RuntimeConfigurationState::Current(peer_runtime_before_ack) = repository
         .current_runtime_configuration(&peer_runtime_lookup)
         .await
         .unwrap()
     else {
-        panic!("expected the peer to retain its previous Runtime configuration during rollout");
+        panic!("expected the peer to receive the new Runtime configuration without an ACK gate");
     };
-    assert_eq!(peer_previous_runtime.segment_generation, 1);
+    assert_eq!(peer_runtime_before_ack.segment_generation, 2);
     assert_eq!(
-        peer_previous_runtime.projection_publication_id,
-        write.projections[1].publication_id
+        peer_runtime_before_ack.projection_publication_id,
+        second.projections[1].publication_id
     );
     repository
         .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {

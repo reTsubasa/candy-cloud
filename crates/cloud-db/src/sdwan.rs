@@ -1812,18 +1812,13 @@ impl SdwanRepository {
         let member_count =
             u32::try_from(write.projections.len()).map_err(|_| SdwanError::InvalidScope)?;
         if member_count > 0 {
-            let allowed_ordinal = if write.expected_previous_generation == 0 {
-                member_count
-            } else {
-                1
-            };
             sqlx::query(
                 "INSERT INTO runtime_configuration_rollouts (tenant_id, segment_id, segment_generation, allowed_ordinal, member_count, state) VALUES (?, ?, ?, ?, ?, 'ACTIVE')",
             )
             .bind(write.tenant_id)
             .bind(write.segment_id)
             .bind(write.generation)
-            .bind(allowed_ordinal)
+            .bind(member_count)
             .bind(member_count)
             .execute(&mut *transaction)
             .await?;
