@@ -1012,14 +1012,17 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         .execute(&pool)
         .await
         .unwrap();
-    let RuntimeConfigurationState::Current(after_signed_expiry) = repository
+    let RuntimeConfigurationState::Current(during_compatibility_window) = repository
         .current_runtime_configuration(&runtime_lookup)
         .await
         .unwrap()
     else {
-        panic!("expected current Runtime configuration after compatibility expiry");
+        panic!("expected current Runtime configuration during the stale compatibility window");
     };
-    assert!(after_signed_expiry.compatibility_generations.is_empty());
+    assert_eq!(
+        during_compatibility_window.compatibility_generations.len(),
+        1
+    );
     sqlx::query("UPDATE segment_route_publications SET expires_at = ? WHERE id = ?")
         .bind(write.expires_at)
         .bind(write.publication_id)
