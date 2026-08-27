@@ -72,8 +72,8 @@ const eventLabels: Record<string, { title: string; detail: string }> = {
   CONTROL_RESOURCE_DELETED: { title: '配置已删除', detail: '控制面删除了一项网络配置。' },
   RUNTIME_CONFIGURATION_REJECTED: { title: '节点拒绝配置', detail: '节点收到配置后未能应用，需检查节点运行日志。' },
   RUNTIME_CONFIGURATION_ACTIVATED: { title: '节点配置已激活', detail: '节点已平滑接管本批次配置，Cloud 将继续放行下一个节点。' },
-  RUNTIME_FAIL_OPEN_ENTERED: { title: '节点进入故障开放', detail: 'Candy 数据面已退出，基础网络保持可用。' },
-  RUNTIME_FAIL_OPEN_RECOVERED: { title: '节点已退出故障开放', detail: 'Candy 数据面已经恢复运行。' },
+  RUNTIME_FAIL_OPEN_ENTERED: { title: '节点已撤销 SD-WAN 路由', detail: '节点已停止使用异常的 SD-WAN 数据面；未匹配流量继续按本地网络策略转发。' },
+  RUNTIME_FAIL_OPEN_RECOVERED: { title: '节点已恢复 SD-WAN 转发', detail: 'SD-WAN 数据面和路由已恢复运行。' },
   RUNTIME_LIFECYCLE_DEGRADED: { title: '节点运行状态异常', detail: 'Runtime 上报了停止、启动中或降级状态。' },
   RUNTIME_LIFECYCLE_RECOVERED: { title: '节点运行状态恢复', detail: 'Runtime 已恢复为活跃状态。' },
 };

@@ -9,7 +9,8 @@ describe('runtime audit event descriptions', () => {
     });
     expect(description).toContain('所有已配置 Peer 的接收通道均已失败，节点无法接收任何远端流量（all_peer_reads_failed）');
     expect(description).toContain('Peer 连接 1/2，路由就绪 0/1');
-    expect(description).toContain('基础网络保持可用');
+    expect(description).toContain('系统已撤销 SD-WAN 路由');
+    expect(description).toContain('未匹配流量继续按节点本地网络策略转发');
   });
 
   it('does not invent a cause when Runtime omitted its error code', () => {

@@ -22,7 +22,7 @@ export function runtimeAuditEventDescription(
     return `${runtimeFailureDetail(metadata.error_code, counters, '节点未上报配置拒绝原因')}；当前配置未生效。`;
   }
   if (action === 'RUNTIME_FAIL_OPEN_ENTERED') {
-    return `${runtimeFailureDetail(metadata.error_code, counters, 'Runtime 未上报明确错误码')}；Candy 数据面已退出，基础网络保持可用。`;
+    return `${runtimeFailureDetail(metadata.error_code, counters, 'Runtime 未上报明确错误码')}；系统已撤销 SD-WAN 路由，未匹配流量继续按节点本地网络策略转发。`;
   }
   if (action === 'RUNTIME_LIFECYCLE_DEGRADED') {
     const lifecycle = typeof metadata.lifecycle === 'string' ? metadata.lifecycle : '异常';
