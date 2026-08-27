@@ -35,14 +35,26 @@ const levelMeta = {
 } as const;
 
 const eventLabels: Record<string, { title: string; detail: string }> = {
+  IDENTITY_REGISTRATION_REQUESTED: { title: '申请创建账户', detail: '用户提交了账户和组织注册申请。' },
   IDENTITY_LOGIN_SUCCEEDED: { title: '登录成功', detail: '账户完成了身份验证并建立管理会话。' },
   IDENTITY_REFRESH_SUCCEEDED: { title: '会话刷新成功', detail: '管理会话已续期。' },
   IDENTITY_LOGIN_FAILED: { title: '登录失败', detail: '账户身份验证未通过。' },
   IDENTITY_LOGIN_REJECTED: { title: '登录被拒绝', detail: '账户身份验证未通过。' },
   IDENTITY_REFRESH_FAILED: { title: '会话刷新失败', detail: '会话续期未完成，可能需要重新登录。' },
   IDENTITY_REFRESH_REJECTED: { title: '会话刷新被拒绝', detail: '会话续期未通过安全校验，可能需要重新登录。' },
+  IDENTITY_EMAIL_VERIFIED: { title: '验证账户邮箱', detail: '用户完成了邮箱验证并激活账户。' },
+  IDENTITY_VERIFICATION_RESEND_REQUESTED: { title: '重发验证邮件', detail: '用户申请重新发送账户验证邮件。' },
+  IDENTITY_PASSWORD_RESET_REQUESTED: { title: '申请重置密码', detail: '用户申请发送密码重置邮件。' },
+  IDENTITY_PASSWORD_RESET_COMPLETED: { title: '完成密码重置', detail: '用户已修改账户密码，原有管理会话已撤销。' },
+  IDENTITY_SESSION_LOGGED_OUT: { title: '退出管理会话', detail: '用户退出了当前管理会话。' },
+  IDENTITY_SESSION_REVOKED: { title: '撤销管理会话', detail: '用户主动撤销了一个管理会话。' },
+  IDENTITY_CONTEXT_SWITCHED: { title: '切换组织上下文', detail: '用户切换了当前管理的组织和租户。' },
   ENROLLMENT_ACTIVATION_CREATED: { title: '创建节点注册码', detail: '用户创建了新的节点注册凭据。' },
   ENROLLMENT_ACTIVATION_REVOKED: { title: '撤销节点注册码', detail: '用户撤销了尚未完成的节点注册凭据。' },
+  DEVICE_ENROLLMENT_REQUESTED: { title: '节点申请接入', detail: '节点使用注册码发起了接入申请。' },
+  ENROLLMENT_CHALLENGE_CREATED: { title: '生成节点认证挑战', detail: 'Cloud 为节点接入生成了一次认证挑战。' },
+  ENROLLMENT_PROOF_VERIFIED: { title: '节点身份验证通过', detail: '节点完成了接入证明校验。' },
+  DEVICE_IDENTITY_ISSUED: { title: '签发节点身份', detail: 'Cloud 已为通过验证的节点签发设备身份。' },
   ORGANIZATION_INVITATION_CREATED: { title: '邀请组织成员', detail: '用户发出了新的组织成员邀请。' },
   ORGANIZATION_INVITATION_ACCEPTED: { title: '接受成员邀请', detail: '用户接受邀请并加入了组织。' },
   ORGANIZATION_INVITATION_REVOKED: { title: '撤销成员邀请', detail: '尚未接受的组织成员邀请已撤销。' },
@@ -69,7 +81,7 @@ const objectLabels: Record<string, string> = {
   HUMAN_ACCOUNT: '用户账户', DEVICE: '节点', NODE: '节点', SEGMENT: '网络分段',
   SITE: '站点', ATTACHMENT: '节点接入', PREFIX: '发布网段', PEER: '站点互联', RELAY: '中继',
   PATH_CANDIDATE: '线路', EGRESS: '出口', SERVICE_POLICY: '流量策略', DNS_INTENT: 'DNS 配置',
-  ENROLLMENT_ACTIVATION: '节点注册码', ORGANIZATION_MEMBERSHIP: '组织成员', ORGANIZATION: '组织',
+  ENROLLMENT_ACTIVATION: '节点注册码', ENROLLMENT_CHALLENGE: '节点认证挑战', ORGANIZATION_MEMBERSHIP: '组织成员', ORGANIZATION: '组织',
   ORGANIZATION_INVITATION: '成员邀请',
 };
 
@@ -94,7 +106,7 @@ function eventLabel(event: AuditEvent): string {
     }
     return eventLabels[event.action].title;
   }
-  return event.action.toLowerCase().split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
+  return `${objectLabel(event.object_type)}事件`;
 }
 
 const fieldLabels: Record<string, string> = {
@@ -132,6 +144,10 @@ function objectLabel(value: string): string {
 
 function actorLabel(value: string): string {
   return actorLabels[value] ?? value;
+}
+
+function eventActorLabel(event: AuditEvent): string {
+  return event.actor_display_name?.trim() || event.actor_email?.trim() || actorLabel(event.actor_type);
 }
 
 function formatEventTime(value: string, now = new Date()): string {
@@ -193,7 +209,7 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
     if (levelFilter !== 'all' && eventLevel(event.action) !== levelFilter) return false;
     if (actionFilter && event.action !== actionFilter) return false;
     if (textFilter) {
-      const haystack = `${event.action} ${event.object_type} ${event.actor_type} ${event.metadata_json}`.toLowerCase();
+      const haystack = `${event.action} ${event.object_type} ${event.actor_type} ${event.actor_display_name ?? ''} ${event.actor_email ?? ''} ${event.metadata_json}`.toLowerCase();
       if (!haystack.includes(textFilter.toLowerCase())) return false;
     }
     return true;
@@ -231,7 +247,7 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
             { title: '级别', width: 88, render: (_: unknown, item: AuditEvent) => { const meta = levelMeta[eventLevel(item.action)]; return <Tag color={meta.color}>{meta.label}</Tag>; } },
             { title: '事件', dataIndex: 'action', width: 330, render: (_: string, item: AuditEvent) => <div className="log-event-cell"><strong>{eventLabel(item)}</strong><small>{eventDescription(item)}</small></div> },
             { title: '对象', width: 150, render: (_: unknown, item: AuditEvent) => <div className="log-object-cell"><strong>{eventObjectName(item) ?? objectLabel(item.object_type)}</strong><small>{eventObjectName(item) ? objectLabel(item.object_type) : item.object_id ? '配置对象' : '全局事件'}</small></div> },
-            { title: '来源', width: 130, render: (_: unknown, item: AuditEvent) => actorLabel(item.actor_type) },
+            { title: '来源', width: 190, render: (_: unknown, item: AuditEvent) => <div className="log-object-cell"><strong>{eventActorLabel(item)}</strong><small>{item.actor_email && item.actor_email !== eventActorLabel(item) ? item.actor_email : actorLabel(item.actor_type)}</small></div> },
             { title: '发生时间', width: 180, render: (_: unknown, item: AuditEvent) => <Typography.Text>{formatEventTime(item.created_at)}</Typography.Text> },
           ]} />}</div>
         </Tabs.TabPane>}

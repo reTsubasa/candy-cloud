@@ -617,6 +617,7 @@ struct AccessContext {
     user_id: Uuid,
     session_id: Uuid,
     organization_id: Uuid,
+    tenant_id: Uuid,
     role: MembershipRole,
 }
 
@@ -1303,6 +1304,7 @@ async fn logout(
         user_id,
         session_id,
         organization_id,
+        tenant_id,
         ..
     }: AccessContext,
 ) -> Result<Json<MessageResponse>, ApiError> {
@@ -1314,7 +1316,7 @@ async fn logout(
     audit_security(
         &state,
         Some(organization_id),
-        None,
+        Some(tenant_id),
         &user_id.to_string(),
         "IDENTITY_SESSION_LOGGED_OUT",
         "SUCCESS",
@@ -1378,12 +1380,31 @@ async fn switch_context(
         .await
         .map_err(ApiError::Repository)?
         .ok_or(ApiError::Forbidden)?;
-    issue_replacement_session(&state, access.session_id, user, membership).await
+    let organization_id = membership.organization_id;
+    let tenant_id = membership.tenant_id;
+    let actor = user.email.clone();
+    let response = issue_replacement_session(&state, access.session_id, user, membership).await?;
+    audit_security(
+        &state,
+        Some(organization_id),
+        Some(tenant_id),
+        &actor,
+        "IDENTITY_CONTEXT_SWITCHED",
+        "SUCCESS",
+        Some(access.user_id),
+    )
+    .await;
+    Ok(response)
 }
 
 async fn revoke_session(
     State(state): State<Arc<IdentityState>>,
-    AccessContext { user_id, .. }: AccessContext,
+    AccessContext {
+        user_id,
+        organization_id,
+        tenant_id,
+        ..
+    }: AccessContext,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     if state
@@ -1392,6 +1413,16 @@ async fn revoke_session(
         .await
         .map_err(ApiError::Repository)?
     {
+        audit_security(
+            &state,
+            Some(organization_id),
+            Some(tenant_id),
+            &user_id.to_string(),
+            "IDENTITY_SESSION_REVOKED",
+            "SUCCESS",
+            Some(id),
+        )
+        .await;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::NotFound)
@@ -1430,6 +1461,7 @@ async fn require_access_token(
         user_id: claims.sub,
         session_id: claims.sid,
         organization_id: claims.organization_id,
+        tenant_id: claims.tenant_id,
         role,
     });
     Ok(next.run(request).await)

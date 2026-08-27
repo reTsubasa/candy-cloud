@@ -84,12 +84,21 @@ async fn audit_events_decode_mysql_json_as_api_text() {
     };
     let repository = ControlRepository::new(pool.clone());
     let event_id = Uuid::new_v4();
+    let actor_id = Uuid::new_v4();
+
+    sqlx::query("INSERT INTO human_users (id, email_normalized, display_name, password_hash, email_verified_at, status) VALUES (?, ?, 'Audit Operator', 'test-only-hash', CURRENT_TIMESTAMP(6), 'ACTIVE')")
+        .bind(actor_id)
+        .bind(format!("audit-{actor_id}@example.test"))
+        .execute(&pool)
+        .await
+        .unwrap();
 
     sqlx::query(
-        "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'USER', NULL, 'TEST_ACTION', 'TEST_OBJECT', NULL, JSON_OBJECT('result', 'ok'))",
+        "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'USER', ?, 'TEST_ACTION', 'TEST_OBJECT', NULL, JSON_OBJECT('result', 'ok'))",
     )
     .bind(event_id)
     .bind(tenant)
+    .bind(actor_id.to_string())
     .execute(&pool)
     .await
     .unwrap();
@@ -119,7 +128,15 @@ async fn audit_events_decode_mysql_json_as_api_text() {
     assert_eq!(events.len(), 2);
     let event = events.iter().find(|event| event.id == event_id).unwrap();
     assert_eq!(event.actor_type, "USER");
-    assert_eq!(event.actor_id, None);
+    assert_eq!(
+        event.actor_id.as_deref(),
+        Some(actor_id.to_string().as_str())
+    );
+    assert_eq!(event.actor_display_name.as_deref(), Some("Audit Operator"));
+    assert_eq!(
+        event.actor_email.as_deref(),
+        Some(format!("audit-{actor_id}@example.test").as_str())
+    );
     assert_eq!(event.action, "TEST_ACTION");
     assert_eq!(event.object_type, "TEST_OBJECT");
     assert_eq!(event.object_id, None);

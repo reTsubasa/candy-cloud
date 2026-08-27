@@ -148,6 +148,8 @@ export type AuditEvent = {
   id: string;
   actor_type: string;
   actor_id: string | null;
+  actor_display_name: string | null;
+  actor_email: string | null;
   action: string;
   object_type: string;
   object_id: string | null;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CloudApiError, createNodeJoinCode, createResource, deleteResource, fetchCloudVersion, fetchHealth, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, listAccountSessions, listAllResources, listResourceReferences, listResources, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
+import { CloudApiError, createNodeJoinCode, createResource, deleteResource, fetchCloudVersion, fetchHealth, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, inviteOrganizationMember, listAccountSessions, listAllResources, listResourceReferences, listResources, requestEmailVerification, requestPasswordReset, resetAccountPassword, replaceResource, revokeAccountSession, verifyAccountEmail } from './api';
 import { saveIdentitySession } from './session';
 
 describe('same-origin Cloud API client', () => {
@@ -132,6 +132,16 @@ describe('same-origin Cloud API client', () => {
     await revokeAccountSession('access-token', 'session/id');
     expect(fetchMock.mock.calls[0]).toEqual(['/identity/v1/auth/sessions', expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer access-token' }) })]);
     expect(fetchMock.mock.calls[1]).toEqual(['/identity/v1/auth/sessions/session%2Fid', expect.objectContaining({ method: 'DELETE', headers: expect.objectContaining({ Authorization: 'Bearer access-token' }) })]);
+  });
+
+  it('sends member invitations to the audited invitation endpoint', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ message: 'invitation_sent' }), { status: 202, headers: { 'content-type': 'application/json' } }));
+    await inviteOrganizationMember('access-token', 'member@example.test', 'OPERATOR');
+    expect(fetchMock).toHaveBeenCalledWith('/identity/v1/organization/invitations', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ email: 'member@example.test', role: 'OPERATOR' }),
+      headers: expect.objectContaining({ Authorization: 'Bearer access-token' }),
+    }));
   });
 
   it('rotates a stored session once then retries a rejected management request', async () => {

@@ -138,7 +138,7 @@ export function listOrganizationMembers(accessToken: string): Promise<Organizati
 }
 
 export function inviteOrganizationMember(accessToken: string, email: string, role: string): Promise<IdentityMessageResponse> {
-  return authenticatedIdentityRequest('/v1/organization/members', accessToken, {
+  return authenticatedIdentityRequest('/v1/organization/invitations', accessToken, {
     method: 'POST',
     body: JSON.stringify({ email, role }),
   });

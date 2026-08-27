@@ -109,6 +109,8 @@ pub struct AuditEventRecord {
     pub id: Uuid,
     pub actor_type: String,
     pub actor_id: Option<String>,
+    pub actor_display_name: Option<String>,
+    pub actor_email: Option<String>,
     pub action: String,
     pub object_type: String,
     pub object_id: Option<String>,
@@ -276,7 +278,7 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT id, actor_type, actor_id, action, object_type, object_id, CAST(metadata_json AS CHAR) AS metadata_json, created_at FROM audit_events WHERE (tenant_id = ? OR (tenant_id IS NULL AND organization_id = (SELECT organization_id FROM tenants WHERE id = ?))) AND (? = TRUE OR action <> 'IDENTITY_REFRESH_SUCCEEDED') ORDER BY created_at DESC, id DESC LIMIT ?",
+            "SELECT audit.id, audit.actor_type, audit.actor_id, actor.display_name AS actor_display_name, actor.email_normalized AS actor_email, audit.action, audit.object_type, audit.object_id, CAST(audit.metadata_json AS CHAR) AS metadata_json, audit.created_at FROM audit_events audit LEFT JOIN human_users actor ON audit.actor_type = 'USER' AND LOWER(REPLACE(audit.actor_id, '-', '')) = LOWER(HEX(actor.id)) WHERE (audit.tenant_id = ? OR (audit.tenant_id IS NULL AND audit.organization_id = (SELECT organization_id FROM tenants WHERE id = ?))) AND (? = TRUE OR audit.action <> 'IDENTITY_REFRESH_SUCCEEDED') ORDER BY audit.created_at DESC, audit.id DESC LIMIT ?",
         )
         .bind(tenant_id)
         .bind(tenant_id)
@@ -290,6 +292,8 @@ impl ControlRepository {
                     id: row.try_get("id")?,
                     actor_type: row.try_get("actor_type")?,
                     actor_id: row.try_get("actor_id")?,
+                    actor_display_name: row.try_get("actor_display_name")?,
+                    actor_email: row.try_get("actor_email")?,
                     action: row.try_get("action")?,
                     object_type: row.try_get("object_type")?,
                     object_id: row.try_get("object_id")?,
