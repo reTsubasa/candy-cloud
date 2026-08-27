@@ -1,5 +1,5 @@
 import type { RuntimeTelemetry } from './types';
-import { runtimeFailureDetail } from './runtime-error';
+import { runtimeErrorStatusLabel, runtimeUserFailureDetail } from './runtime-error';
 
 export type OperationalTone = 'green' | 'orange' | 'red' | 'gray';
 
@@ -63,7 +63,7 @@ export type LinkOperationalInput = {
 export const NODE_STATUS_BOUNDARIES = [
   { tone: 'green' as const, label: '绿色', detail: '节点已完成注册；接入网络后，还需策略生效且数据面健康。' },
   { tone: 'orange' as const, label: '黄色', detail: '策略更新、等待上报、Peer 协商或遥测中断，尚不能判定为故障。' },
-  { tone: 'red' as const, label: '红色', detail: '策略被拒绝、进入故障开放，或 Runtime 明确处于异常/停止状态。' },
+  { tone: 'red' as const, label: '红色', detail: '策略被拒绝、SD-WAN 已自动降级，或 Runtime 明确处于异常/停止状态。' },
 ];
 
 export const LINK_STATUS_BOUNDARIES = [
@@ -80,10 +80,15 @@ export function nodeOperationalStatus(input: NodeOperationalInput): OperationalS
     requiredRouteOwners: input.requiredRouteOwners,
     readyRouteOwners: input.readyRouteOwners,
   };
-  if (input.applyState === 'rejected') return { code: 'policy_rejected', label: '策略应用失败', detail: runtimeFailureDetail(input.errorCode, counters, '节点拒绝了当前策略，但未上报错误码'), tone: 'red' };
-  if (input.failOpenRequired) return { code: 'fail_open', label: '故障开放', detail: `${runtimeFailureDetail(input.runtimeErrorCode, counters, 'Runtime 未上报明确错误码')}；Candy 数据面已退出，基础网络保持可用`, tone: 'red' };
+  if (input.applyState === 'rejected') return { code: 'policy_rejected', label: '策略应用失败', detail: runtimeUserFailureDetail(input.errorCode, counters, '节点拒绝了当前策略，但未上报错误码'), tone: 'red' };
+  if (input.failOpenRequired) return {
+    code: 'fail_open',
+    label: runtimeErrorStatusLabel(input.runtimeErrorCode) ?? 'SD-WAN 已自动降级',
+    detail: `${runtimeUserFailureDetail(input.runtimeErrorCode, counters, 'Runtime 未上报明确错误码')}；系统已撤销 SD-WAN 路由，未匹配流量继续按节点本地网络策略转发`,
+    tone: 'red',
+  };
   if (input.telemetryState === 'online' && (input.lifecycle === 'degraded' || input.lifecycle === 'stopped')) {
-    return { code: 'runtime_fault', label: '运行异常', detail: runtimeFailureDetail(input.runtimeErrorCode, counters, `Runtime 状态：${input.lifecycle}`), tone: 'red' };
+    return { code: 'runtime_fault', label: runtimeErrorStatusLabel(input.runtimeErrorCode) ?? '运行异常', detail: runtimeUserFailureDetail(input.runtimeErrorCode, counters, `Runtime 状态：${input.lifecycle}`), tone: 'red' };
   }
   if (!input.attached) return { code: 'registered', label: '已注册', detail: '节点身份已签发，尚未接入 SD-WAN 网络', tone: 'green' };
   if (input.applyState === 'pending') return { code: 'policy_updating', label: '策略更新中', detail: '等待 Cloud 发布或节点确认当前策略', tone: 'orange' };

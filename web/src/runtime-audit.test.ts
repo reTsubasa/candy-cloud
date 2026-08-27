@@ -7,8 +7,8 @@ describe('runtime audit event descriptions', () => {
       error_code: 'all_peer_reads_failed', configured_peers: 2, active_peers: 1,
       required_route_owners: 1, ready_route_owners: 0,
     });
-    expect(description).toContain('所有 Peer 接收路径读取失败（all_peer_reads_failed）');
-    expect(description).toContain('Peer 1/2，路由 0/1');
+    expect(description).toContain('所有已配置 Peer 的接收通道均已失败，节点无法接收任何远端流量（all_peer_reads_failed）');
+    expect(description).toContain('Peer 连接 1/2，路由就绪 0/1');
     expect(description).toContain('基础网络保持可用');
   });
 

@@ -249,7 +249,7 @@ export function Overview({ session, onOpenLogs }: Props) {
                 <div><span>接收速率</span><strong>{formatRate(topology.rxBps)}</strong></div>
                 <div><span>发送速率</span><strong>{formatRate(topology.txBps)}</strong></div>
               </div>
-              <p className="telemetry-source-note">在线、故障开放、Peer 与路由状态来自 Runtime 心跳；时延、丢包和速率仅在 Core 提供真实采样时显示。</p>
+              <p className="telemetry-source-note">在线、自动降级、Peer 与路由状态来自 Runtime 心跳；时延、丢包和速率仅在 Core 提供真实采样时显示。</p>
             </section>
             <section>
               <header><strong>控制面探针</strong><span className="probe-time">{relativeTime(lastUpdated, clock)}</span></header>
