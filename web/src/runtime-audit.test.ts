@@ -18,4 +18,10 @@ describe('runtime audit event descriptions', () => {
       required_route_owners: 0, ready_route_owners: 0,
     })).toBe('原因：Runtime 状态：STOPPED。');
   });
+
+  it('distinguishes an authorization binding mismatch from a generic rejection', () => {
+    expect(runtimeAuditEventDescription('RUNTIME_CONFIGURATION_REJECTED', {
+      error_code: 'grant_binding_mismatch',
+    })).toBe('原因：节点授权与当前节点、出口或策略代次不匹配（grant_binding_mismatch）；当前配置未生效。');
+  });
 });
