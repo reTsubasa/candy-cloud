@@ -41,6 +41,16 @@ describe('policy summary', () => {
     expect(summary.rules[0]).toMatchObject({ sources: ['全部站点'], conditions: ['全部流量'], action: '本站出口', remote: false });
   });
 
+  it('presents canonical remote-egress slices as one default route', () => {
+    const summary = summarizePolicy(policy({ segment_id: 'segment-id', rules: [{
+      priority: 100,
+      destination_prefixes: [{ network: '0.0.0.0', prefix_len: 1 }, { network: '128.0.0.0', prefix_len: 1 }],
+      action: { type: 'REMOTE_EGRESS', egress_id: 'egress-hk' },
+    }] }), references);
+
+    expect(summary.rules[0].conditions).toEqual(['0.0.0.0/0']);
+  });
+
   it('sorts rules by ascending priority', () => {
     const summary = summarizePolicy(policy({ segment_id: 'segment-id', rules: [
       { id: 'later', priority: 300, action: { type: 'LOCAL_EGRESS' } },

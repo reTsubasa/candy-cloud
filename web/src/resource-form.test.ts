@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildResourceSpec, normalizeSpecForEditor, parseCidr, validateResourceEditor } from './resource-form';
+import { buildResourceSpec, normalizeSpecForEditor, parseCidr, policyRulesForEditor, validateResourceEditor } from './resource-form';
 
 describe('resource form contract mapping', () => {
   it('accepts canonical IPv4 CIDR and rejects host addresses', () => {
+    expect(parseCidr('0.0.0.0/0')).toEqual({ network: '0.0.0.0', prefix_len: 0 });
     expect(parseCidr('10.20.0.0/16')).toEqual({ network: '10.20.0.0', prefix_len: 16 });
     expect(parseCidr('10.20.1.1/16')).toBeNull();
     expect(parseCidr('300.20.0.0/16')).toBeNull();
@@ -40,6 +41,20 @@ describe('resource form contract mapping', () => {
       { network: '0.0.0.0', prefix_len: 1 },
       { network: '128.0.0.0', prefix_len: 1 },
     ] }] } });
+    vi.unstubAllGlobals();
+  });
+
+  it('accepts a default route in the editor and keeps runtime slices out of the UI', () => {
+    vi.stubGlobal('crypto', { randomUUID: () => '019ff9c1-ac24-7303-a6c3-905768fe5905' });
+    const document = buildResourceSpec('SERVICE_POLICY', {
+      segment_id: '019ff9c1-ac24-7303-a6c3-905768fe5901', generation: 2,
+      rules: [{ priority: 100, source_site_ids: [], destination_cidrs: ['0.0.0.0/0'], domains: [], traffic_classes: [], action_type: 'REMOTE_EGRESS', egress_id: '019ff9c1-ac24-7303-a6c3-905768fe5902' }],
+    });
+    expect(document.spec.rules).toMatchObject([{ destination_prefixes: [
+      { network: '0.0.0.0', prefix_len: 1 },
+      { network: '128.0.0.0', prefix_len: 1 },
+    ] }]);
+    expect(policyRulesForEditor(document.spec.rules)[0].destination_cidrs).toEqual(['0.0.0.0/0']);
     vi.unstubAllGlobals();
   });
 

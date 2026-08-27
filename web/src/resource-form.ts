@@ -4,6 +4,8 @@ export type Spec = Record<string, unknown>;
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const hostnamePattern = /^(?=.{1,253}\.?$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.?$/i;
+const defaultRouteCidr = '0.0.0.0/0';
+const defaultRouteSlices = ['0.0.0.0/1', '128.0.0.0/1'];
 
 function ipv4Number(value: string): number | null {
   const octets = value.split('.');
@@ -35,16 +37,28 @@ export function parseCidr(value: string): { network: string; prefix_len: number 
   const [network, prefixText, ...extra] = value.trim().split('/');
   const prefix = Number(prefixText);
   const address = ipv4Number(network);
-  if (extra.length || address === null || !Number.isInteger(prefix) || prefix < 1 || prefix > 32) return null;
+  if (extra.length || address === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
   const hostBits = 32 - prefix;
-  const mask = hostBits === 0 ? 0xffffffff : (0xffffffff << hostBits) >>> 0;
+  const mask = prefix === 0 ? 0 : hostBits === 0 ? 0xffffffff : (0xffffffff << hostBits) >>> 0;
   if ((address & mask) >>> 0 !== address) return null;
   return { network, prefix_len: prefix };
 }
 
 export function formatCidr(value: unknown): string {
   const prefix = value as { network?: unknown; prefix_len?: unknown } | undefined;
-  return prefix?.network && prefix?.prefix_len ? `${prefix.network}/${prefix.prefix_len}` : '';
+  const network = String(prefix?.network ?? '').trim();
+  const length = Number(prefix?.prefix_len);
+  return network && Number.isInteger(length) && length >= 0 && length <= 32 ? `${network}/${length}` : '';
+}
+
+export function collapseDefaultRouteSlices(cidrs: string[]): string[] {
+  return cidrs.length === 2 && defaultRouteSlices.every((slice) => cidrs.includes(slice))
+    ? [defaultRouteCidr]
+    : cidrs;
+}
+
+function expandDefaultRouteCidrs(cidrs: string[]): string[] {
+  return cidrs.flatMap((cidr) => parseCidr(cidr)?.prefix_len === 0 ? defaultRouteSlices : [cidr]);
 }
 
 export function normalizeSpecForEditor(resource: ResourceSpec): Spec {
@@ -95,9 +109,9 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
     spec.generation = positiveInteger(editor.generation);
     spec.rules = ((editor.rules as Spec[]) ?? []).map((rule) => {
       const cidrs = (rule.destination_cidrs as string[]) ?? [];
-      const effectiveCidrs = rule.action_type === 'REMOTE_EGRESS' && cidrs.length === 0
-        ? ['0.0.0.0/1', '128.0.0.0/1']
-        : cidrs;
+      const effectiveCidrs = expandDefaultRouteCidrs(
+        rule.action_type === 'REMOTE_EGRESS' && cidrs.length === 0 ? [defaultRouteCidr] : cidrs,
+      );
       return {
         id: cleanText(rule.id) || crypto.randomUUID(),
         priority: positiveInteger(rule.priority),
@@ -204,7 +218,7 @@ export function policyRulesForEditor(value: unknown): Spec[] {
     const action = (rule.action as Spec) ?? {};
     return {
       ...rule,
-      destination_cidrs: ((rule.destination_prefixes as unknown[]) ?? []).map(formatCidr),
+      destination_cidrs: collapseDefaultRouteSlices(((rule.destination_prefixes as unknown[]) ?? []).map(formatCidr)),
       action_type: action.type ?? 'LOCAL_EGRESS',
       egress_id: action.egress_id ?? '',
     };

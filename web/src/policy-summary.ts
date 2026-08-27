@@ -1,4 +1,5 @@
 import type { ControlResource } from './types';
+import { collapseDefaultRouteSlices } from './resource-form';
 
 export type PolicyReferences = {
   segments: Record<string, string>;
@@ -38,12 +39,12 @@ function cidrList(rule: Record<string, unknown>): string[] {
   const editorCidrs = stringList(rule.destination_cidrs);
   if (editorCidrs.length > 0) return editorCidrs;
   if (!Array.isArray(rule.destination_prefixes)) return [];
-  return rule.destination_prefixes.flatMap((item) => {
+  return collapseDefaultRouteSlices(rule.destination_prefixes.flatMap((item) => {
     const prefix = item as { network?: unknown; prefix_len?: unknown } | null;
     if (!prefix?.network && prefix?.network !== 0) return [];
     const length = Number(prefix.prefix_len);
     return Number.isInteger(length) ? [`${String(prefix.network)}/${length}`] : [];
-  });
+  }));
 }
 
 function resolvedNames(ids: string[], names: Record<string, string>, fallback: string): string[] {
