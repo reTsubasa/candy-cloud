@@ -43,7 +43,7 @@ describe('operational status boundaries', () => {
       readyRouteOwners: 0,
     }))).toMatchObject({
       label: '接收通道全部中断',
-      detail: '原因：所有已配置 Peer 的接收通道均已失败，节点无法接收任何远端流量；Peer 连接 1/2，路由就绪 0/1；系统已撤销 SD-WAN 路由，未匹配流量继续按节点本地网络策略转发',
+      detail: '原因：所有已配置 Peer 的接收通道均已失败，节点无法接收任何远端流量；Peer 连接 1/2，路由就绪 0/1；系统已撤销故障 SD-WAN 路由，并保持 Candy Proxy 或节点本地网络降级转发',
     });
   });
 

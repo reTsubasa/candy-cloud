@@ -85,7 +85,7 @@ export function nodeOperationalStatus(input: NodeOperationalInput): OperationalS
   if (input.failOpenRequired) return {
     code: 'fail_open',
     label: runtimeErrorStatusLabel(input.runtimeErrorCode) ?? 'SD-WAN 已自动降级',
-    detail: `${runtimeUserFailureDetail(input.runtimeErrorCode, counters, 'Runtime 未上报明确错误码')}；系统已撤销 SD-WAN 路由，未匹配流量继续按节点本地网络策略转发`,
+    detail: `${runtimeUserFailureDetail(input.runtimeErrorCode, counters, 'Runtime 未上报明确错误码')}；系统已撤销故障 SD-WAN 路由，并保持 Candy Proxy 或节点本地网络降级转发`,
     tone: 'red',
   };
   if (input.telemetryState === 'online' && (input.lifecycle === 'degraded' || input.lifecycle === 'stopped')) {
