@@ -253,7 +253,7 @@ X-Candy-Attachment-Id: <uuid>
 X-Candy-Segment-Generation: <positive integer>
 X-Candy-Projection-Generation: <positive integer>
 X-Candy-Projection-Content-Hash: <64 lowercase hex>
-X-Candy-Refresh-After: 30
+X-Candy-Refresh-After: 1
 ```
 
 The ETag is the domain-separated SHA-256 of all length-delimited signed
@@ -261,11 +261,13 @@ envelopes plus route and Grant verification trust material, and is a strong
 ETag. Any peer projection or verification-key change therefore creates a new
 candidate even when the local projection itself did not change.
 Runtime sends the last verified candidate in `If-None-Match`; a match returns
-`304` with no body. Runtime must reject missing or malformed identity headers,
+`304` with no body. Runtime SHOULD also send `Prefer: wait=20`; Cloud keeps the
+conditional request open asynchronously and returns as soon as the ETag changes,
+or after the bounded wait expires. Runtime must reject missing or malformed identity headers,
 hash mismatch, an invalid Core signature, an unsupported object version, a
 generation rollback, or a broken previous-hash chain.
 
-Cloud returns `204` with `Retry-After: 30` when the authenticated device is
+Cloud returns `204` with `Retry-After: 1` when the authenticated device is
 active but has no SD-WAN attachment. A missing projection for an active
 attachment, identity ambiguity, or invalid stored publication fails closed as
 `503`. None of these responses authorizes deleting the locally applied
@@ -402,7 +404,7 @@ connections for a single direct path.
 | Status | Meaning | Runtime action |
 | --- | --- | --- |
 | `200`/`201` | operation succeeded | verify response and persist atomically |
-| `304` | Runtime configuration unchanged | keep current generation; resume normal poll interval |
+| `304` | Runtime configuration unchanged | keep current generation; immediately renew the bounded wait after retry backoff |
 | `400`/`422` | local request or encoding defect | do not tight-loop; log bounded contract error |
 | `401` | activation, proof, JWT, or device identity invalid | stop privileged sync; require identity recovery |
 | `403` | authenticated principal is not authorized | preserve local state; require policy/operator change |

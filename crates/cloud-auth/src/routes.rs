@@ -1,4 +1,6 @@
-use std::{collections::HashSet, future::Future, net::Ipv4Addr, pin::Pin, sync::Arc};
+use std::{
+    collections::HashSet, future::Future, net::Ipv4Addr, pin::Pin, sync::Arc, time::Duration,
+};
 
 use axum::{
     body::Body,
@@ -841,7 +843,10 @@ where
 
 const RUNTIME_CONFIGURATION_MEDIA_TYPE: &str =
     "application/vnd.candy.runtime-configuration.v1+json";
-const RUNTIME_REFRESH_SECONDS: u64 = 30;
+const RUNTIME_REFRESH_SECONDS: u64 = 1;
+const RUNTIME_WAIT_SECONDS: u64 = 20;
+const RUNTIME_WAIT_MAX_SECONDS: u64 = 25;
+const RUNTIME_WAIT_POLL_MILLIS: u64 = 500;
 
 async fn runtime_capabilities(_actor: AuthenticatedDevice) -> Json<RuntimeCapabilitiesResponse> {
     Json(RuntimeCapabilitiesResponse {
@@ -849,13 +854,14 @@ async fn runtime_capabilities(_actor: AuthenticatedDevice) -> Json<RuntimeCapabi
         wire_protocol: "0.3",
         configuration_object: "runtime_configuration_v1",
         configuration_media_type: RUNTIME_CONFIGURATION_MEDIA_TYPE,
-        conditional_requests: ["etag", "if-none-match"],
+        conditional_requests: ["etag", "if-none-match", "prefer-wait"],
         status_values: ["active", "rejected"],
         refresh: RuntimeRefreshCapabilities {
-            minimum_seconds: 15,
+            minimum_seconds: 1,
             recommended_seconds: RUNTIME_REFRESH_SECONDS,
             maximum_seconds: 300,
             jitter_percent: 20,
+            wait_seconds: RUNTIME_WAIT_SECONDS,
         },
     })
 }
@@ -868,29 +874,53 @@ async fn current_runtime_configuration<S>(
 where
     S: RuntimeConfigurationService,
 {
-    let delivery = service
-        .current(actor)
-        .await
-        .map_err(ApiError::RuntimeConfiguration)?;
+    let requested_etag = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let wait_seconds = preferred_wait_seconds(&headers);
+    let deadline =
+        wait_seconds.map(|seconds| tokio::time::Instant::now() + Duration::from_secs(seconds));
+    let delivery = loop {
+        let delivery = service
+            .current(actor.clone())
+            .await
+            .map_err(ApiError::RuntimeConfiguration)?;
+        let unchanged = match (&delivery, requested_etag.as_deref()) {
+            (Some(delivery), Some(requested)) => {
+                if_none_match(requested, &configuration_etag(&delivery.envelope_sha256))
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        let Some(deadline) = deadline else {
+            break delivery;
+        };
+        if !unchanged || tokio::time::Instant::now() >= deadline {
+            break delivery;
+        }
+        tokio::time::sleep(Duration::from_millis(RUNTIME_WAIT_POLL_MILLIS)).await;
+    };
     let Some(delivery) = delivery else {
         let mut response = StatusCode::NO_CONTENT.into_response();
         response.headers_mut().insert(
             header::CACHE_CONTROL,
-            HeaderValue::from_static("private, max-age=30"),
+            HeaderValue::from_static("private, no-store"),
         );
         response
             .headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        insert_wait_response_header(&mut response, wait_seconds)?;
         return Ok(response);
     };
     let etag = configuration_etag(&delivery.envelope_sha256);
-    if headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|value| value.to_str().ok())
+    if requested_etag
+        .as_deref()
         .is_some_and(|value| if_none_match(value, &etag))
     {
         let mut response = StatusCode::NOT_MODIFIED.into_response();
         insert_configuration_response_headers(&mut response, &delivery, &etag)?;
+        insert_wait_response_header(&mut response, wait_seconds)?;
         return Ok(response);
     }
     let body = serde_json::to_vec(&RuntimeConfigurationHttpResponse {
@@ -939,8 +969,39 @@ where
     .map_err(|_| ApiError::InvalidRuntimeConfigurationStatus)?;
     let mut response = Response::new(Body::empty());
     insert_configuration_response_headers(&mut response, &delivery, &etag)?;
+    insert_wait_response_header(&mut response, wait_seconds)?;
     *response.body_mut() = Body::from(body);
     Ok(response)
+}
+
+fn preferred_wait_seconds(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get("prefer")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value.split(',').find_map(|preference| {
+                let (name, seconds) = preference.trim().split_once('=')?;
+                name.eq_ignore_ascii_case("wait")
+                    .then(|| seconds.trim().parse::<u64>().ok())
+                    .flatten()
+            })
+        })
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| seconds.min(RUNTIME_WAIT_MAX_SECONDS))
+}
+
+fn insert_wait_response_header(
+    response: &mut Response,
+    wait_seconds: Option<u64>,
+) -> Result<(), ApiError> {
+    if let Some(wait_seconds) = wait_seconds {
+        response.headers_mut().insert(
+            "preference-applied",
+            HeaderValue::from_str(&format!("wait={wait_seconds}"))
+                .map_err(|_| ApiError::InvalidRuntimeConfigurationStatus)?,
+        );
+    }
+    Ok(())
 }
 
 async fn record_runtime_configuration_status<S>(
@@ -1387,7 +1448,7 @@ struct RuntimeCapabilitiesResponse {
     wire_protocol: &'static str,
     configuration_object: &'static str,
     configuration_media_type: &'static str,
-    conditional_requests: [&'static str; 2],
+    conditional_requests: [&'static str; 3],
     status_values: [&'static str; 2],
     refresh: RuntimeRefreshCapabilities,
 }
@@ -1452,6 +1513,7 @@ struct RuntimeRefreshCapabilities {
     recommended_seconds: u64,
     maximum_seconds: u64,
     jitter_percent: u64,
+    wait_seconds: u64,
 }
 
 #[derive(Debug, Deserialize)]

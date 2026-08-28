@@ -27,6 +27,7 @@ describe('operational status boundaries', () => {
   it('uses yellow for transitions and red only for explicit faults', () => {
     expect(nodeOperationalStatus(node({ applyState: 'pending' })).code).toBe('policy_updating');
     expect(nodeOperationalStatus(node({ activePeers: 1 })).code).toBe('peer_negotiating');
+    expect(nodeOperationalStatus(node({ requiredRouteOwners: 2, readyRouteOwners: 1 }))).toMatchObject({ code: 'route_incomplete', label: '路由未就绪' });
     expect(nodeOperationalStatus(node({ telemetryState: 'stale' })).tone).toBe('orange');
     expect(nodeOperationalStatus(node({ applyState: 'rejected', errorCode: 'invalid_policy' }))).toMatchObject({ code: 'policy_rejected', tone: 'red' });
     expect(nodeOperationalStatus(node({ failOpenRequired: true }))).toMatchObject({ code: 'fail_open', tone: 'red' });
@@ -48,7 +49,7 @@ describe('operational status boundaries', () => {
 
   it('turns a link green only after fresh bidirectional authentication', () => {
     const configured = { configuredPathCount: 2, activeDirectionCount: 0, staleDirectionCount: 0, policyUpdating: false, configurationFailed: false, endpointFailed: false };
-    expect(linkOperationalStatus(configured)).toMatchObject({ code: 'authenticating', tone: 'orange' });
+    expect(linkOperationalStatus(configured)).toMatchObject({ code: 'authenticating', label: '路径未建立', tone: 'orange' });
     expect(linkOperationalStatus({ ...configured, activeDirectionCount: 1 })).toMatchObject({ code: 'one_way', tone: 'orange' });
     expect(linkOperationalStatus({ ...configured, activeDirectionCount: 2 })).toMatchObject({ code: 'active', tone: 'green' });
     expect(linkOperationalStatus({ ...configured, activeDirectionCount: 2, policyUpdating: true })).toMatchObject({ code: 'policy_updating', tone: 'orange' });
@@ -57,7 +58,7 @@ describe('operational status boundaries', () => {
       ...configured,
       activeDirectionCount: 1,
       missingDirectionLabels: ['香港 -> 美国'],
-    }).detail).toBe('缺少 香港 -> 美国 的认证遥测');
+    }).detail).toBe('香港 -> 美国 未建立；检查发起端策略、认证日志和公网 UDP 端点');
   });
 
   it.each([
@@ -68,6 +69,7 @@ describe('operational status boundaries', () => {
     ['telemetry_stale', { telemetryState: 'stale' }, 'orange'],
     ['starting', { lifecycle: 'starting' }, 'orange'],
     ['peer_negotiating', { activePeers: 1 }, 'orange'],
+    ['route_incomplete', { readyRouteOwners: 1 }, 'orange'],
     ['healthy', {}, 'green'],
     ['policy_rejected', { applyState: 'rejected' }, 'red'],
     ['fail_open', { failOpenRequired: true }, 'red'],

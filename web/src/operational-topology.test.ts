@@ -197,7 +197,7 @@ describe('operational topology', () => {
     expect(snapshot.activeLinkCount).toBe(0);
     expect(snapshot.links[0].activeDirectionCount).toBe(1);
     expect(snapshot.links[0]).toMatchObject({ siteAName: '上海', siteBName: '东京', state: 'one_way' });
-    expect(snapshot.links[0].status.detail).toBe('缺少 东京 -> 上海 的认证遥测');
+    expect(snapshot.links[0].status.detail).toBe('东京 -> 上海 未建立；检查发起端策略、认证日志和公网 UDP 端点');
     expect(snapshot.links[0].activePathCount).toBe(1);
     expect(snapshot.links[0].activePaths[0].sourceSiteId).toBe('site-a');
     expect(snapshot.links[0].activePaths[0].destinationSiteId).toBe('site-b');

@@ -18,6 +18,7 @@ export type NodeOperationalCode =
   | 'telemetry_stale'
   | 'starting'
   | 'peer_negotiating'
+  | 'route_incomplete'
   | 'healthy'
   | 'policy_rejected'
   | 'fail_open'
@@ -99,6 +100,14 @@ export function nodeOperationalStatus(input: NodeOperationalInput): OperationalS
   }
   const peersReady = input.activePeers === input.configuredPeers;
   const routesReady = input.readyRouteOwners === input.requiredRouteOwners;
+  if (peersReady && !routesReady) {
+    return {
+      code: 'route_incomplete',
+      label: '路由未就绪',
+      detail: `已有 Peer 正常，但仅 ${input.readyRouteOwners}/${input.requiredRouteOwners} 个路由节点可达`,
+      tone: 'orange',
+    };
+  }
   if (!peersReady || !routesReady) {
     return {
       code: 'peer_negotiating',
@@ -116,7 +125,7 @@ export function linkOperationalStatus(input: LinkOperationalInput): OperationalS
   if (input.endpointFailed) return { code: 'endpoint_failed', label: '端点故障', detail: input.failedEndpointLabels?.length ? `${input.failedEndpointLabels.join('、')}没有可工作的节点` : '至少一端没有可工作的节点', tone: 'red' };
   if (input.policyUpdating) return { code: 'policy_updating', label: '策略更新中', detail: '互联配置正在发布或等待端点确认', tone: 'orange' };
   if (input.activeDirectionCount === 2) return { code: 'active', label: '双向已认证', detail: '两端协商认证完成，双向路径遥测新鲜', tone: 'green' };
-  if (input.activeDirectionCount === 1) return { code: 'one_way', label: '单向已认证', detail: input.missingDirectionLabels?.length ? `缺少 ${input.missingDirectionLabels.join('、')} 的认证遥测` : '只有一个方向完成协商认证，不能判定为健康互联', tone: 'orange' };
+  if (input.activeDirectionCount === 1) return { code: 'one_way', label: '单向路径异常', detail: input.missingDirectionLabels?.length ? `${input.missingDirectionLabels.join('、')} 未建立；检查发起端策略、认证日志和公网 UDP 端点` : '只有一个方向完成路径认证，检查另一端策略、认证日志和公网 UDP 端点', tone: 'orange' };
   if (input.staleDirectionCount > 0) return { code: 'telemetry_stale', label: '链路状态过期', detail: input.staleDirectionLabels?.length ? `${input.staleDirectionLabels.join('、')} 的路径遥测已超过新鲜度窗口` : '曾收到路径状态，但已超过遥测新鲜度窗口', tone: 'orange' };
-  return { code: 'authenticating', label: '协商认证中', detail: input.missingDirectionLabels?.length ? `等待 ${input.missingDirectionLabels.join('、')} 完成身份认证和路径建立` : '线路已配置，等待两端完成身份认证和路径建立', tone: 'orange' };
+  return { code: 'authenticating', label: '路径未建立', detail: input.missingDirectionLabels?.length ? `${input.missingDirectionLabels.join('、')} 均未上报路径；检查发起端策略、认证日志和公网 UDP 端点` : '线路已配置但没有路径遥测；检查发起端策略、认证日志和公网 UDP 端点', tone: 'orange' };
 }

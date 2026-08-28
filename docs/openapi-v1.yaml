@@ -748,13 +748,14 @@ paths:
                 wire_protocol: "0.3"
                 configuration_object: runtime_configuration_v1
                 configuration_media_type: application/vnd.candy.runtime-configuration.v1+json
-                conditional_requests: [etag, if-none-match]
+                conditional_requests: [etag, if-none-match, prefer-wait]
                 status_values: [active, rejected]
                 refresh:
-                  minimum_seconds: 15
-                  recommended_seconds: 30
+                  minimum_seconds: 1
+                  recommended_seconds: 1
                   maximum_seconds: 300
                   jitter_percent: 20
+                  wait_seconds: 20
         "401": { $ref: "#/components/responses/DeviceUnauthorized" }
         "503": { $ref: "#/components/responses/DeviceUnavailable" }
   /v1/runtime/profile:
@@ -819,6 +820,11 @@ paths:
           required: false
           description: Strong ETag from the last verified candidate.
           schema: { type: string, pattern: '^"sha256-[0-9a-f]{64}"$' }
+        - name: Prefer
+          in: header
+          required: false
+          description: Request a bounded asynchronous wait, for example `wait=20`.
+          schema: { type: string, pattern: '^wait=[1-9][0-9]?$' }
       responses:
         "200":
           description: |-
@@ -845,7 +851,9 @@ paths:
             X-Candy-Projection-Content-Hash:
               schema: { $ref: "#/components/schemas/Sha256Hex" }
             X-Candy-Refresh-After:
-              schema: { type: integer, const: 30 }
+              schema: { type: integer, const: 1 }
+            Preference-Applied:
+              schema: { type: string, example: wait=20 }
           content:
             application/vnd.candy.runtime-configuration.v1+json:
               schema: { $ref: "#/components/schemas/RuntimeConfiguration" }
@@ -853,13 +861,17 @@ paths:
           description: The current projection exactly matches `If-None-Match`; no body is returned.
           headers:
             ETag: { $ref: "#/components/headers/ConfigurationETag" }
+            Preference-Applied:
+              schema: { type: string, example: wait=20 }
         "400": { $ref: "#/components/responses/DeviceBadRequest" }
         "401": { $ref: "#/components/responses/DeviceUnauthorized" }
         "204":
           description: The authenticated device is active but has no SD-WAN attachment.
           headers:
             Retry-After:
-              schema: { type: integer, const: 30 }
+              schema: { type: integer, const: 1 }
+            Preference-Applied:
+              schema: { type: string, example: wait=20 }
         "503": { $ref: "#/components/responses/DeviceUnavailable" }
   /v1/runtime/configuration/status:
     put:
@@ -1598,9 +1610,9 @@ components:
         configuration_media_type: { type: string, const: application/vnd.candy.runtime-configuration.v1+json }
         conditional_requests:
           type: array
-          prefixItems: [{ const: etag }, { const: if-none-match }]
-          minItems: 2
-          maxItems: 2
+          prefixItems: [{ const: etag }, { const: if-none-match }, { const: prefer-wait }]
+          minItems: 3
+          maxItems: 3
         status_values:
           type: array
           prefixItems: [{ const: active }, { const: rejected }]
@@ -1609,12 +1621,13 @@ components:
         refresh:
           type: object
           additionalProperties: false
-          required: [minimum_seconds, recommended_seconds, maximum_seconds, jitter_percent]
+          required: [minimum_seconds, recommended_seconds, maximum_seconds, jitter_percent, wait_seconds]
           properties:
-            minimum_seconds: { type: integer, const: 15 }
-            recommended_seconds: { type: integer, const: 30 }
+            minimum_seconds: { type: integer, const: 1 }
+            recommended_seconds: { type: integer, const: 1 }
             maximum_seconds: { type: integer, const: 300 }
             jitter_percent: { type: integer, const: 20 }
+            wait_seconds: { type: integer, const: 20 }
     RuntimeProfile:
       type: object
       additionalProperties: false

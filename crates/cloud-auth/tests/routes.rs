@@ -728,6 +728,57 @@ async fn runtime_configuration_returns_coherent_signed_bundle_and_honors_etag() 
 }
 
 #[tokio::test]
+async fn runtime_configuration_wait_returns_when_the_etag_changes() {
+    let service = Arc::new(RecordingRuntimeConfigurationService::with_delivery(Some(
+        runtime_delivery(),
+    )));
+    let app = runtime_configuration_app(service.clone());
+    let actor = device_actor(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+    let initial = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/runtime/configuration")
+                .extension(actor.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let etag = initial.headers()["etag"].clone();
+    let update_service = service.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let mut changed = runtime_delivery();
+        changed.envelope_sha256 = [19; 32];
+        *update_service.delivery.lock().unwrap() = Some(changed);
+    });
+
+    let changed = tokio::time::timeout(
+        std::time::Duration::from_millis(1_500),
+        app.oneshot(
+            Request::builder()
+                .uri("/v1/runtime/configuration")
+                .header("if-none-match", etag)
+                .header("prefer", "respond-async, WAIT=2")
+                .extension(actor)
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("long poll did not wake after the configuration changed")
+    .unwrap();
+    assert_eq!(changed.status(), StatusCode::OK);
+    assert_eq!(changed.headers()["preference-applied"], "wait=2");
+}
+
+#[tokio::test]
 async fn runtime_configuration_distinguishes_unassigned_and_records_bounded_status() {
     let service = Arc::new(RecordingRuntimeConfigurationService::with_delivery(None));
     let actor = device_actor(
@@ -750,7 +801,7 @@ async fn runtime_configuration_distinguishes_unassigned_and_records_bounded_stat
         .await
         .unwrap();
     assert_eq!(unassigned.status(), StatusCode::NO_CONTENT);
-    assert_eq!(unassigned.headers()["retry-after"], "30");
+    assert_eq!(unassigned.headers()["retry-after"], "1");
 
     let status = app
         .oneshot(
