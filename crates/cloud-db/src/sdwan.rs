@@ -2008,12 +2008,17 @@ async fn load_current_runtime_configuration(
         });
     }
     let previous_generation = segment_generation.checked_sub(1);
+    // A server may have been enrolled after the previous Segment generation
+    // was published. Its transport node therefore has no row in the
+    // previous-generation transport catalog, even though the peer
+    // projections are still valid during the compatibility window. Select
+    // the previous Segment publication independently; Core will validate that
+    // each returned peer projection has a path to this server's current
+    // transport identity.
     let compatibility_publication = sqlx::query(
-        "SELECT publication.generation AS segment_generation, publication.content_hash AS segment_content_hash, publication.signed_envelope AS signed_segment_envelope FROM nodes n JOIN runtime_projection_transport_catalog catalog ON catalog.transport_node_id = n.id AND catalog.transport_node_key_id = n.device_key_id AND catalog.tenant_id = n.tenant_id JOIN segment_route_publications publication ON publication.tenant_id = catalog.tenant_id AND publication.segment_id = catalog.segment_id AND publication.generation = catalog.segment_generation WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' AND catalog.segment_id = ? AND catalog.segment_generation = ? AND publication.stale_until >= UNIX_TIMESTAMP() LIMIT 1",
+        "SELECT publication.generation AS segment_generation, publication.content_hash AS segment_content_hash, publication.signed_envelope AS signed_segment_envelope FROM segment_route_publications publication WHERE publication.tenant_id = ? AND publication.segment_id = ? AND publication.generation = ? AND publication.stale_until >= UNIX_TIMESTAMP() LIMIT 1",
     )
     .bind(lookup.tenant_id)
-    .bind(lookup.device_id)
-    .bind(lookup.device_key_id)
     .bind(segment_id)
     .bind(previous_generation.unwrap_or_default())
     .fetch_optional(&mut **transaction)
@@ -2022,13 +2027,11 @@ async fn load_current_runtime_configuration(
     if let Some(publication) = compatibility_publication {
         let compatible_generation: u64 = publication.try_get("segment_generation")?;
         let compatible_catalog_rows = sqlx::query(
-            "SELECT p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope FROM nodes n JOIN runtime_projection_transport_catalog catalog ON catalog.transport_node_id = n.id AND catalog.transport_node_key_id = n.device_key_id AND catalog.tenant_id = n.tenant_id JOIN site_route_projection_publications p ON p.id = catalog.projection_publication_id AND p.tenant_id = catalog.tenant_id AND p.segment_id = catalog.segment_id AND p.segment_generation = catalog.segment_generation AND p.projection_id = catalog.projection_id WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' AND catalog.segment_id = ? AND catalog.segment_generation = ? AND p.projection_id <> ? ORDER BY p.projection_id, p.projection_generation",
+            "SELECT p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope FROM segment_attachments a JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN devices d ON d.id = a.device_id AND d.tenant_id = a.tenant_id AND d.status = 'ACTIVE' JOIN device_keys dk ON dk.id = a.device_key_id AND dk.tenant_id = a.tenant_id AND dk.device_id = d.id AND dk.status = 'ACTIVE' JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = ? JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.stale_until >= UNIX_TIMESTAMP() JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id WHERE a.tenant_id = ? AND a.segment_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY') AND p.projection_id <> ? ORDER BY p.projection_id, p.projection_generation",
         )
-        .bind(lookup.tenant_id)
-        .bind(lookup.device_id)
-        .bind(lookup.device_key_id)
-        .bind(segment_id)
         .bind(compatible_generation)
+        .bind(lookup.tenant_id)
+        .bind(segment_id)
         .bind(projection_id)
         .fetch_all(&mut **transaction)
         .await?;
