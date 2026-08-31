@@ -2013,6 +2013,23 @@ async fn enqueue_generation(
     .bind(segment_id)
     .fetch_one(&mut **transaction)
     .await?;
+
+    // A Runtime may retry the same transport publication while the worker is
+    // still processing the existing generation. Reuse that job instead of
+    // advancing the head and colliding with the unique idempotency index.
+    if sqlx::query_scalar::<_, u8>(
+        "SELECT 1 FROM segment_generation_jobs WHERE tenant_id = ? AND segment_id = ? AND idempotency_hash = ? LIMIT 1",
+    )
+    .bind(tenant_id)
+    .bind(segment_id)
+    .bind(idempotency_hash.as_slice())
+    .fetch_optional(&mut **transaction)
+    .await?
+    .is_some()
+    {
+        return Ok(());
+    }
+
     let desired = current
         .checked_add(1)
         .ok_or(ControlStoreError::InvalidTransition)?;
