@@ -2016,12 +2016,10 @@ async fn load_current_runtime_configuration(
     // each returned peer projection has a path to this server's current
     // transport identity.
     let compatibility_publication = sqlx::query(
-        "SELECT publication.generation AS segment_generation, publication.content_hash AS segment_content_hash, publication.signed_envelope AS signed_segment_envelope FROM nodes n JOIN runtime_projection_transport_catalog current_catalog ON current_catalog.transport_node_id = n.id AND current_catalog.transport_node_key_id = n.device_key_id AND current_catalog.tenant_id = n.tenant_id AND current_catalog.segment_id = ? AND current_catalog.segment_generation = ? AND current_catalog.projection_id <> ? AND EXISTS (SELECT 1 FROM runtime_projection_transport_catalog previous_catalog WHERE previous_catalog.tenant_id = current_catalog.tenant_id AND previous_catalog.segment_id = current_catalog.segment_id AND previous_catalog.segment_generation = ? AND previous_catalog.transport_node_id = current_catalog.transport_node_id AND previous_catalog.transport_node_key_id = current_catalog.transport_node_key_id AND previous_catalog.projection_id <> ?) JOIN segment_route_publications publication ON publication.tenant_id = current_catalog.tenant_id AND publication.segment_id = current_catalog.segment_id WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' AND publication.generation = ? AND publication.stale_until >= UNIX_TIMESTAMP() LIMIT 1",
+        "SELECT publication.generation AS segment_generation, publication.content_hash AS segment_content_hash, publication.signed_envelope AS signed_segment_envelope FROM nodes n JOIN runtime_projection_transport_catalog current_catalog ON current_catalog.transport_node_id = n.id AND current_catalog.transport_node_key_id = n.device_key_id AND current_catalog.tenant_id = n.tenant_id AND current_catalog.segment_id = ? AND current_catalog.segment_generation = ? AND current_catalog.projection_id <> ? JOIN node_endpoints endpoint ON endpoint.node_id = n.id AND endpoint.status = 'ACTIVE' AND endpoint.transport = 'CANDY_QUIC_UDP' JOIN segment_route_publications publication ON publication.tenant_id = current_catalog.tenant_id AND publication.segment_id = current_catalog.segment_id WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' AND publication.generation = ? AND publication.stale_until >= UNIX_TIMESTAMP() LIMIT 1",
     )
     .bind(segment_id)
     .bind(segment_generation)
-    .bind(projection_id)
-    .bind(previous_generation.unwrap_or_default())
     .bind(projection_id)
     .bind(lookup.tenant_id)
     .bind(lookup.device_id)
