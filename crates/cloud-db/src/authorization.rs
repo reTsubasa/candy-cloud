@@ -112,11 +112,16 @@ impl AuthorizationRepository {
         let mut record = record_from_row(row)?;
         if record.service_permission == "private.tun.connect" {
             let policies = sqlx::query(
-                "SELECT seg.id AS segment_id, a.id AS attachment_id, a.site_id, p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, seg.current_generation AS segment_generation, seg.current_content_hash AS segment_content_hash \
+                "SELECT seg.id AS segment_id, a.id AS attachment_id, a.site_id, p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, publication.generation AS segment_generation, publication.content_hash AS segment_content_hash \
                  FROM segment_attachments a \
                  JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' \
-                 JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = seg.current_generation AND p.segment_content_hash = seg.current_content_hash \
-                 WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE', 'STANDBY') FOR SHARE",
+                 JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = seg.tenant_id AND rollout.segment_id = seg.id AND rollout.segment_generation = seg.current_generation \
+                 JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id \
+                 JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.projection_publication_id = p.id AND member.attachment_id = p.attachment_id AND member.projection_id = p.projection_id \
+                 JOIN segment_route_publications publication ON publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash AND publication.id = member.segment_publication_id \
+                 WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE', 'STANDBY') \
+                   AND (((rollout.state = 'BLOCKED' OR member.rollout_ordinal > rollout.allowed_ordinal) AND seg.current_generation > 1 AND p.segment_generation = seg.current_generation - 1) \
+                    OR (rollout.state <> 'BLOCKED' AND member.rollout_ordinal <= rollout.allowed_ordinal AND p.segment_generation = seg.current_generation)) FOR SHARE",
             )
             .bind(lookup.tenant_id)
             .bind(lookup.device_id)
