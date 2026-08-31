@@ -1943,7 +1943,7 @@ async fn load_current_runtime_configuration(
     let projection_query = format!(
         "SELECT p.id AS projection_publication_id, p.projection_id, p.tenant_id, p.segment_id, p.site_id, p.attachment_id, p.device_id, p.device_key_id, p.segment_generation, p.segment_content_hash, p.projection_generation, p.content_hash AS projection_content_hash, publication.signed_envelope AS signed_segment_envelope, p.signed_envelope AS signed_projection_envelope FROM segment_attachments a JOIN tenants t ON t.id = a.tenant_id AND t.status = 'ACTIVE' JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = ? JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = p.tenant_id AND rollout.segment_id = p.segment_id AND rollout.segment_generation = p.segment_generation WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY') AND member.rollout_ordinal <= rollout.allowed_ordinal AND (? = seg.current_generation OR publication.stale_until >= UNIX_TIMESTAMP()){suffix}"
     );
-    let rows = sqlx::query(&projection_query)
+    let mut rows = sqlx::query(&projection_query)
         .bind(delivery_generation)
         .bind(lookup.tenant_id)
         .bind(lookup.device_id)
@@ -1951,6 +1951,20 @@ async fn load_current_runtime_configuration(
         .bind(delivery_generation)
         .fetch_all(&mut **transaction)
         .await?;
+    // A device enrolled after a rollout was blocked has no projection for the
+    // previous generation.  It must still receive the current projection;
+    // otherwise the configuration endpoint returns 204 forever and the new
+    // device can never participate in the rollout.
+    if rows.is_empty() && delivery_generation != current_generation {
+        rows = sqlx::query(&projection_query)
+            .bind(current_generation)
+            .bind(lookup.tenant_id)
+            .bind(lookup.device_id)
+            .bind(lookup.device_key_id)
+            .bind(current_generation)
+            .fetch_all(&mut **transaction)
+            .await?;
+    }
     if rows.is_empty() {
         return Err(RuntimeConfigurationError::MissingCurrentProjection);
     }

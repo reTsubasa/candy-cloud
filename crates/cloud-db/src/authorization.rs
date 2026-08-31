@@ -121,7 +121,12 @@ impl AuthorizationRepository {
                  JOIN segment_route_publications publication ON publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash AND publication.id = member.segment_publication_id \
                  WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE', 'STANDBY') \
                    AND (((rollout.state = 'BLOCKED' OR member.rollout_ordinal > rollout.allowed_ordinal) AND seg.current_generation > 1 AND p.segment_generation = seg.current_generation - 1) \
-                    OR (rollout.state <> 'BLOCKED' AND member.rollout_ordinal <= rollout.allowed_ordinal AND p.segment_generation = seg.current_generation)) FOR SHARE",
+                    OR (rollout.state <> 'BLOCKED' AND member.rollout_ordinal <= rollout.allowed_ordinal AND p.segment_generation = seg.current_generation) \
+                    OR (rollout.state = 'BLOCKED' AND member.rollout_ordinal <= rollout.allowed_ordinal AND p.segment_generation = seg.current_generation \
+                        AND NOT EXISTS (SELECT 1 FROM site_route_projection_publications previous \
+                                        WHERE previous.tenant_id = p.tenant_id AND previous.segment_id = p.segment_id \
+                                          AND previous.attachment_id = p.attachment_id AND previous.device_id = p.device_id \
+                                          AND previous.device_key_id = p.device_key_id AND previous.segment_generation = seg.current_generation - 1))) FOR SHARE",
             )
             .bind(lookup.tenant_id)
             .bind(lookup.device_id)
