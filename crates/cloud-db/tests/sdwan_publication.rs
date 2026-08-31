@@ -5,11 +5,11 @@ use cloud_control::{
 };
 use cloud_db::sdwan::{
     ExpansionObjectKind, ExpansionObjectPublicationWrite, PublicationOutcome,
-    RuntimeConfigurationApplyState, RuntimeConfigurationError, RuntimeConfigurationLookup,
-    RuntimeConfigurationState, RuntimeConfigurationStatusWrite, RuntimeLifecycle, RuntimePathKind,
-    RuntimePathTelemetryWrite, RuntimeProjectionPathCatalogWrite, RuntimeTelemetryWrite,
-    SdwanError, SdwanRepository, SegmentPublicationWrite, SignedObjectWrite,
-    SiteProjectionPublicationWrite,
+    RuntimeConfigurationActivationPhase, RuntimeConfigurationApplyState, RuntimeConfigurationError,
+    RuntimeConfigurationLookup, RuntimeConfigurationState, RuntimeConfigurationStatusWrite,
+    RuntimeLifecycle, RuntimePathKind, RuntimePathTelemetryWrite,
+    RuntimeProjectionPathCatalogWrite, RuntimeTelemetryWrite, SdwanError, SdwanRepository,
+    SegmentPublicationWrite, SignedObjectWrite, SiteProjectionPublicationWrite,
 };
 use sqlx::Row;
 use std::net::Ipv4Addr;
@@ -811,17 +811,71 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         first_runtime.signed_segment_envelope,
         write.snapshot.signed_envelope
     );
+    assert_eq!(
+        first_runtime.activation_phase,
+        RuntimeConfigurationActivationPhase::Prepare
+    );
+    let peer_runtime_lookup = RuntimeConfigurationLookup {
+        tenant_id,
+        device_id: peer_device_id,
+        device_key_id: peer_device_key_id,
+    };
+    let RuntimeConfigurationState::Current(first_peer_runtime) = repository
+        .current_runtime_configuration(&peer_runtime_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("expected current Peer Runtime configuration");
+    };
     repository
         .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
             lookup: runtime_lookup.clone(),
             projection_publication_id: first_runtime.projection_publication_id,
             projection_content_hash: first_runtime.projection_content_hash,
             envelope_sha256: first_runtime.envelope_sha256(),
-            apply_state: RuntimeConfigurationApplyState::Active,
+            apply_state: RuntimeConfigurationApplyState::Prepared,
             error_code: None,
         })
         .await
         .unwrap();
+    repository
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: peer_runtime_lookup.clone(),
+            projection_publication_id: first_peer_runtime.projection_publication_id,
+            projection_content_hash: first_peer_runtime.projection_content_hash,
+            envelope_sha256: first_peer_runtime.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Prepared,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    for (lookup, prepared) in [
+        (&runtime_lookup, &first_runtime),
+        (&peer_runtime_lookup, &first_peer_runtime),
+    ] {
+        let RuntimeConfigurationState::Current(committing) = repository
+            .current_runtime_configuration(lookup)
+            .await
+            .unwrap()
+        else {
+            panic!("expected committing Runtime configuration");
+        };
+        assert_eq!(
+            committing.activation_phase,
+            RuntimeConfigurationActivationPhase::Commit
+        );
+        repository
+            .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+                lookup: (*lookup).clone(),
+                projection_publication_id: prepared.projection_publication_id,
+                projection_content_hash: prepared.projection_content_hash,
+                envelope_sha256: prepared.envelope_sha256(),
+                apply_state: RuntimeConfigurationApplyState::Active,
+                error_code: None,
+            })
+            .await
+            .unwrap();
+    }
     let applied: String = sqlx::query_scalar(
         "SELECT apply_state FROM runtime_configuration_status WHERE tenant_id = ? AND device_id = ? AND device_key_id = ?",
     )
@@ -883,7 +937,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(rollout, (2, 2, "ACTIVE".into()));
+    assert_eq!(rollout, (2, 2, "PREPARING".into()));
     let RuntimeConfigurationState::Current(second_runtime) = repository
         .current_runtime_configuration(&runtime_lookup)
         .await
@@ -892,6 +946,10 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         panic!("expected generation 2 Runtime configuration");
     };
     assert_eq!(second_runtime.segment_generation, 2);
+    assert_eq!(
+        second_runtime.activation_phase,
+        RuntimeConfigurationActivationPhase::Prepare
+    );
     assert_eq!(second_runtime.compatibility_generations.len(), 1);
     let compatible = &second_runtime.compatibility_generations[0];
     assert_eq!(compatible.segment_generation, 1);
@@ -975,19 +1033,18 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     .await
     .unwrap();
     assert_eq!(legacy_paths_json, "[]");
-    let peer_runtime_lookup = RuntimeConfigurationLookup {
-        tenant_id,
-        device_id: peer_device_id,
-        device_key_id: peer_device_key_id,
-    };
     let RuntimeConfigurationState::Current(peer_runtime_before_ack) = repository
         .current_runtime_configuration(&peer_runtime_lookup)
         .await
         .unwrap()
     else {
-        panic!("expected the peer to receive the new Runtime configuration without an ACK gate");
+        panic!("expected the peer to receive the prepared Runtime configuration");
     };
     assert_eq!(peer_runtime_before_ack.segment_generation, 2);
+    assert_eq!(
+        peer_runtime_before_ack.activation_phase,
+        RuntimeConfigurationActivationPhase::Prepare
+    );
     assert_eq!(
         peer_runtime_before_ack.projection_publication_id,
         second.projections[1].publication_id
@@ -998,6 +1055,75 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
             projection_publication_id: second_runtime.projection_publication_id,
             projection_content_hash: second_runtime.projection_content_hash,
             envelope_sha256: second_runtime.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Prepared,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    let rollout_state: String = sqlx::query_scalar(
+        "SELECT state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = 2",
+    )
+    .bind(tenant_id)
+    .bind(segment_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rollout_state, "PREPARING");
+    repository
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: peer_runtime_lookup.clone(),
+            projection_publication_id: peer_runtime_before_ack.projection_publication_id,
+            projection_content_hash: peer_runtime_before_ack.projection_content_hash,
+            envelope_sha256: peer_runtime_before_ack.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Prepared,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    let rollout_state: String = sqlx::query_scalar(
+        "SELECT state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = 2",
+    )
+    .bind(tenant_id)
+    .bind(segment_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rollout_state, "COMMITTING");
+    let RuntimeConfigurationState::Current(committing_runtime) = repository
+        .current_runtime_configuration(&runtime_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("expected committing Runtime configuration");
+    };
+    let RuntimeConfigurationState::Current(committing_peer_runtime) = repository
+        .current_runtime_configuration(&peer_runtime_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("expected committing Peer Runtime configuration");
+    };
+    assert_eq!(
+        committing_runtime.activation_phase,
+        RuntimeConfigurationActivationPhase::Commit
+    );
+    repository
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: runtime_lookup.clone(),
+            projection_publication_id: committing_runtime.projection_publication_id,
+            projection_content_hash: committing_runtime.projection_content_hash,
+            envelope_sha256: committing_runtime.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Active,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    repository
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: peer_runtime_lookup.clone(),
+            projection_publication_id: committing_peer_runtime.projection_publication_id,
+            projection_content_hash: committing_peer_runtime.projection_content_hash,
+            envelope_sha256: committing_peer_runtime.envelope_sha256(),
             apply_state: RuntimeConfigurationApplyState::Active,
             error_code: None,
         })

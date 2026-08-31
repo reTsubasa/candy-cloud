@@ -24,8 +24,11 @@ export function activationDisplay(
   if (readiness.ready) return { label: '已启用', detail: '配置已发布，等待节点保持在线', tone: 'green' };
   if (readiness.reason_codes.includes('service_not_enabled')) return { label: '服务未开通', detail: '当前租户尚未开通 SD-WAN 服务', tone: 'orange' };
   if (readiness.reason_codes.includes('node_apply_failed')) return { label: '节点应用失败', detail: applyFailureDetail(readiness), tone: 'red' };
+  if (readiness.reason_codes.includes('activation_blocked')) return { label: '发布已阻断', detail: '有节点未能准备候选配置，整批配置已取消，所有节点继续使用上一份配置', tone: 'red' };
   if (readiness.reason_codes.includes('node_offline')) return { label: '等待节点', detail: `${readiness.missing_transport_count} 条线路等待公网 UDP 端点`, tone: 'orange' };
   if (readiness.reason_codes.includes('config_pending')) return { label: '配置发布中', detail: 'Cloud 正在生成并签名节点配置', tone: 'arcoblue' };
+  if (readiness.reason_codes.includes('activation_preparing')) return { label: '全网准备中', detail: '所有节点先校验并落盘候选配置，当前流量仍由上一份配置承载', tone: 'arcoblue' };
+  if (readiness.reason_codes.includes('activation_committing')) return { label: '统一提交中', detail: '所有节点已准备完成，正在统一切换到新配置', tone: 'orange' };
   if (readiness.reason_codes.includes('node_apply_pending')) return { label: '等待节点应用', detail: '配置已发布，等待 ' + String(readiness.pending_apply_count || 1) + ' 个节点确认生效', tone: 'orange' };
   return { label: '等待激活', detail: '线路已保存，等待节点配置生效', tone: 'orange' };
 }

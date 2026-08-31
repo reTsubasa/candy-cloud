@@ -619,6 +619,7 @@ fn select_remote_egress_rules(
     let mut decisions = BTreeMap::<(Uuid, Ipv4PrefixV1), (u32, Option<Uuid>)>::new();
     let mut selected = Vec::new();
     for (policy_ref, rule) in rules {
+        let destinations = normalized_policy_destinations(&rule.destination_prefixes);
         let remote_egress = match rule.action {
             PolicyActionV1::LocalEgress => None,
             PolicyActionV1::RemoteEgress(egress_id) => Some(
@@ -637,9 +638,12 @@ fn select_remote_egress_rules(
             source_sites.retain(|site_id| *site_id != egress.site_id);
         }
         for source_site_id in source_sites {
-            for prefix in &rule.destination_prefixes {
-                let destination = Ipv4PrefixV1::new(prefix.network.octets(), prefix.prefix_len)
-                    .expect("validated control prefix must convert");
+            for prefix in &destinations {
+                let destination = Ipv4PrefixV1::new_egress_destination(
+                    prefix.network.octets(),
+                    prefix.prefix_len,
+                )
+                .expect("validated control prefix must convert");
                 let key = (source_site_id, destination);
                 let action = remote_egress.map(|(egress_id, _)| egress_id);
                 if let Some((priority, existing_action)) = decisions.get(&key) {
@@ -675,6 +679,28 @@ fn select_remote_egress_rules(
         )
     });
     Ok(selected)
+}
+
+fn normalized_policy_destinations(
+    prefixes: &[cloud_control::Ipv4PrefixV1],
+) -> Vec<cloud_control::Ipv4PrefixV1> {
+    let legacy_default = [
+        (std::net::Ipv4Addr::UNSPECIFIED, 1),
+        (std::net::Ipv4Addr::new(128, 0, 0, 0), 1),
+    ];
+    if prefixes.len() == legacy_default.len()
+        && legacy_default.iter().all(|(network, prefix_len)| {
+            prefixes
+                .iter()
+                .any(|prefix| prefix.network == *network && prefix.prefix_len == *prefix_len)
+        })
+    {
+        return vec![cloud_control::Ipv4PrefixV1 {
+            network: std::net::Ipv4Addr::UNSPECIFIED,
+            prefix_len: 0,
+        }];
+    }
+    prefixes.to_vec()
 }
 
 fn merge_egress_destinations(
@@ -1083,6 +1109,28 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].priority, 99);
         assert_eq!(selected[0].egress_id, us_egress);
+    }
+
+    #[test]
+    fn legacy_default_slices_publish_as_one_default_route() {
+        let prefixes = [
+            cloud_control::Ipv4PrefixV1 {
+                network: std::net::Ipv4Addr::UNSPECIFIED,
+                prefix_len: 1,
+            },
+            cloud_control::Ipv4PrefixV1 {
+                network: std::net::Ipv4Addr::new(128, 0, 0, 0),
+                prefix_len: 1,
+            },
+        ];
+
+        assert_eq!(
+            normalized_policy_destinations(&prefixes),
+            vec![cloud_control::Ipv4PrefixV1 {
+                network: std::net::Ipv4Addr::UNSPECIFIED,
+                prefix_len: 0,
+            }]
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@ use cloud_db::{
         GrantIssuanceRepository, GrantIssuanceWrite, GrantRecordOutcome, StoredGrantRecord,
     },
     sdwan::{
+        RuntimeConfigurationActivationPhase as DbRuntimeConfigurationActivationPhase,
         RuntimeConfigurationApplyState as DbRuntimeConfigurationApplyState,
         RuntimeConfigurationError, RuntimeConfigurationLookup, RuntimeConfigurationState,
         RuntimeConfigurationStatusWrite, RuntimeLifecycle as DbRuntimeLifecycle,
@@ -24,7 +25,8 @@ use crate::{
     },
     routes::{
         AuthenticatedTenant, EnrollmentReceipt, GrantIssuanceReceipt, GrantIssueCommand,
-        GrantServiceError, RuntimeCompatibilityGenerationDelivery, RuntimeConfigurationApplyState,
+        GrantServiceError, RuntimeCompatibilityGenerationDelivery,
+        RuntimeConfigurationActivationPhase, RuntimeConfigurationApplyState,
         RuntimeConfigurationDelivery, RuntimeConfigurationService,
         RuntimeConfigurationServiceError, RuntimeConfigurationStatusCommand,
         RuntimeGrantVerificationKeyDelivery, RuntimeLifecycle, RuntimePathKind,
@@ -221,6 +223,7 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                 Ok(RuntimeConfigurationState::Current(record)) => {
                     let envelope_sha256 = runtime_configuration_etag(
                         record.envelope_sha256(),
+                        record.activation_phase,
                         &self.route_signing_key_id,
                         &self.route_signing_public_key,
                         &self.grant_verification_keys,
@@ -269,6 +272,14 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                             })
                             .collect(),
                         grant_verification_keys: self.grant_verification_keys.clone(),
+                        activation_phase: match record.activation_phase {
+                            DbRuntimeConfigurationActivationPhase::Prepare => {
+                                RuntimeConfigurationActivationPhase::Prepare
+                            }
+                            DbRuntimeConfigurationActivationPhase::Commit => {
+                                RuntimeConfigurationActivationPhase::Commit
+                            }
+                        },
                     }))
                 }
                 Err(RuntimeConfigurationError::MissingCurrentProjection) => Ok(None),
@@ -297,6 +308,7 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
             };
             let expected_etag = runtime_configuration_etag(
                 current.envelope_sha256(),
+                current.activation_phase,
                 &self.route_signing_key_id,
                 &self.route_signing_public_key,
                 &self.grant_verification_keys,
@@ -310,6 +322,9 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                 projection_content_hash: command.projection_content_hash,
                 envelope_sha256: command.envelope_sha256,
                 apply_state: match command.apply_state {
+                    RuntimeConfigurationApplyState::Prepared => {
+                        DbRuntimeConfigurationApplyState::Prepared
+                    }
                     RuntimeConfigurationApplyState::Active => {
                         DbRuntimeConfigurationApplyState::Active
                     }
@@ -508,6 +523,7 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
 
 fn runtime_configuration_etag(
     signed_objects_hash: [u8; 32],
+    activation_phase: DbRuntimeConfigurationActivationPhase,
     route_key_id: &str,
     route_public_key: &[u8; 32],
     grant_keys: &[RuntimeGrantVerificationKeyDelivery],
@@ -515,6 +531,10 @@ fn runtime_configuration_etag(
     let mut digest = Sha256::new();
     digest.update(b"candy/runtime-delivery-v1\0");
     digest.update(signed_objects_hash);
+    digest.update(match activation_phase {
+        DbRuntimeConfigurationActivationPhase::Prepare => b"prepare".as_slice(),
+        DbRuntimeConfigurationActivationPhase::Commit => b"commit".as_slice(),
+    });
     digest.update((route_key_id.len() as u64).to_be_bytes());
     digest.update(route_key_id.as_bytes());
     digest.update(route_public_key);
@@ -548,6 +568,7 @@ mod runtime_delivery_tests {
         let route_key = [2; 32];
         let base = runtime_configuration_etag(
             signed_objects,
+            DbRuntimeConfigurationActivationPhase::Commit,
             "route-key-a",
             &route_key,
             &[grant_key(3, "grant-key-a")],
@@ -556,6 +577,7 @@ mod runtime_delivery_tests {
             base,
             runtime_configuration_etag(
                 signed_objects,
+                DbRuntimeConfigurationActivationPhase::Commit,
                 "route-key-b",
                 &route_key,
                 &[grant_key(3, "grant-key-a")]
@@ -565,6 +587,7 @@ mod runtime_delivery_tests {
             base,
             runtime_configuration_etag(
                 signed_objects,
+                DbRuntimeConfigurationActivationPhase::Commit,
                 "route-key-a",
                 &[4; 32],
                 &[grant_key(3, "grant-key-a")]
@@ -574,9 +597,20 @@ mod runtime_delivery_tests {
             base,
             runtime_configuration_etag(
                 signed_objects,
+                DbRuntimeConfigurationActivationPhase::Commit,
                 "route-key-a",
                 &route_key,
                 &[grant_key(5, "grant-key-b")]
+            )
+        );
+        assert_ne!(
+            base,
+            runtime_configuration_etag(
+                signed_objects,
+                DbRuntimeConfigurationActivationPhase::Prepare,
+                "route-key-a",
+                &route_key,
+                &[grant_key(3, "grant-key-a")]
             )
         );
     }

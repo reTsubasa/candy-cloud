@@ -74,6 +74,13 @@ pub struct RuntimeConfigurationRecord {
     pub signed_projection_envelope: Vec<u8>,
     pub peer_projection_catalog: Vec<RuntimePeerProjection>,
     pub compatibility_generations: Vec<RuntimeCompatibilityGeneration>,
+    pub activation_phase: RuntimeConfigurationActivationPhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeConfigurationActivationPhase {
+    Prepare,
+    Commit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +209,7 @@ mod runtime_configuration_tests {
             signed_projection_envelope: vec![12],
             peer_projection_catalog: catalog,
             compatibility_generations: Vec::new(),
+            activation_phase: RuntimeConfigurationActivationPhase::Commit,
         }
     }
 
@@ -306,6 +314,7 @@ pub enum RuntimeConfigurationState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeConfigurationApplyState {
+    Prepared,
     Active,
     Rejected,
 }
@@ -528,8 +537,8 @@ impl RuntimeConfigurationStatusWrite {
             || self.projection_content_hash == [0; 32]
             || self.envelope_sha256 == [0; 32]
             || !error_is_valid
-            || matches!(self.apply_state, RuntimeConfigurationApplyState::Active)
-                != self.error_code.is_none()
+            || matches!(self.apply_state, RuntimeConfigurationApplyState::Rejected)
+                == self.error_code.is_none()
         {
             return Err(RuntimeConfigurationError::InvalidScope);
         }
@@ -540,6 +549,7 @@ impl RuntimeConfigurationStatusWrite {
 impl RuntimeConfigurationApplyState {
     fn database_value(self) -> &'static str {
         match self {
+            Self::Prepared => "PREPARED",
             Self::Active => "ACTIVE",
             Self::Rejected => "REJECTED",
         }
@@ -1181,6 +1191,7 @@ impl SdwanRepository {
         );
         if status_changed {
             let action = match status.apply_state {
+                RuntimeConfigurationApplyState::Prepared => "RUNTIME_CONFIGURATION_PREPARED",
                 RuntimeConfigurationApplyState::Active => "RUNTIME_CONFIGURATION_ACTIVATED",
                 RuntimeConfigurationApplyState::Rejected => "RUNTIME_CONFIGURATION_REJECTED",
             };
@@ -1203,8 +1214,8 @@ impl SdwanRepository {
             .await?;
         }
 
-        let rollout_member: Option<(u32, u32)> = sqlx::query_as(
-            "SELECT member.rollout_ordinal, rollout.member_count FROM segment_route_publication_members member JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = member.tenant_id AND rollout.segment_id = ? AND rollout.segment_generation = ? WHERE member.tenant_id = ? AND member.projection_publication_id = ? FOR UPDATE",
+        let rollout_member: Option<(u32, u32, String)> = sqlx::query_as(
+            "SELECT member.rollout_ordinal, rollout.member_count, rollout.state FROM segment_route_publication_members member JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = member.tenant_id AND rollout.segment_id = ? AND rollout.segment_generation = ? WHERE member.tenant_id = ? AND member.projection_publication_id = ? FOR UPDATE",
         )
         .bind(configuration.segment_id)
         .bind(configuration.segment_generation)
@@ -1212,40 +1223,63 @@ impl SdwanRepository {
         .bind(configuration.projection_publication_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        if let Some((ordinal, member_count)) = rollout_member {
+        if let Some((_ordinal, member_count, rollout_state)) = rollout_member {
             match status.apply_state {
-                RuntimeConfigurationApplyState::Active if ordinal >= member_count => {
-                    sqlx::query(
-                        "UPDATE runtime_configuration_rollouts SET state = 'COMPLETE', allowed_ordinal = member_count WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND allowed_ordinal = ?",
+                RuntimeConfigurationApplyState::Prepared if rollout_state == "PREPARING" => {
+                    let prepared_count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM segment_route_publication_members member JOIN site_route_projection_publications projection ON projection.id = member.projection_publication_id LEFT JOIN runtime_configuration_status status ON status.tenant_id = projection.tenant_id AND status.device_id = projection.device_id AND status.device_key_id = projection.device_key_id AND status.projection_publication_id = projection.id WHERE member.tenant_id = ? AND member.segment_publication_id = (SELECT id FROM segment_route_publications WHERE tenant_id = ? AND segment_id = ? AND generation = ?) AND status.apply_state = 'PREPARED'",
                     )
+                    .bind(status.lookup.tenant_id)
                     .bind(status.lookup.tenant_id)
                     .bind(configuration.segment_id)
                     .bind(configuration.segment_generation)
-                    .bind(ordinal)
-                    .execute(&mut *transaction)
+                    .fetch_one(&mut *transaction)
                     .await?;
+                    if prepared_count == i64::from(member_count) {
+                        sqlx::query(
+                            "UPDATE runtime_configuration_rollouts SET state = 'COMMITTING' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND state = 'PREPARING'",
+                        )
+                        .bind(status.lookup.tenant_id)
+                        .bind(configuration.segment_id)
+                        .bind(configuration.segment_generation)
+                        .execute(&mut *transaction)
+                        .await?;
+                    }
                 }
-                RuntimeConfigurationApplyState::Active => {
-                    sqlx::query(
-                        "UPDATE runtime_configuration_rollouts SET state = 'ACTIVE', allowed_ordinal = allowed_ordinal + 1 WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND state = 'ACTIVE' AND allowed_ordinal = ?",
+                RuntimeConfigurationApplyState::Active if rollout_state == "COMMITTING" => {
+                    let active_count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM segment_route_publication_members member JOIN site_route_projection_publications projection ON projection.id = member.projection_publication_id LEFT JOIN runtime_configuration_status status ON status.tenant_id = projection.tenant_id AND status.device_id = projection.device_id AND status.device_key_id = projection.device_key_id AND status.projection_publication_id = projection.id WHERE member.tenant_id = ? AND member.segment_publication_id = (SELECT id FROM segment_route_publications WHERE tenant_id = ? AND segment_id = ? AND generation = ?) AND status.apply_state = 'ACTIVE'",
                     )
+                    .bind(status.lookup.tenant_id)
                     .bind(status.lookup.tenant_id)
                     .bind(configuration.segment_id)
                     .bind(configuration.segment_generation)
-                    .bind(ordinal)
-                    .execute(&mut *transaction)
+                    .fetch_one(&mut *transaction)
                     .await?;
+                    if active_count == i64::from(member_count) {
+                        sqlx::query(
+                            "UPDATE runtime_configuration_rollouts SET state = 'COMPLETE' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND state = 'COMMITTING'",
+                        )
+                        .bind(status.lookup.tenant_id)
+                        .bind(configuration.segment_id)
+                        .bind(configuration.segment_generation)
+                        .execute(&mut *transaction)
+                        .await?;
+                    }
                 }
                 RuntimeConfigurationApplyState::Rejected => {
                     sqlx::query(
-                        "UPDATE runtime_configuration_rollouts SET state = 'BLOCKED' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND allowed_ordinal = ?",
+                        "UPDATE runtime_configuration_rollouts SET state = 'BLOCKED' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND state IN ('PREPARING','COMMITTING')",
                     )
                     .bind(status.lookup.tenant_id)
                     .bind(configuration.segment_id)
                     .bind(configuration.segment_generation)
-                    .bind(ordinal)
                     .execute(&mut *transaction)
                     .await?;
+                }
+                _ => {
+                    transaction.rollback().await?;
+                    return Err(RuntimeConfigurationError::StaleConfiguration);
                 }
             }
         }
@@ -1813,7 +1847,7 @@ impl SdwanRepository {
             u32::try_from(write.projections.len()).map_err(|_| SdwanError::InvalidScope)?;
         if member_count > 0 {
             sqlx::query(
-                "INSERT INTO runtime_configuration_rollouts (tenant_id, segment_id, segment_generation, allowed_ordinal, member_count, state) VALUES (?, ?, ?, ?, ?, 'ACTIVE')",
+                "INSERT INTO runtime_configuration_rollouts (tenant_id, segment_id, segment_generation, allowed_ordinal, member_count, state) VALUES (?, ?, ?, ?, ?, 'PREPARING')",
             )
             .bind(write.tenant_id)
             .bind(write.segment_id)
@@ -1881,18 +1915,24 @@ async fn load_current_runtime_configuration(
     }
 
     let rollout_query = format!(
-        "SELECT seg.current_generation, member.rollout_ordinal, rollout.allowed_ordinal FROM segment_attachments a JOIN tenants t ON t.id = a.tenant_id AND t.status = 'ACTIVE' JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = seg.current_generation AND p.segment_content_hash = seg.current_content_hash JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = p.tenant_id AND rollout.segment_id = p.segment_id AND rollout.segment_generation = p.segment_generation WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY'){suffix}"
+        "SELECT seg.current_generation, member.rollout_ordinal, rollout.allowed_ordinal, rollout.state FROM segment_attachments a JOIN tenants t ON t.id = a.tenant_id AND t.status = 'ACTIVE' JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = seg.current_generation AND p.segment_content_hash = seg.current_content_hash JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = p.tenant_id AND rollout.segment_id = p.segment_id AND rollout.segment_generation = p.segment_generation WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY'){suffix}"
     );
-    let rollout_position: Option<(u64, u32, u32)> = sqlx::query_as(&rollout_query)
+    let rollout_position: Option<(u64, u32, u32, String)> = sqlx::query_as(&rollout_query)
         .bind(lookup.tenant_id)
         .bind(lookup.device_id)
         .bind(lookup.device_key_id)
         .fetch_optional(&mut **transaction)
         .await?;
-    let Some((current_generation, rollout_ordinal, allowed_ordinal)) = rollout_position else {
+    let Some((current_generation, rollout_ordinal, allowed_ordinal, rollout_state)) =
+        rollout_position
+    else {
         return Err(RuntimeConfigurationError::MissingCurrentProjection);
     };
-    let delivery_generation = if rollout_ordinal <= allowed_ordinal {
+    let delivery_generation = if rollout_state == "BLOCKED" {
+        current_generation
+            .checked_sub(1)
+            .ok_or(RuntimeConfigurationError::MissingCurrentProjection)?
+    } else if rollout_ordinal <= allowed_ordinal {
         current_generation
     } else {
         current_generation
@@ -2031,6 +2071,14 @@ async fn load_current_runtime_configuration(
         signed_projection_envelope: row.try_get("signed_projection_envelope")?,
         peer_projection_catalog,
         compatibility_generations,
+        activation_phase: if matches!(
+            rollout_state.as_str(),
+            "COMMITTING" | "COMPLETE" | "BLOCKED"
+        ) {
+            RuntimeConfigurationActivationPhase::Commit
+        } else {
+            RuntimeConfigurationActivationPhase::Prepare
+        },
     };
     record.validate(lookup)?;
     Ok(RuntimeConfigurationState::Current(Box::new(record)))

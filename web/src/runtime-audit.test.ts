@@ -18,6 +18,10 @@ describe('runtime audit event descriptions', () => {
       lifecycle: 'STOPPED', error_code: null, configured_peers: 0, active_peers: 0,
       required_route_owners: 0, ready_route_owners: 0,
     })).toBe('原因：Runtime 状态：STOPPED。');
+    expect(runtimeAuditEventDescription('RUNTIME_FAIL_OPEN_ENTERED', {
+      error_code: null, configured_peers: 0, active_peers: 0,
+      required_route_owners: 0, ready_route_owners: 0,
+    })).toContain('旧版 Runtime 在撤销路由前未持久化原始故障码');
   });
 
   it('distinguishes an authorization binding mismatch from a generic rejection', () => {

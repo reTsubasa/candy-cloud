@@ -138,7 +138,7 @@ fn revoked_attachment_does_not_reserve_overlay_address_forever() {
 #[test]
 fn control_plane_readiness_requires_the_latest_migration() {
     let source = include_str!("../src/control.rs");
-    assert!(source.contains("_sqlx_migrations WHERE version = 28 AND success = TRUE"));
+    assert!(source.contains("_sqlx_migrations WHERE version = 29 AND success = TRUE"));
 }
 
 #[test]
@@ -148,6 +148,14 @@ fn runtime_activation_rollout_is_ordered_and_fail_stopping() {
     assert!(migration.contains("allowed_ordinal"));
     assert!(migration.contains("ENUM('ACTIVE','BLOCKED','COMPLETE')"));
     assert!(migration.contains("CHECK (allowed_ordinal <= member_count)"));
+}
+
+#[test]
+fn runtime_activation_uses_a_prepare_commit_barrier() {
+    let migration = include_str!("../migrations/0029_runtime_atomic_activation.sql");
+    assert!(migration.contains("'PREPARING','COMMITTING','BLOCKED','COMPLETE'"));
+    assert!(migration.contains("'PREPARED','ACTIVE','REJECTED'"));
+    assert!(migration.contains("chk_runtime_configuration_result"));
 }
 
 #[test]

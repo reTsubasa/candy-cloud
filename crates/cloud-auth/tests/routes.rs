@@ -518,6 +518,7 @@ fn runtime_delivery() -> RuntimeConfigurationDelivery {
             issuer_id: Uuid::from_bytes([13; 16]),
             environment_id: Uuid::from_bytes([14; 16]),
         }],
+        activation_phase: cloud_auth::routes::RuntimeConfigurationActivationPhase::Commit,
     }
 }
 

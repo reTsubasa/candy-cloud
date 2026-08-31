@@ -60,7 +60,22 @@ pub struct Ipv4PrefixV1 {
 
 impl Ipv4PrefixV1 {
     pub fn new(network: [u8; 4], prefix_len: u8) -> Result<Self, RouteTypeError> {
-        if prefix_len == 0 || prefix_len > 32 {
+        Self::new_with_default(network, prefix_len, false)
+    }
+
+    pub fn new_egress_destination(
+        network: [u8; 4],
+        prefix_len: u8,
+    ) -> Result<Self, RouteTypeError> {
+        Self::new_with_default(network, prefix_len, true)
+    }
+
+    fn new_with_default(
+        network: [u8; 4],
+        prefix_len: u8,
+        allow_default: bool,
+    ) -> Result<Self, RouteTypeError> {
+        if prefix_len > 32 || (!allow_default && prefix_len == 0) {
             return Err(RouteTypeError::InvalidIpv4Prefix);
         }
         let address = u32::from_be_bytes(network);

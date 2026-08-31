@@ -26,14 +26,12 @@ describe('operational status boundaries', () => {
 
   it('uses yellow for transitions and red only for explicit faults', () => {
     expect(nodeOperationalStatus(node({ applyState: 'pending' })).code).toBe('policy_updating');
-    expect(nodeOperationalStatus(node({ activePeers: 1 })).code).toBe('peer_negotiating');
-    expect(nodeOperationalStatus(node({ requiredRouteOwners: 2, readyRouteOwners: 1 }))).toMatchObject({ code: 'route_incomplete', label: '路由未就绪' });
     expect(nodeOperationalStatus(node({ telemetryState: 'stale' })).tone).toBe('orange');
     expect(nodeOperationalStatus(node({ applyState: 'rejected', errorCode: 'invalid_policy' }))).toMatchObject({ code: 'policy_rejected', tone: 'red' });
-    expect(nodeOperationalStatus(node({ failOpenRequired: true }))).toMatchObject({ code: 'fail_open', tone: 'red' });
+    expect(nodeOperationalStatus(node({ lifecycle: 'degraded' }))).toMatchObject({ code: 'runtime_fault', tone: 'red' });
   });
 
-  it('includes the translated cause and counter evidence in a node fault', () => {
+  it('keeps Lane, Peer and route failures out of node identity status', () => {
     expect(nodeOperationalStatus(node({
       failOpenRequired: true,
       runtimeErrorCode: 'all_peer_reads_failed',
@@ -42,9 +40,11 @@ describe('operational status boundaries', () => {
       requiredRouteOwners: 1,
       readyRouteOwners: 0,
     }))).toMatchObject({
-      label: '接收通道全部中断',
-      detail: '原因：所有已配置 Peer 的接收通道均已失败，节点无法接收任何远端流量；Peer 连接 1/2，路由就绪 0/1；系统已撤销故障 SD-WAN 路由，并保持 Candy Proxy 或节点本地网络降级转发',
+      code: 'healthy',
+      label: '在线',
+      tone: 'green',
     });
+    expect(nodeOperationalStatus(node({ telemetryState: 'unreported', lifecycle: null }))).toMatchObject({ code: 'registered', label: '已认证', tone: 'green' });
   });
 
   it('turns a link green only after fresh bidirectional authentication', () => {
@@ -65,14 +65,12 @@ describe('operational status boundaries', () => {
     ['unregistered', { registered: false }, 'gray'],
     ['registered', { attached: false }, 'green'],
     ['policy_updating', { applyState: 'pending' }, 'orange'],
-    ['waiting_telemetry', { telemetryState: 'unreported' }, 'orange'],
+    ['registered', { telemetryState: 'unreported' }, 'green'],
     ['telemetry_stale', { telemetryState: 'stale' }, 'orange'],
     ['starting', { lifecycle: 'starting' }, 'orange'],
-    ['peer_negotiating', { activePeers: 1 }, 'orange'],
-    ['route_incomplete', { readyRouteOwners: 1 }, 'orange'],
     ['healthy', {}, 'green'],
     ['policy_rejected', { applyState: 'rejected' }, 'red'],
-    ['fail_open', { failOpenRequired: true }, 'red'],
+    ['healthy', { failOpenRequired: true, lifecycle: 'degraded' }, 'green'],
     ['runtime_fault', { lifecycle: 'degraded' }, 'red'],
   ] as const)('classifies node state %s', (code, overrides, tone) => {
     expect(nodeOperationalStatus(node(overrides))).toMatchObject({ code, tone });

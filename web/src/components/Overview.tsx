@@ -25,7 +25,7 @@ import {
   type OperationalTopologySnapshot,
   type ResourceLoadErrors,
 } from '../operational-topology';
-import { LINK_STATUS_BOUNDARIES, NODE_STATUS_BOUNDARIES, type OperationalTone } from '../operational-status';
+import { LINK_STATUS_BOUNDARIES, SITE_STATUS_BOUNDARIES, type OperationalTone } from '../operational-status';
 import { pathDefinition, resourceDefinitions } from '../resource-definitions';
 import type { ControlResource, HealthState, RuntimeActivationReadiness, RuntimeConfigurationStatus, RuntimeTelemetry, Session } from '../types';
 import { QuickSetupWizard } from './QuickSetupWizard';
@@ -191,8 +191,8 @@ export function Overview({ session, onOpenLogs }: Props) {
       <Spin loading={loading} block>
         <div className="operational-status-strip">
           <StatusMetric icon={<IconCloud />} label="控制面" value={controlReady ? '正常' : '异常'} detail={controlPlaneDetail(health)} tone={controlReady ? 'ok' : 'error'} />
-          <StatusMetric icon={<IconDesktop />} label="节点状态" value={`${topology.registeredNodeCount} 已注册`} detail={`${topology.healthyNodeCount} 正常 · ${topology.warningNodeCount} 处理中 · ${topology.errorNodeCount} 异常`} tone={topology.errorNodeCount > 0 ? 'error' : topology.nodes.length === 0 ? 'neutral' : topology.warningNodeCount > 0 ? 'warn' : 'ok'} />
-          <StatusMetric icon={<IconBranch />} label="互联链路" value={`${topology.activeLinkCount} / ${topology.links.length} 已认证`} detail={`${topology.warningLinkCount} 协商/更新 · ${topology.failedLinkCount} 故障`} tone={topology.failedLinkCount > 0 ? 'error' : topology.links.length === 0 ? 'neutral' : topology.warningLinkCount > 0 ? 'warn' : 'ok'} />
+          <StatusMetric icon={<IconDesktop />} label="节点状态" value={`${topology.registeredNodeCount} 已认证`} detail={`${topology.onlineNodeCount} 在线 · ${topology.nodes.length - topology.registeredNodeCount} 待认证`} tone={topology.nodes.length === 0 ? 'neutral' : topology.registeredNodeCount === topology.nodes.length ? 'ok' : 'warn'} />
+          <StatusMetric icon={<IconBranch />} label="互联线路" value={`${topology.activeLinkCount} / ${topology.links.length} 已认证`} detail={`${topology.warningLinkCount} 协商/更新 · ${topology.failedLinkCount} 故障`} tone={topology.failedLinkCount > 0 ? 'error' : topology.links.length === 0 ? 'neutral' : topology.warningLinkCount > 0 ? 'warn' : 'ok'} />
           <StatusMetric icon={<IconStorage />} label="路由与出口" value={`${topology.routeCount} 条路由`} detail={`${topology.egressCount} 个出口 · ${topology.policyRuleCount} 条策略规则`} tone="neutral" />
           <StatusMetric icon={<IconThunderbolt />} label="性能遥测" value={topology.nodes.length > 0 ? `${topology.telemetryCoverageCount} / ${topology.nodes.length}` : '未接入'} detail={!telemetryAvailable ? 'Cloud 遥测接口当前不可用' : topology.telemetryCoverageCount > 0 ? '仅统计新鲜且有来源的性能样本' : 'Runtime 在线状态已接入，等待 Core 性能指标'} tone="neutral" />
         </div>
@@ -225,7 +225,7 @@ export function Overview({ session, onOpenLogs }: Props) {
               <header><div><Typography.Title heading={5}>资源与路由状态</Typography.Title><Typography.Text type="secondary">{selectedSegmentId ? '当前网络分段的实际配置关系' : '所有网络分段的实际配置关系'}</Typography.Text></div><Tag color={topology.readiness?.ready ? 'green' : 'orange'}>{topology.readinessLabel}</Tag></header>
               <div className="resource-observability-grid">
                 <ResourceSignal label="站点" value={topology.sites.length} detail={topology.sites.map((site) => site.name).join('、') || '未接入'} />
-                <ResourceSignal label="节点" value={topology.nodes.length} detail={`${topology.registeredNodeCount} 个已注册 · ${topology.healthyNodeCount} 个运行正常`} />
+                <ResourceSignal label="节点" value={topology.nodes.length} detail={`${topology.registeredNodeCount} 个已认证 · ${topology.onlineNodeCount} 个在线`} />
                 <ResourceSignal label="路由前缀" value={topology.routeCount} detail={topology.routeLabels.join('、') || '未发布'} mono />
                 <ResourceSignal label="互联网出口" value={topology.egressCount} detail={topology.egressLabels.join('、') || '未配置'} />
                 <ResourceSignal label="流量策略" value={topology.policyRuleCount} detail={`${topology.policyRuleCount > 0 ? topology.policyRuleCount : 0} 条规则`} />
@@ -306,16 +306,16 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
           <path className="topology-site-link" d={aggregate
             ? `M ${center} 68 C ${center} 105, ${x} 105, ${x} ${siteY}`
             : `M ${center} 150 C ${center} 174, ${x} 166, ${x} ${siteY}`} />
-          <g className={`topology-site-node ${site.nodes.some((node) => node.status.tone === 'red') ? 'error' : site.nodes.some((node) => node.status.tone === 'orange') ? 'pending' : site.nodes.length > 0 ? 'ok' : 'neutral'}`} transform={`translate(${x - 90} ${siteY})`}>
+          <g className={`topology-site-node ${site.registeredNodeCount > 0 ? 'ok' : site.nodes.length > 0 ? 'pending' : 'neutral'}`} transform={`translate(${x - 90} ${siteY})`}>
             <rect width="180" height={siteCardHeight} rx="7" />
             <circle cx="18" cy="22" r="5" />
             <text className="site-name" x="31" y="26">{ellipsis(site.name, 19)}</text>
             <text className="sub" x="14" y="51">{site.kindLabel}</text>
             <line x1="14" y1="62" x2="166" y2="62" />
-            <text x="14" y="83">节点 {site.nodes.length}</text><text className="value" x="166" y="83" textAnchor="end">在线 {site.onlineNodeCount}</text>
-            <text x="14" y="106">数据面 {site.dataPlaneActiveNodeCount}</text><text className="value" x="166" y="106" textAnchor="end">路由 {site.routeCount} · 出口 {site.egressCount}</text>
-            {site.nodes.length === 0 ? <text className="sub" x="14" y="132">等待节点接入</text> : site.nodes.slice(0, maximumNodeRows).map((node, nodeIndex) => <g className={`topology-node-state tone-${node.status.tone}`} key={node.id} transform={`translate(0 ${126 + nodeIndex * 18})`}>
-              <circle cx="18" cy="6" r="3.5" /><text x="28" y="10">{ellipsis(node.name, 12)}</text><text className="state" x="166" y="10" textAnchor="end">{node.status.label}</text>
+            <text x="14" y="83">节点 {site.nodes.length}</text><text className="value" x="166" y="83" textAnchor="end">已认证 {site.registeredNodeCount}</text>
+            <text x="14" y="106">在线 {site.onlineNodeCount}</text><text className="value" x="166" y="106" textAnchor="end">路由 {site.routeCount} · 出口 {site.egressCount}</text>
+            {site.nodes.length === 0 ? <text className="sub" x="14" y="132">等待节点接入</text> : site.nodes.slice(0, maximumNodeRows).map((node, nodeIndex) => <g className={`topology-node-state tone-${node.registered ? 'green' : 'gray'}`} key={node.id} transform={`translate(0 ${126 + nodeIndex * 18})`}>
+              <circle cx="18" cy="6" r="3.5" /><text x="28" y="10">{ellipsis(node.name, 12)}</text><text className="state" x="166" y="10" textAnchor="end">{node.registered ? '已认证' : '待认证'}</text>
             </g>)}
             {site.nodes.length > maximumNodeRows && <text className="sub" x="14" y={126 + maximumNodeRows * 18 + 10}>另有 {site.nodes.length - maximumNodeRows} 个节点</text>}
           </g>
@@ -366,8 +366,8 @@ function toneClass(tone: OperationalTone): 'ok' | 'warn' | 'error' | 'neutral' {
 }
 
 function StatusBoundaryLegend() {
-  return <div className="status-boundary-legend" aria-label="节点与链路状态定义">
-    {[{ label: '节点', items: NODE_STATUS_BOUNDARIES }, { label: '互联链路', items: LINK_STATUS_BOUNDARIES }].map((group) => <div key={group.label}>
+  return <div className="status-boundary-legend" aria-label="站点与互联线路状态定义">
+    {[{ label: '站点', items: SITE_STATUS_BOUNDARIES }, { label: '互联线路', items: LINK_STATUS_BOUNDARIES }].map((group) => <div key={group.label}>
       <strong>{group.label}</strong>
       {group.items.map((item) => <span key={item.tone} title={item.detail}><i className={`tone-${item.tone}`} />{item.label}<small>{item.detail}</small></span>)}
     </div>)}

@@ -20,6 +20,7 @@ export type OperationalNode = {
   id: string;
   name: string;
   siteId: string;
+  registered: boolean;
   applyState: 'active' | 'rejected' | 'pending';
   errorCode: string | null;
   reportedAt: string | null;
@@ -41,6 +42,7 @@ export type OperationalSite = {
   kindLabel: string;
   nodes: OperationalNode[];
   nodeNames: string[];
+  registeredNodeCount: number;
   activeNodeCount: number;
   onlineNodeCount: number;
   dataPlaneActiveNodeCount: number;
@@ -129,8 +131,11 @@ function readinessLabel(readiness: RuntimeActivationReadiness | null): string {
   if (readiness.ready) return '数据面已就绪';
   if (readiness.reason_codes.includes('service_not_enabled')) return '服务尚未开通';
   if (readiness.reason_codes.includes('node_apply_failed')) return '节点应用失败';
+  if (readiness.reason_codes.includes('activation_blocked')) return '发布已阻断';
   if (readiness.reason_codes.includes('node_offline')) return '等待节点端点';
   if (readiness.reason_codes.includes('config_pending')) return '配置发布中';
+  if (readiness.reason_codes.includes('activation_preparing')) return '全网准备中';
+  if (readiness.reason_codes.includes('activation_committing')) return '统一提交中';
   if (readiness.reason_codes.includes('node_apply_pending')) return '等待节点应用';
   return '等待激活';
 }
@@ -165,8 +170,9 @@ export function buildOperationalTopology(
     const applyState = status?.current && status.state === 'active'
       ? 'active'
       : status?.current && status.state === 'rejected' ? 'rejected' : 'pending';
+    const registered = item.metadata.state === 'ACTIVE';
     const operationalStatus = nodeOperationalStatus({
-      registered: item.metadata.state === 'ACTIVE',
+      registered,
       attached: attachedNodeIds.has(item.metadata.id),
       applyState,
       errorCode: status?.error_code ?? null,
@@ -179,11 +185,18 @@ export function buildOperationalTopology(
       failOpenRequired: runtime?.fail_open_required ?? false,
       runtimeErrorCode: runtime?.last_error_code ?? null,
     });
-    const dataPlaneActive = operationalStatus.code === 'healthy';
+    const dataPlaneActive = registered
+      && applyState === 'active'
+      && telemetryState === 'online'
+      && runtime?.lifecycle === 'active'
+      && !runtime.fail_open_required
+      && runtime.required_route_owners > 0
+      && runtime.ready_route_owners === runtime.required_route_owners;
     return {
       id: item.metadata.id,
       name: name(item),
       siteId: value(item, 'site_id'),
+      registered,
       applyState,
       errorCode: status?.error_code ?? null,
       reportedAt: status?.reported_at ?? null,
@@ -214,6 +227,7 @@ export function buildOperationalTopology(
         kindLabel: value(item, 'kind') === 'PRIVATE_CLOUD' ? '私有云' : '边缘站点',
         nodes: siteNodes,
         nodeNames: siteNodes.map((node) => node.name),
+        registeredNodeCount: siteNodes.filter((node) => node.registered).length,
         activeNodeCount: siteNodes.filter((node) => node.applyState === 'active').length,
         onlineNodeCount: siteNodes.filter((node) => node.telemetryState === 'online').length,
         dataPlaneActiveNodeCount: siteNodes.filter((node) => node.dataPlaneActive).length,
@@ -290,7 +304,11 @@ export function buildOperationalTopology(
       const endpointNodes = [nodes.filter((node) => node.siteId === siteAId), nodes.filter((node) => node.siteId === siteBId)];
       const rejectedNodes = endpointNodes.flat().filter((node) => node.applyState === 'rejected');
       const failedEndpointLabels = endpointNodes.flatMap((siteNodes, index) => (
-        siteNodes.length > 0 && siteNodes.every((node) => node.status.tone === 'red')
+        siteNodes.length > 0 && siteNodes.every((node) => (
+          !node.registered
+          || node.failOpenRequired
+          || (node.telemetryState === 'online' && (node.lifecycle === 'degraded' || node.lifecycle === 'stopped'))
+        ))
           ? [index === 0 ? siteAName : siteBName]
           : []
       ));
@@ -363,7 +381,7 @@ export function buildOperationalTopology(
     nodes,
     links,
     activeNodeCount: nodes.filter((node) => node.applyState === 'active').length,
-    registeredNodeCount: nodes.filter((node) => node.status.code !== 'unregistered').length,
+    registeredNodeCount: nodes.filter((node) => node.registered).length,
     healthyNodeCount: nodes.filter((node) => node.status.code === 'healthy').length,
     warningNodeCount: nodes.filter((node) => node.status.tone === 'orange').length,
     errorNodeCount: nodes.filter((node) => node.status.tone === 'red').length,

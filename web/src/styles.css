@@ -259,7 +259,7 @@ button, input, textarea { font: inherit; }
 .status-boundary-legend > div { min-width: 0; display: grid; grid-template-columns: 74px repeat(3, minmax(0, 1fr)); align-items: stretch; }.status-boundary-legend > div:first-child { border-right: 1px solid var(--line); }
 .status-boundary-legend > div > strong { display: flex; align-items: center; padding: 12px 14px; color: #4e5969; font-size: 11px; }
 .status-boundary-legend > div > span { min-width: 0; display: grid; grid-template-columns: 8px minmax(0, 1fr); align-content: center; gap: 2px 6px; padding: 10px 8px; color: #1d2129; font-size: 10px; }
-.status-boundary-legend i { width: 7px; height: 7px; margin-top: 3px; border-radius: 50%; }.status-boundary-legend i.tone-green { background: #00a870; }.status-boundary-legend i.tone-orange { background: #d97706; }.status-boundary-legend i.tone-red { background: #d92d20; }
+.status-boundary-legend i { width: 7px; height: 7px; margin-top: 3px; border-radius: 50%; }.status-boundary-legend i.tone-green { background: #00a870; }.status-boundary-legend i.tone-orange { background: #d97706; }.status-boundary-legend i.tone-red { background: #d92d20; }.status-boundary-legend i.tone-gray { background: #86909c; }
 .status-boundary-legend small { grid-column: 2; overflow: hidden; color: #86909c; font-size: 9px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .topology-empty { min-height: 470px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
 .telemetry-rail { min-width: 0; background: #fff; border: 1px solid var(--line); }

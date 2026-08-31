@@ -130,6 +130,7 @@ describe('operational topology', () => {
     const snapshot = buildOperationalTopology(fixture(), [status], { segment: readiness }, 'segment');
     expect(snapshot.segment?.overlayCidr).toBe('100.64.0.0/24');
     expect(snapshot.sites).toHaveLength(2);
+    expect(snapshot.sites.map((site) => site.registeredNodeCount)).toEqual([1, 1]);
     expect(snapshot.activeNodeCount).toBe(1);
     expect(snapshot.pendingNodeCount).toBe(1);
     expect(snapshot.activeLinkCount).toBe(0);
@@ -144,6 +145,35 @@ describe('operational topology', () => {
     expect(snapshot.links[0].state).toBe('policy_updating');
     expect(snapshot.links[0].status.tone).toBe('orange');
     expect(snapshot.readinessLabel).toBe('等待 Cloud 生成配置');
+  });
+
+  it('keeps an authenticated site green while its Lane failure stays on the link', () => {
+    const { resources, telemetry: runtimeTelemetry } = threeSiteFixture();
+    const failedTelemetry = runtimeTelemetry.map((item) => item.device_id === 'device-wrt' ? {
+      ...item,
+      lifecycle: 'degraded' as const,
+      active_peers: 0,
+      ready_route_owners: 0,
+      fail_open_required: true,
+      last_error_code: 'all_peer_reads_failed',
+      paths: [],
+    } : item);
+    const snapshot = buildOperationalTopology(
+      resources,
+      [configurationStatus('wrt'), configurationStatus('us'), configurationStatus('hk')],
+      {},
+      threeSiteIds.segment,
+      failedTelemetry,
+      90,
+      Date.parse('2026-08-26T06:00:00Z'),
+    );
+    const wrtSite = snapshot.sites.find((site) => site.id === threeSiteIds.sites.wrt);
+    const wrtNode = snapshot.nodes.find((node) => node.id === threeSiteIds.nodes.wrt);
+    const wrtHkLink = snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk);
+
+    expect(wrtSite).toMatchObject({ registeredNodeCount: 1, onlineNodeCount: 1 });
+    expect(wrtNode?.status).toMatchObject({ code: 'healthy', tone: 'green' });
+    expect(wrtHkLink?.status).toMatchObject({ code: 'endpoint_failed', tone: 'red' });
   });
 
   it('keeps the default topology global instead of selecting one segment', () => {
@@ -180,7 +210,7 @@ describe('operational topology', () => {
     const now = Date.parse('2026-08-18T10:00:00Z');
     const active: RuntimeTelemetry = {
       device_id: 'device-a', device_key_id: 'key-a', boot_id: 'boot-a', sequence: 120,
-      lifecycle: 'active', configured_peers: 1, active_peers: 1,
+      lifecycle: 'active', configured_peers: 2, active_peers: 1,
       required_route_owners: 1, ready_route_owners: 1, fail_open_required: false,
       last_error_code: null, rtt_ms: 42, jitter_ms: 7, packet_loss_ppm: 12_500,
       rx_bps: 20_000_000, tx_bps: 10_000_000, reconnects: 2, path_changes: 1,

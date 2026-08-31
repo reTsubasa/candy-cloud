@@ -30,6 +30,9 @@ describe('activation display', () => {
     expect(activationDisplay(readiness({ reason_codes: ['service_not_enabled'] }), null, false).label).toBe('服务未开通');
     expect(activationDisplay(readiness({ reason_codes: ['node_offline'], missing_transport_count: 2 }), null, false).detail).toContain('2 条线路');
     expect(activationDisplay(readiness({ reason_codes: ['config_pending'] }), null, false).label).toBe('配置发布中');
+    expect(activationDisplay(readiness({ reason_codes: ['activation_preparing'] }), null, false).label).toBe('全网准备中');
+    expect(activationDisplay(readiness({ reason_codes: ['activation_committing'] }), null, false).label).toBe('统一提交中');
+    expect(activationDisplay(readiness({ reason_codes: ['activation_blocked'] }), null, false).label).toBe('发布已阻断');
     expect(activationDisplay(readiness({ reason_codes: ['node_apply_pending'], pending_apply_count: 2 }), null, false).detail).toContain('2 个节点');
     expect(activationDisplay(readiness({ reason_codes: ['node_apply_failed'], failed_apply_count: 1, apply_error_codes: ['core_discovery_failed'] }), null, false)).toEqual(expect.objectContaining({ label: '节点应用失败', detail: expect.stringContaining('Runtime 未找到可启动的 Candy Core') }));
   });

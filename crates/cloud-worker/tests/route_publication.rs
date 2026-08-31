@@ -350,22 +350,13 @@ fn signs_explicit_remote_egress_source_and_gateway_roles() {
     };
     let peer = input.projections[0].peer_paths[0].clone();
     input.projections[0].coherent_manifest.egress_authorization = Some(authorization.clone());
-    input.projections[0].egress_destination_prefixes = vec![
-        Ipv4PrefixV1::new([0, 0, 0, 0], 1).unwrap(),
-        Ipv4PrefixV1::new([128, 0, 0, 0], 1).unwrap(),
-    ];
-    input.projections[0].egress_routes = vec![
-        RemoteRouteV1 {
-            destination_prefix: Ipv4PrefixV1::new([0, 0, 0, 0], 1).unwrap(),
-            owner_site_id: peer.peer_site_id,
-            owner_attachment_ids: vec![peer.peer_attachment_id],
-        },
-        RemoteRouteV1 {
-            destination_prefix: Ipv4PrefixV1::new([128, 0, 0, 0], 1).unwrap(),
-            owner_site_id: peer.peer_site_id,
-            owner_attachment_ids: vec![peer.peer_attachment_id],
-        },
-    ];
+    input.projections[0].egress_destination_prefixes =
+        vec![Ipv4PrefixV1::new_egress_destination([0, 0, 0, 0], 0).unwrap()];
+    input.projections[0].egress_routes = vec![RemoteRouteV1 {
+        destination_prefix: Ipv4PrefixV1::new_egress_destination([0, 0, 0, 0], 0).unwrap(),
+        owner_site_id: peer.peer_site_id,
+        owner_attachment_ids: vec![peer.peer_attachment_id],
+    }];
     let gateway = input
         .projections
         .iter_mut()
@@ -373,10 +364,8 @@ fn signs_explicit_remote_egress_source_and_gateway_roles() {
         .unwrap();
     gateway.coherent_manifest.egress_authorization = Some(authorization);
     gateway.coherent_manifest.egress_gateway = true;
-    gateway.egress_destination_prefixes = vec![
-        Ipv4PrefixV1::new([0, 0, 0, 0], 1).unwrap(),
-        Ipv4PrefixV1::new([128, 0, 0, 0], 1).unwrap(),
-    ];
+    gateway.egress_destination_prefixes =
+        vec![Ipv4PrefixV1::new_egress_destination([0, 0, 0, 0], 0).unwrap()];
 
     let built = build_route_publication(&input, &signer).unwrap();
     let source = built
@@ -392,14 +381,14 @@ fn signs_explicit_remote_egress_source_and_gateway_roles() {
             .source
             .remote_routes
             .iter()
-            .filter(|route| route.destination_prefix.prefix_len == 1)
+            .filter(|route| route.destination_prefix.prefix_len == 0)
             .count(),
-        2
+        1
     );
     assert!(built.projections.iter().any(|projection| {
         projection.sealed.source.attachment_id == peer.peer_attachment_id
             && projection.sealed.source.coherent_manifest.egress_gateway
-            && projection.sealed.source.egress_destination_prefixes.len() == 2
+            && projection.sealed.source.egress_destination_prefixes.len() == 1
     }));
 }
 

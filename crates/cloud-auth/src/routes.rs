@@ -214,6 +214,22 @@ pub struct RuntimeConfigurationDelivery {
     pub peer_projection_catalog: Vec<RuntimePeerProjectionDelivery>,
     pub compatibility_generations: Vec<RuntimeCompatibilityGenerationDelivery>,
     pub grant_verification_keys: Vec<RuntimeGrantVerificationKeyDelivery>,
+    pub activation_phase: RuntimeConfigurationActivationPhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeConfigurationActivationPhase {
+    Prepare,
+    Commit,
+}
+
+impl RuntimeConfigurationActivationPhase {
+    fn http_value(self) -> &'static str {
+        match self {
+            Self::Prepare => "prepare",
+            Self::Commit => "commit",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,6 +281,7 @@ pub struct RuntimePeerSiteDelivery {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeConfigurationApplyState {
+    Prepared,
     Active,
     Rejected,
 }
@@ -855,7 +872,7 @@ async fn runtime_capabilities(_actor: AuthenticatedDevice) -> Json<RuntimeCapabi
         configuration_object: "runtime_configuration_v1",
         configuration_media_type: RUNTIME_CONFIGURATION_MEDIA_TYPE,
         conditional_requests: ["etag", "if-none-match", "prefer-wait"],
-        status_values: ["active", "rejected"],
+        status_values: ["prepared", "active", "rejected"],
         refresh: RuntimeRefreshCapabilities {
             minimum_seconds: 1,
             recommended_seconds: RUNTIME_REFRESH_SECONDS,
@@ -925,6 +942,7 @@ where
     }
     let body = serde_json::to_vec(&RuntimeConfigurationHttpResponse {
         schema_version: 1,
+        activation_phase: delivery.activation_phase.http_value(),
         projection_publication_id: delivery.projection_publication_id,
         projection_id: delivery.projection_id,
         segment_id: delivery.segment_id,
@@ -1022,6 +1040,9 @@ where
     let projection_content_hash = decode_hash(&request.projection_content_hash)
         .ok_or(ApiError::InvalidRuntimeConfigurationStatus)?;
     let (apply_state, error_code) = match request.state {
+        RuntimeConfigurationApplyStateHttp::Prepared if request.error_code.is_none() => {
+            (RuntimeConfigurationApplyState::Prepared, None)
+        }
         RuntimeConfigurationApplyStateHttp::Active if request.error_code.is_none() => {
             (RuntimeConfigurationApplyState::Active, None)
         }
@@ -1449,13 +1470,14 @@ struct RuntimeCapabilitiesResponse {
     configuration_object: &'static str,
     configuration_media_type: &'static str,
     conditional_requests: [&'static str; 3],
-    status_values: [&'static str; 2],
+    status_values: [&'static str; 3],
     refresh: RuntimeRefreshCapabilities,
 }
 
 #[derive(Debug, Serialize)]
 struct RuntimeConfigurationHttpResponse {
     schema_version: u8,
+    activation_phase: &'static str,
     projection_publication_id: Uuid,
     projection_id: Uuid,
     segment_id: Uuid,
@@ -1599,6 +1621,7 @@ enum RuntimeLifecycleHttp {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum RuntimeConfigurationApplyStateHttp {
+    Prepared,
     Active,
     Rejected,
 }

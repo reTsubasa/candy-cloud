@@ -106,11 +106,19 @@ pub struct Ipv4PrefixV1 {
 
 impl Ipv4PrefixV1 {
     pub fn validate(self) -> Result<(), ContractError> {
-        if self.prefix_len == 0 || self.prefix_len > 32 {
+        self.validate_with_default(false)
+    }
+
+    fn validate_with_default(self, allow_default: bool) -> Result<(), ContractError> {
+        if self.prefix_len > 32 || (!allow_default && self.prefix_len == 0) {
             return Err(ContractError::InvalidPrefix);
         }
         let value = u32::from(self.network);
-        let mask = u32::MAX << (32 - self.prefix_len);
+        let mask = if self.prefix_len == 0 {
+            0
+        } else {
+            u32::MAX << (32 - self.prefix_len)
+        };
         if value & !mask != 0 {
             return Err(ContractError::InvalidPrefix);
         }
@@ -504,7 +512,7 @@ fn validate_service_policy(value: &ServicePolicyV1) -> Result<(), ContractError>
             return Err(ContractError::InvalidServicePolicy);
         }
         for prefix in &rule.destination_prefixes {
-            prefix.validate()?;
+            prefix.validate_with_default(matches!(rule.action, PolicyActionV1::RemoteEgress(_)))?;
         }
         for domain in &rule.domains {
             validate_dns_name(domain)?;
@@ -763,6 +771,37 @@ mod tests {
             }],
         });
         assert_eq!(policy.validate(), Err(ContractError::InvalidServicePolicy));
+    }
+
+    #[test]
+    fn policy_allows_default_route_only_for_remote_egress() {
+        let rule = |action| ServicePolicyRuleV1 {
+            id: id(2),
+            priority: 100,
+            source_site_ids: vec![id(3)],
+            destination_prefixes: vec![Ipv4PrefixV1 {
+                network: Ipv4Addr::UNSPECIFIED,
+                prefix_len: 0,
+            }],
+            domains: Vec::new(),
+            traffic_classes: Vec::new(),
+            action,
+        };
+        let policy = |rule| {
+            ResourceSpecV1::ServicePolicy(ServicePolicyV1 {
+                segment_id: id(1),
+                generation: 1,
+                rules: vec![rule],
+            })
+        };
+
+        assert!(policy(rule(PolicyActionV1::RemoteEgress(id(4))))
+            .validate()
+            .is_ok());
+        assert_eq!(
+            policy(rule(PolicyActionV1::LocalEgress)).validate(),
+            Err(ContractError::InvalidPrefix)
+        );
     }
 
     #[test]

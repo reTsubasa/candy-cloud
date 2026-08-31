@@ -57,10 +57,6 @@ export function collapseDefaultRouteSlices(cidrs: string[]): string[] {
     : cidrs;
 }
 
-function expandDefaultRouteCidrs(cidrs: string[]): string[] {
-  return cidrs.flatMap((cidr) => parseCidr(cidr)?.prefix_len === 0 ? defaultRouteSlices : [cidr]);
-}
-
 export function normalizeSpecForEditor(resource: ResourceSpec): Spec {
   const spec = structuredClone(resource.spec);
   if (resource.kind === 'DNS_INTENT') {
@@ -113,9 +109,9 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
     spec.generation = positiveInteger(editor.generation);
     spec.rules = ((editor.rules as Spec[]) ?? []).map((rule) => {
       const cidrs = (rule.destination_cidrs as string[]) ?? [];
-      const effectiveCidrs = expandDefaultRouteCidrs(
-        rule.action_type === 'REMOTE_EGRESS' && cidrs.length === 0 ? [defaultRouteCidr] : cidrs,
-      );
+      const effectiveCidrs = rule.action_type === 'REMOTE_EGRESS' && cidrs.length === 0
+        ? [defaultRouteCidr]
+        : cidrs;
       return {
         id: cleanText(rule.id) || crypto.randomUUID(),
         priority: positiveInteger(rule.priority),

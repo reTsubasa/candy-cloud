@@ -307,7 +307,7 @@ impl ControlRepository {
 
     pub async fn readiness_check(&self) -> Result<(), ControlStoreError> {
         let migration_ready: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version = 28 AND success = TRUE)",
+            "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version = 29 AND success = TRUE)",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -388,6 +388,22 @@ impl ControlRepository {
             reason_codes.push("config_pending");
         } else {
             let generation = published.as_ref().map(|value| value.0).unwrap_or_default();
+            if let Some(rollout_state) = sqlx::query_scalar::<_, String>(
+                "SELECT state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ?",
+            )
+            .bind(tenant_id)
+            .bind(segment_id)
+            .bind(generation)
+            .fetch_optional(&self.pool)
+            .await?
+            {
+                match rollout_state.as_str() {
+                    "PREPARING" => reason_codes.push("activation_preparing"),
+                    "COMMITTING" => reason_codes.push("activation_committing"),
+                    "BLOCKED" => reason_codes.push("activation_blocked"),
+                    _ => {}
+                }
+            }
             if !snapshot.transport_bindings.is_empty() {
                 for binding in snapshot.transport_bindings.values().flatten() {
                     let catalog_count: i64 = sqlx::query_scalar(

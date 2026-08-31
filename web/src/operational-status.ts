@@ -14,14 +14,10 @@ export type NodeOperationalCode =
   | 'unregistered'
   | 'registered'
   | 'policy_updating'
-  | 'waiting_telemetry'
   | 'telemetry_stale'
   | 'starting'
-  | 'peer_negotiating'
-  | 'route_incomplete'
   | 'healthy'
   | 'policy_rejected'
-  | 'fail_open'
   | 'runtime_fault';
 
 export type LinkOperationalCode =
@@ -62,9 +58,15 @@ export type LinkOperationalInput = {
 };
 
 export const NODE_STATUS_BOUNDARIES = [
-  { tone: 'green' as const, label: '绿色', detail: '节点已完成注册；接入网络后，还需策略生效且数据面健康。' },
-  { tone: 'orange' as const, label: '黄色', detail: '策略更新、等待上报、Peer 协商或遥测中断，尚不能判定为故障。' },
-  { tone: 'red' as const, label: '红色', detail: '策略被拒绝、SD-WAN 已自动降级，或 Runtime 明确处于异常/停止状态。' },
+  { tone: 'green' as const, label: '绿色', detail: '节点身份已完成注册认证；在线状态单独依据 Runtime 遥测展示。' },
+  { tone: 'orange' as const, label: '黄色', detail: '节点正在应用配置、启动，或节点自身遥测已中断。' },
+  { tone: 'red' as const, label: '红色', detail: '节点拒绝配置，或 Runtime 本身明确异常；不包含 Lane、Peer 和路由故障。' },
+];
+
+export const SITE_STATUS_BOUNDARIES = [
+  { tone: 'green' as const, label: '绿色', detail: '站点至少有一个完成注册认证的节点；Lane 状态不影响站点颜色。' },
+  { tone: 'orange' as const, label: '黄色', detail: '站点已创建节点，但还没有节点完成注册认证。' },
+  { tone: 'gray' as const, label: '灰色', detail: '站点尚未配置任何节点。' },
 ];
 
 export const LINK_STATUS_BOUNDARIES = [
@@ -82,41 +84,17 @@ export function nodeOperationalStatus(input: NodeOperationalInput): OperationalS
     readyRouteOwners: input.readyRouteOwners,
   };
   if (input.applyState === 'rejected') return { code: 'policy_rejected', label: '策略应用失败', detail: runtimeUserFailureDetail(input.errorCode, counters, '节点拒绝了当前策略，但未上报错误码'), tone: 'red' };
-  if (input.failOpenRequired) return {
-    code: 'fail_open',
-    label: runtimeErrorStatusLabel(input.runtimeErrorCode) ?? 'SD-WAN 已自动降级',
-    detail: `${runtimeUserFailureDetail(input.runtimeErrorCode, counters, 'Runtime 未上报明确错误码')}；系统已撤销故障 SD-WAN 路由，并保持 Candy Proxy 或节点本地网络降级转发`,
-    tone: 'red',
-  };
-  if (input.telemetryState === 'online' && (input.lifecycle === 'degraded' || input.lifecycle === 'stopped')) {
+  if (input.telemetryState === 'online' && !input.failOpenRequired && (input.lifecycle === 'degraded' || input.lifecycle === 'stopped')) {
     return { code: 'runtime_fault', label: runtimeErrorStatusLabel(input.runtimeErrorCode) ?? '运行异常', detail: runtimeUserFailureDetail(input.runtimeErrorCode, counters, `Runtime 状态：${input.lifecycle}`), tone: 'red' };
   }
   if (!input.attached) return { code: 'registered', label: '已注册', detail: '节点身份已签发，尚未接入 SD-WAN 网络', tone: 'green' };
   if (input.applyState === 'pending') return { code: 'policy_updating', label: '策略更新中', detail: '等待 Cloud 发布或节点确认当前策略', tone: 'orange' };
   if (input.telemetryState === 'stale') return { code: 'telemetry_stale', label: '状态中断', detail: '超过遥测新鲜度窗口没有收到节点上报', tone: 'orange' };
-  if (input.telemetryState === 'unreported') return { code: 'waiting_telemetry', label: '等待上报', detail: '节点已注册并收到策略，等待 Runtime 首次上报', tone: 'orange' };
+  if (input.telemetryState === 'unreported') return { code: 'registered', label: '已认证', detail: '节点身份已完成认证，等待 Runtime 首次上报', tone: 'green' };
   if (input.lifecycle === 'starting' || input.lifecycle === 'unknown' || input.lifecycle === null) {
     return { code: 'starting', label: '正在启动', detail: 'Runtime 在线，但数据面尚未进入稳定运行状态', tone: 'orange' };
   }
-  const peersReady = input.activePeers === input.configuredPeers;
-  const routesReady = input.readyRouteOwners === input.requiredRouteOwners;
-  if (peersReady && !routesReady) {
-    return {
-      code: 'route_incomplete',
-      label: '路由未就绪',
-      detail: `已有 Peer 正常，但仅 ${input.readyRouteOwners}/${input.requiredRouteOwners} 个路由节点可达`,
-      tone: 'orange',
-    };
-  }
-  if (!peersReady || !routesReady) {
-    return {
-      code: 'peer_negotiating',
-      label: 'Peer 协商中',
-      detail: `Peer ${input.activePeers}/${input.configuredPeers}，路由 ${input.readyRouteOwners}/${input.requiredRouteOwners}`,
-      tone: 'orange',
-    };
-  }
-  return { code: 'healthy', label: '运行正常', detail: '策略已生效，Peer 与路由状态完整', tone: 'green' };
+  return { code: 'healthy', label: '在线', detail: '节点身份已认证，Runtime 正常上报；Lane 状态在线路中单独判定', tone: 'green' };
 }
 
 export function linkOperationalStatus(input: LinkOperationalInput): OperationalStatus<LinkOperationalCode> {

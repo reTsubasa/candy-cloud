@@ -126,14 +126,14 @@ export type RuntimeActivationReadiness = {
   pending_apply_count: number;
   failed_apply_count: number;
   apply_error_codes: string[];
-  reason_codes: ('node_offline' | 'service_not_enabled' | 'config_pending' | 'node_apply_pending' | 'node_apply_failed')[];
+  reason_codes: ('node_offline' | 'service_not_enabled' | 'config_pending' | 'activation_preparing' | 'activation_committing' | 'activation_blocked' | 'node_apply_pending' | 'node_apply_failed')[];
 };
 
 export type RuntimeConfigurationStatus = {
   device_id: string;
   device_key_id: string;
   projection_publication_id: string;
-  state: 'active' | 'rejected';
+  state: 'prepared' | 'active' | 'rejected';
   error_code: string | null;
   reported_at: string;
   current: boolean;
