@@ -2017,7 +2017,7 @@ async fn enqueue_generation(
     // A Runtime may retry the same transport publication while the worker is
     // still processing the existing generation. Reuse that job instead of
     // advancing the head and colliding with the unique idempotency index.
-    if sqlx::query_scalar::<_, u8>(
+    if sqlx::query_scalar::<_, i64>(
         "SELECT 1 FROM segment_generation_jobs WHERE tenant_id = ? AND segment_id = ? AND idempotency_hash = ? LIMIT 1",
     )
     .bind(tenant_id)
