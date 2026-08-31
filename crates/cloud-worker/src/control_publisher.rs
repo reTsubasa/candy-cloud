@@ -573,6 +573,24 @@ impl ControlRoutePublisher {
                     allowed_traffic_classes: 1,
                 },
             });
+            if let Some(projection) = projections.last() {
+                tracing::info!(
+                    event = "route_projection_input_summary",
+                    tenant_id = %snapshot.tenant_id,
+                    segment_id = %snapshot.segment_id,
+                    desired_revision = snapshot.desired_revision,
+                    attachment_id = %resource.metadata.id,
+                    site_id = %Uuid::from_bytes(site.0),
+                    local_transport_node = ?projection.local_transport_node.as_ref().map(|node| Uuid::from_bytes(node.node_id.0)),
+                    peer_path_count = projection.peer_paths.len(),
+                    remote_route_count = projection.egress_routes.len(),
+                    egress_prefix_count = projection.egress_destination_prefixes.len(),
+                    egress_prefixes = ?projection.egress_destination_prefixes,
+                    egress_authorization = ?projection.coherent_manifest.egress_authorization,
+                    egress_gateway = projection.coherent_manifest.egress_gateway,
+                    "constructed site projection input"
+                );
+            }
             let _ = node;
         }
         let not_before = SystemTime::now()
