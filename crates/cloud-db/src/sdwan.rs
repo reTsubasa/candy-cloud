@@ -1277,10 +1277,12 @@ impl SdwanRepository {
                     .execute(&mut *transaction)
                     .await?;
                 }
-                _ => {
-                    transaction.rollback().await?;
-                    return Err(RuntimeConfigurationError::StaleConfiguration);
-                }
+                // The rollout state controls phase advancement, but it must not
+                // reject an otherwise current Runtime status report. A Runtime
+                // can transiently reject after a rollout reaches COMPLETE and
+                // later recover on the same configuration. Rolling this
+                // transaction back would leave the REJECTED row stuck forever.
+                _ => {}
             }
         }
         transaction.commit().await?;

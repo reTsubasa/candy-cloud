@@ -666,6 +666,22 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO node_endpoints (id, node_id, endpoint, transport, server_name, transport_preset, status, region) VALUES (?, ?, ?, 'CANDY_QUIC_UDP', ?, 'CURRENT', 'ACTIVE', 'test')")
+        .bind(Uuid::new_v4())
+        .bind(service_node_id)
+        .bind("198.51.100.10:443")
+        .bind("test-service")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO node_endpoints (id, node_id, endpoint, transport, server_name, transport_preset, status, region) VALUES (?, ?, ?, 'CANDY_QUIC_UDP', ?, 'CURRENT', 'ACTIVE', 'test')")
+        .bind(Uuid::new_v4())
+        .bind(peer_service_node_id)
+        .bind("198.51.100.11:443")
+        .bind("test-peer")
+        .execute(&pool)
+        .await
+        .unwrap();
     let runtime_lookup = RuntimeConfigurationLookup {
         tenant_id,
         device_id,
@@ -886,6 +902,57 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     .await
     .unwrap();
     assert_eq!(applied, "ACTIVE");
+
+    // A transient dataplane failure can happen after the rollout has already
+    // completed. The Runtime must be able to report both the failure and its
+    // recovery without the terminal rollout state rejecting the current
+    // configuration status.
+    repository
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: runtime_lookup.clone(),
+            projection_publication_id: first_runtime.projection_publication_id,
+            projection_content_hash: first_runtime.projection_content_hash,
+            envelope_sha256: first_runtime.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Rejected,
+            error_code: Some("transient_dataplane_failure".into()),
+        })
+        .await
+        .unwrap();
+    repository
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: runtime_lookup.clone(),
+            projection_publication_id: first_runtime.projection_publication_id,
+            projection_content_hash: first_runtime.projection_content_hash,
+            envelope_sha256: first_runtime.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Active,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    let recovered: (String, Option<String>) = sqlx::query_as(
+        "SELECT apply_state, error_code FROM runtime_configuration_status WHERE tenant_id = ? AND device_id = ? AND device_key_id = ?",
+    )
+    .bind(tenant_id)
+    .bind(device_id)
+    .bind(device_key_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(recovered, ("ACTIVE".into(), None));
+
+    // Periodic reconciliation may acknowledge an unchanged, already-active
+    // configuration. This is idempotent even after rollout completion.
+    repository
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: runtime_lookup.clone(),
+            projection_publication_id: first_runtime.projection_publication_id,
+            projection_content_hash: first_runtime.projection_content_hash,
+            envelope_sha256: first_runtime.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Active,
+            error_code: None,
+        })
+        .await
+        .unwrap();
 
     let mut second = write.clone();
     second.publication_id = Uuid::new_v4();
