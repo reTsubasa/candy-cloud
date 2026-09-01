@@ -29,4 +29,13 @@ describe('runtime audit event descriptions', () => {
       error_code: 'grant_binding_mismatch',
     })).toBe('原因：节点授权与当前节点、出口或策略代次不匹配（grant_binding_mismatch）；当前配置未生效。');
   });
+
+  it('includes the bounded node-side negotiation detail', () => {
+    const description = runtimeAuditEventDescription('RUNTIME_LIFECYCLE_DEGRADED', {
+      error_code: 'peer_negotiation_failed',
+      error_detail: 'peer abc candidate def negotiation failed: connection refused',
+    });
+    expect(description).toContain('节点无法完成该 Peer 的认证、隧道建立或路径协商');
+    expect(description).toContain('现场详情：peer abc candidate def negotiation failed: connection refused');
+  });
 });

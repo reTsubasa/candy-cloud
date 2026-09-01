@@ -26,10 +26,10 @@ jobs:
       run:
         shell: bash
     env:
-      CORE_MODULE_VERSION: 0.3.35
+      CORE_MODULE_VERSION: 0.3.36
       CORE_MODULE_TARGET: x86_64-unknown-linux-gnu
-      CORE_MODULE_INPUT_TAG: core-v0.3.35
-      RUNTIME_RELEASE_TAG: runtime-v0.4.0-r99
+      CORE_MODULE_INPUT_TAG: core-v0.3.36
+      RUNTIME_RELEASE_TAG: runtime-v0.4.0-r100
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: docker/setup-buildx-action@v3

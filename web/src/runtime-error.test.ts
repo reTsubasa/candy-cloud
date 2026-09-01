@@ -31,6 +31,7 @@ describe('runtime error display', () => {
     const emittedCodes = [
       'activation_invalid', 'activation_receipt_failed', 'all_peer_readers_stopped',
       'all_peer_reads_failed', 'all_peer_writes_failed', 'candidate_inspection_failed',
+      'peer_negotiation_failed',
       'cloud_sync_failed', 'core_compatibility_verification_failed', 'core_discovery_failed',
       'core_exit', 'core_exit_during_hot_reload', 'core_hot_reload_failed',
       'core_process_inspection_failed', 'core_readiness_failed', 'core_readiness_lost',

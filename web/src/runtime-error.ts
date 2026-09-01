@@ -22,6 +22,7 @@ const runtimeErrors: Record<string, RuntimeErrorDescriptor> = {
   all_peer_reads_failed: core('接收通道全部中断', '所有已配置 Peer 的接收通道均已失败，节点无法接收任何远端流量'),
   all_peer_writes_failed: core('发送通道全部中断', '所有已配置 Peer 的发送通道均已失败，节点无法向任何远端发送流量'),
   all_peer_readers_stopped: core('接收任务全部停止', '所有 Peer 接收任务均已停止，节点已失去远端流量入口'),
+  peer_negotiation_failed: core('Peer 协商失败', '节点无法完成该 Peer 的认证、隧道建立或路径协商，Runtime 将继续重试其他候选'),
   route_has_no_active_peer: core('路由无可用对端', '当前 SD-WAN 路由没有任何已认证且可转发的 Peer'),
   route_peer_missing: core('路由引用无效对端', '当前 SD-WAN 路由引用了 Core 配置中不存在的 Peer', 'configuration'),
   route_owner_failed: core('路由出口未就绪', '策略指定的路由出口未完成连接，当前流量不能交给该出口'),
