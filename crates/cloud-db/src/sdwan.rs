@@ -1978,12 +1978,15 @@ async fn load_current_runtime_configuration(
     let segment_id: Uuid = row.try_get("segment_id")?;
     let projection_id: Uuid = row.try_get("projection_id")?;
     let segment_generation: u64 = row.try_get("segment_generation")?;
+    // A peer projection is needed even when its paths use another transport
+    // node (for example, an edge dialing a cloud relay). Filtering this list
+    // by the local transport identity silently drops those peers and leaves
+    // the runtime with an incomplete mesh. The publication membership already
+    // bounds the result to the coherent rollout for this Segment generation.
     let catalog_rows = sqlx::query(
-        "SELECT p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope FROM nodes n JOIN runtime_projection_transport_catalog catalog ON catalog.transport_node_id = n.id AND catalog.transport_node_key_id = n.device_key_id AND catalog.tenant_id = n.tenant_id JOIN site_route_projection_publications p ON p.id = catalog.projection_publication_id AND p.tenant_id = catalog.tenant_id AND p.segment_id = catalog.segment_id AND p.segment_generation = catalog.segment_generation AND p.projection_id = catalog.projection_id WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' AND catalog.segment_id = ? AND catalog.segment_generation = ? AND p.projection_id <> ? ORDER BY p.projection_id, p.projection_generation",
+        "SELECT p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope FROM site_route_projection_publications p JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash JOIN segment_route_publication_members member ON member.tenant_id = publication.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = p.tenant_id AND rollout.segment_id = p.segment_id AND rollout.segment_generation = p.segment_generation WHERE p.tenant_id = ? AND p.segment_id = ? AND p.segment_generation = ? AND p.projection_id <> ? AND member.rollout_ordinal <= rollout.allowed_ordinal ORDER BY p.projection_id, p.projection_generation",
     )
     .bind(lookup.tenant_id)
-    .bind(lookup.device_id)
-    .bind(lookup.device_key_id)
     .bind(segment_id)
     .bind(segment_generation)
     .bind(projection_id)
@@ -2018,14 +2021,10 @@ async fn load_current_runtime_configuration(
     // each returned peer projection has a path to this server's current
     // transport identity.
     let compatibility_publication = sqlx::query(
-        "SELECT publication.generation AS segment_generation, publication.content_hash AS segment_content_hash, publication.signed_envelope AS signed_segment_envelope FROM nodes n JOIN runtime_projection_transport_catalog current_catalog ON current_catalog.transport_node_id = n.id AND current_catalog.transport_node_key_id = n.device_key_id AND current_catalog.tenant_id = n.tenant_id AND current_catalog.segment_id = ? AND current_catalog.segment_generation = ? AND current_catalog.projection_id <> ? JOIN node_endpoints endpoint ON endpoint.node_id = n.id AND endpoint.status = 'ACTIVE' AND endpoint.transport = 'CANDY_QUIC_UDP' JOIN segment_route_publications publication ON publication.tenant_id = current_catalog.tenant_id AND publication.segment_id = current_catalog.segment_id WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' AND publication.generation = ? AND publication.stale_until >= UNIX_TIMESTAMP() LIMIT 1",
+        "SELECT publication.generation AS segment_generation, publication.content_hash AS segment_content_hash, publication.signed_envelope AS signed_segment_envelope FROM segment_route_publications publication WHERE publication.tenant_id = ? AND publication.segment_id = ? AND publication.generation = ? AND publication.stale_until >= UNIX_TIMESTAMP() LIMIT 1",
     )
-    .bind(segment_id)
-    .bind(segment_generation)
-    .bind(projection_id)
     .bind(lookup.tenant_id)
-    .bind(lookup.device_id)
-    .bind(lookup.device_key_id)
+    .bind(segment_id)
     .bind(previous_generation.unwrap_or_default())
     .fetch_optional(&mut **transaction)
     .await?;
