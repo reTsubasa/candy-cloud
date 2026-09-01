@@ -318,6 +318,7 @@ pub struct RuntimeTelemetryCommand {
     pub ready_route_owners: u32,
     pub fail_open_required: bool,
     pub last_error_code: Option<String>,
+    pub last_error_detail: Option<String>,
     pub rtt_ms: Option<u32>,
     pub jitter_ms: Option<u32>,
     pub packet_loss_ppm: Option<u32>,
@@ -1092,6 +1093,9 @@ where
         || error_code
             .as_deref()
             .is_some_and(|value| !valid_runtime_error_code(value))
+        || request.last_error_detail.as_deref().is_some_and(|value| {
+            value.is_empty() || value.len() > 1024 || value.chars().any(char::is_control)
+        })
         || matches!(request.lifecycle, RuntimeLifecycleHttp::FailOpen) != request.fail_open_required
         || request.paths.len() > 256
         || request
@@ -1141,6 +1145,7 @@ where
             ready_route_owners: request.ready_route_owners,
             fail_open_required: request.fail_open_required,
             last_error_code: error_code,
+            last_error_detail: request.last_error_detail,
             rtt_ms: request.rtt_ms,
             jitter_ms: request.jitter_ms,
             packet_loss_ppm: request.packet_loss_ppm,
@@ -1560,6 +1565,8 @@ struct RuntimeTelemetryHttpRequest {
     ready_route_owners: u32,
     fail_open_required: bool,
     last_error_code: Option<String>,
+    #[serde(default)]
+    last_error_detail: Option<String>,
     rtt_ms: Option<u32>,
     jitter_ms: Option<u32>,
     packet_loss_ppm: Option<u32>,

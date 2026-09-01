@@ -131,6 +131,7 @@ pub struct RuntimeTelemetryRecord {
     pub ready_route_owners: u32,
     pub fail_open_required: bool,
     pub last_error_code: Option<String>,
+    pub last_error_detail: Option<String>,
     pub rtt_ms: Option<u32>,
     pub jitter_ms: Option<u32>,
     pub packet_loss_ppm: Option<u32>,
@@ -509,7 +510,7 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, CAST(paths_json AS CHAR) AS paths_json, CAST(local_networks_json AS CHAR) AS local_networks_json, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
+            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, CAST(paths_json AS CHAR) AS paths_json, CAST(local_networks_json AS CHAR) AS local_networks_json, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -545,6 +546,7 @@ impl ControlRepository {
                     ready_route_owners: row.try_get("ready_route_owners")?,
                     fail_open_required: row.try_get("fail_open_required")?,
                     last_error_code: row.try_get("last_error_code")?,
+                    last_error_detail: row.try_get("last_error_detail")?,
                     rtt_ms: row.try_get("rtt_ms")?,
                     jitter_ms: row.try_get("jitter_ms")?,
                     packet_loss_ppm: row.try_get("packet_loss_ppm")?,

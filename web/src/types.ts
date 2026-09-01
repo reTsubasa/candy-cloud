@@ -174,6 +174,7 @@ export type RuntimeTelemetry = {
   ready_route_owners: number;
   fail_open_required: boolean;
   last_error_code: string | null;
+  last_error_detail?: string | null;
   rtt_ms: number | null;
   jitter_ms: number | null;
   packet_loss_ppm: number | null;

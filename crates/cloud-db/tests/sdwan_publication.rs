@@ -1050,6 +1050,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         ready_route_owners: 1,
         fail_open_required: false,
         last_error_code: None,
+        last_error_detail: None,
         rtt_ms: Some(40),
         jitter_ms: Some(2),
         packet_loss_ppm: Some(0),

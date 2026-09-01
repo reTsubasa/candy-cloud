@@ -43,6 +43,7 @@ export type NodeOperationalInput = {
   readyRouteOwners: number;
   failOpenRequired: boolean;
   runtimeErrorCode: string | null;
+  runtimeErrorDetail?: string | null;
 };
 
 export type LinkOperationalInput = {
@@ -85,7 +86,7 @@ export function nodeOperationalStatus(input: NodeOperationalInput): OperationalS
   };
   if (input.applyState === 'rejected') return { code: 'policy_rejected', label: '策略应用失败', detail: runtimeUserFailureDetail(input.errorCode, counters, '节点拒绝了当前策略，但未上报错误码'), tone: 'red' };
   if (input.telemetryState === 'online' && !input.failOpenRequired && (input.lifecycle === 'degraded' || input.lifecycle === 'stopped')) {
-    return { code: 'runtime_fault', label: runtimeErrorStatusLabel(input.runtimeErrorCode) ?? '运行异常', detail: runtimeUserFailureDetail(input.runtimeErrorCode, counters, `Runtime 状态：${input.lifecycle}`), tone: 'red' };
+    return { code: 'runtime_fault', label: runtimeErrorStatusLabel(input.runtimeErrorCode) ?? '运行异常', detail: input.runtimeErrorDetail || runtimeUserFailureDetail(input.runtimeErrorCode, counters, `Runtime 状态：${input.lifecycle}`), tone: 'red' };
   }
   if (!input.attached) return { code: 'registered', label: '已注册', detail: '节点身份已签发，尚未接入 SD-WAN 网络', tone: 'green' };
   if (input.applyState === 'pending') return { code: 'policy_updating', label: '策略更新中', detail: '等待 Cloud 发布或节点确认当前策略', tone: 'orange' };

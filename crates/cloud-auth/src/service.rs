@@ -374,6 +374,7 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                     ready_route_owners: command.ready_route_owners,
                     fail_open_required: command.fail_open_required,
                     last_error_code: command.last_error_code,
+                    last_error_detail: command.last_error_detail,
                     rtt_ms: command.rtt_ms,
                     jitter_ms: command.jitter_ms,
                     packet_loss_ppm: command.packet_loss_ppm,

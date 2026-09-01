@@ -184,6 +184,7 @@ export function buildOperationalTopology(
       readyRouteOwners: runtime?.ready_route_owners ?? 0,
       failOpenRequired: runtime?.fail_open_required ?? false,
       runtimeErrorCode: runtime?.last_error_code ?? null,
+      runtimeErrorDetail: runtime?.last_error_detail ?? null,
     });
     const dataPlaneActive = registered
       && applyState === 'active'

@@ -364,6 +364,7 @@ pub struct RuntimeTelemetryWrite {
     pub ready_route_owners: u32,
     pub fail_open_required: bool,
     pub last_error_code: Option<String>,
+    pub last_error_detail: Option<String>,
     pub rtt_ms: Option<u32>,
     pub jitter_ms: Option<u32>,
     pub packet_loss_ppm: Option<u32>,
@@ -426,6 +427,9 @@ impl RuntimeTelemetryWrite {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
         });
+        let detail_is_valid = self.last_error_detail.as_deref().is_none_or(|value| {
+            !value.is_empty() && value.len() <= 1024 && !value.chars().any(char::is_control)
+        });
         if self.boot_id.is_nil()
             || self.sequence == 0
             || self.active_peers > self.configured_peers
@@ -434,6 +438,7 @@ impl RuntimeTelemetryWrite {
             || self.packet_loss_ppm.is_some_and(|value| value > 1_000_000)
             || matches!(self.lifecycle, RuntimeLifecycle::FailOpen) != self.fail_open_required
             || !error_is_valid
+            || !detail_is_valid
             || self.paths.len() > MAX_RUNTIME_PATHS
             || self
                 .local_networks
@@ -1403,7 +1408,7 @@ impl SdwanRepository {
             serde_json::to_string(telemetry.local_networks.as_deref().unwrap_or(&[]))
                 .map_err(|_| RuntimeConfigurationError::InvalidScope)?;
         sqlx::query(
-            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, paths_json, local_networks_json, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), IF(? = 1, CAST(? AS JSON), JSON_ARRAY()), ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), paths_json = VALUES(paths_json), local_networks_json = IF(? = 1, VALUES(local_networks_json), local_networks_json), reported_at = VALUES(reported_at)",
+            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, paths_json, local_networks_json, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), IF(? = 1, CAST(? AS JSON), JSON_ARRAY()), ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), last_error_detail = VALUES(last_error_detail), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), paths_json = VALUES(paths_json), local_networks_json = IF(? = 1, VALUES(local_networks_json), local_networks_json), reported_at = VALUES(reported_at)",
         )
         .bind(telemetry.lookup.tenant_id)
         .bind(telemetry.lookup.device_id)
@@ -1417,6 +1422,7 @@ impl SdwanRepository {
         .bind(telemetry.ready_route_owners)
         .bind(telemetry.fail_open_required)
         .bind(telemetry.last_error_code.as_deref())
+        .bind(telemetry.last_error_detail.as_deref())
         .bind(telemetry.rtt_ms)
         .bind(telemetry.jitter_ms)
         .bind(telemetry.packet_loss_ppm)
@@ -1464,7 +1470,7 @@ impl SdwanRepository {
             }))
         {
             sqlx::query(
-                "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'DEVICE', ?, ?, 'DEVICE', ?, JSON_OBJECT('device_name', ?, 'previous_lifecycle', ?, 'lifecycle', ?, 'fail_open_required', ?, 'previous_error_code', ?, 'error_code', ?, 'configured_peers', ?, 'active_peers', ?, 'required_route_owners', ?, 'ready_route_owners', ?))",
+                "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'DEVICE', ?, ?, 'DEVICE', ?, JSON_OBJECT('device_name', ?, 'previous_lifecycle', ?, 'lifecycle', ?, 'fail_open_required', ?, 'previous_error_code', ?, 'error_code', ?, 'error_detail', ?, 'configured_peers', ?, 'active_peers', ?, 'required_route_owners', ?, 'ready_route_owners', ?))",
             )
             .bind(Uuid::now_v7())
             .bind(telemetry.lookup.tenant_id)
@@ -1477,6 +1483,7 @@ impl SdwanRepository {
             .bind(telemetry.fail_open_required)
             .bind(current.as_ref().and_then(|(_, _, _, _, error)| error.as_deref()))
             .bind(telemetry.last_error_code.as_deref())
+            .bind(telemetry.last_error_detail.as_deref())
             .bind(telemetry.configured_peers)
             .bind(telemetry.active_peers)
             .bind(telemetry.required_route_owners)
