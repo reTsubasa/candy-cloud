@@ -91,9 +91,9 @@ export function nodeOperationalStatus(input: NodeOperationalInput): OperationalS
     return { code: 'runtime_fault', label: runtimeErrorStatusLabel(input.runtimeErrorCode) ?? '运行异常', detail: input.runtimeErrorDetail || runtimeUserFailureDetail(input.runtimeErrorCode, counters, `Runtime 状态：${input.lifecycle}`), tone: 'red' };
   }
   if (!input.attached) return { code: 'registered', label: '未接入', detail: '节点身份已签发，但当前未接入 SD-WAN 网络', tone: 'gray' };
-  if (input.applyState === 'pending') return { code: 'policy_updating', label: '策略更新中', detail: '等待 Cloud 发布或节点确认当前策略', tone: 'orange' };
   if (input.telemetryState === 'stale') return { code: 'telemetry_stale', label: '离线', detail: '超过遥测新鲜度窗口没有收到节点上报', tone: 'gray' };
   if (input.telemetryState === 'unreported') return { code: 'registered', label: '未上线', detail: '节点身份已完成认证，但 Runtime 尚未上报在线状态', tone: 'gray' };
+  if (input.applyState === 'pending') return { code: 'policy_updating', label: '策略更新中', detail: '等待 Cloud 发布或节点确认当前策略', tone: 'orange' };
   if (input.lifecycle === 'starting' || input.lifecycle === 'unknown' || input.lifecycle === null) {
     return { code: 'starting', label: '正在启动', detail: 'Runtime 在线，但数据面尚未进入稳定运行状态', tone: 'orange' };
   }

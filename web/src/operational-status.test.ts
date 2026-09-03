@@ -26,6 +26,7 @@ describe('operational status boundaries', () => {
 
   it('uses orange only for transitions, gray for offline, and red for explicit faults', () => {
     expect(nodeOperationalStatus(node({ applyState: 'pending' })).code).toBe('policy_updating');
+    expect(nodeOperationalStatus(node({ applyState: 'pending', telemetryState: 'unreported' })).tone).toBe('gray');
     expect(nodeOperationalStatus(node({ telemetryState: 'stale' })).tone).toBe('gray');
     expect(nodeOperationalStatus(node({ applyState: 'rejected', errorCode: 'invalid_policy' }))).toMatchObject({ code: 'policy_rejected', tone: 'red' });
     expect(nodeOperationalStatus(node({ lifecycle: 'degraded' }))).toMatchObject({ code: 'runtime_fault', tone: 'red' });
