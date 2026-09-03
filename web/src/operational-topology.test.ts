@@ -132,7 +132,7 @@ describe('operational topology', () => {
     expect(snapshot.sites).toHaveLength(2);
     expect(snapshot.sites.map((site) => site.registeredNodeCount)).toEqual([1, 1]);
     expect(snapshot.activeNodeCount).toBe(1);
-    expect(snapshot.pendingNodeCount).toBe(1);
+    expect(snapshot.pendingNodeCount).toBe(0);
     expect(snapshot.activeLinkCount).toBe(0);
     expect(snapshot.routeLabels).toEqual(['192.168.1.0/24']);
     expect(snapshot.egressLabels).toEqual(['东京出口']);
@@ -142,12 +142,12 @@ describe('operational topology', () => {
 
   it('does not present a configured path as active before readiness', () => {
     const snapshot = buildOperationalTopology(fixture(), [], {}, 'segment');
-    expect(snapshot.links[0].state).toBe('policy_updating');
+    expect(snapshot.links[0].state).toBe('authenticating');
     expect(snapshot.links[0].status.tone).toBe('orange');
     expect(snapshot.readinessLabel).toBe('等待 Cloud 生成配置');
   });
 
-  it('keeps an authenticated site green while its Lane failure stays on the link', () => {
+  it('keeps an online OpenWrt node green while its Lane failure stays on the link', () => {
     const { resources, telemetry: runtimeTelemetry } = threeSiteFixture();
     const failedTelemetry = runtimeTelemetry.map((item) => item.device_id === 'device-wrt' ? {
       ...item,
@@ -171,9 +171,29 @@ describe('operational topology', () => {
     const wrtNode = snapshot.nodes.find((node) => node.id === threeSiteIds.nodes.wrt);
     const wrtHkLink = snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk);
 
-    expect(wrtSite).toMatchObject({ registeredNodeCount: 1, onlineNodeCount: 1 });
+    expect(wrtSite).toMatchObject({ registeredNodeCount: 1, onlineNodeCount: 1, status: { code: 'healthy', tone: 'green' } });
     expect(wrtNode?.status).toMatchObject({ code: 'healthy', tone: 'green' });
     expect(wrtHkLink?.status).toMatchObject({ code: 'endpoint_failed', tone: 'red' });
+  });
+
+  it.each([
+    ['OpenWrt', 'node-a', 'device-a', 'key-a'],
+    ['Linux', 'node-b', 'device-b', 'key-b'],
+  ])('marks authenticated %s offline nodes and their sites gray', (_platform, nodeId, deviceId, deviceKeyId) => {
+    const resources = fixture();
+    const snapshot = buildOperationalTopology(resources, [{
+      device_id: deviceId,
+      device_key_id: deviceKeyId,
+      projection_publication_id: 'projection',
+      state: 'active',
+      error_code: null,
+      reported_at: '2026-08-18T00:00:00Z',
+      current: true,
+    }], {}, 'segment', [], 90, Date.parse('2026-08-18T10:00:00Z'));
+    const node = snapshot.nodes.find((item) => item.id === nodeId);
+    const site = snapshot.sites.find((item) => item.id === node?.siteId);
+    expect(node?.status).toMatchObject({ tone: 'gray', label: '未上线' });
+    expect(site?.status).toMatchObject({ tone: 'gray', code: 'unregistered' });
   });
 
   it('keeps the default topology global instead of selecting one segment', () => {

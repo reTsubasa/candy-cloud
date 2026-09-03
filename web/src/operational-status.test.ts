@@ -18,15 +18,15 @@ const node = (overrides: Partial<NodeOperationalInput> = {}): NodeOperationalInp
 });
 
 describe('operational status boundaries', () => {
-  it('keeps registration green without claiming SD-WAN is active', () => {
+  it('keeps an authenticated but offline node gray, green only when online', () => {
     expect(nodeOperationalStatus(node({ attached: false, applyState: 'pending', telemetryState: 'unreported' }))).toMatchObject({
-      code: 'registered', label: '已注册', tone: 'green',
+      code: 'registered', label: '未接入', tone: 'gray',
     });
   });
 
-  it('uses yellow for transitions and red only for explicit faults', () => {
+  it('uses orange only for transitions, gray for offline, and red for explicit faults', () => {
     expect(nodeOperationalStatus(node({ applyState: 'pending' })).code).toBe('policy_updating');
-    expect(nodeOperationalStatus(node({ telemetryState: 'stale' })).tone).toBe('orange');
+    expect(nodeOperationalStatus(node({ telemetryState: 'stale' })).tone).toBe('gray');
     expect(nodeOperationalStatus(node({ applyState: 'rejected', errorCode: 'invalid_policy' }))).toMatchObject({ code: 'policy_rejected', tone: 'red' });
     expect(nodeOperationalStatus(node({ lifecycle: 'degraded' }))).toMatchObject({ code: 'runtime_fault', tone: 'red' });
   });
@@ -44,7 +44,7 @@ describe('operational status boundaries', () => {
       label: '在线',
       tone: 'green',
     });
-    expect(nodeOperationalStatus(node({ telemetryState: 'unreported', lifecycle: null }))).toMatchObject({ code: 'registered', label: '已认证', tone: 'green' });
+    expect(nodeOperationalStatus(node({ telemetryState: 'unreported', lifecycle: null }))).toMatchObject({ code: 'registered', label: '未上线', tone: 'gray' });
   });
 
   it('turns a link green only after fresh bidirectional authentication', () => {
@@ -63,10 +63,10 @@ describe('operational status boundaries', () => {
 
   it.each([
     ['unregistered', { registered: false }, 'gray'],
-    ['registered', { attached: false }, 'green'],
+    ['registered', { attached: false }, 'gray'],
     ['policy_updating', { applyState: 'pending' }, 'orange'],
-    ['registered', { telemetryState: 'unreported' }, 'green'],
-    ['telemetry_stale', { telemetryState: 'stale' }, 'orange'],
+    ['registered', { telemetryState: 'unreported' }, 'gray'],
+    ['telemetry_stale', { telemetryState: 'stale' }, 'gray'],
     ['starting', { lifecycle: 'starting' }, 'orange'],
     ['healthy', {}, 'green'],
     ['policy_rejected', { applyState: 'rejected' }, 'red'],

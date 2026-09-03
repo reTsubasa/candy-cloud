@@ -33,7 +33,7 @@ export type LinkOperationalCode =
 export type NodeOperationalInput = {
   registered: boolean;
   attached: boolean;
-  applyState: 'active' | 'rejected' | 'pending';
+  applyState: 'active' | 'rejected' | 'pending' | 'unknown';
   errorCode: string | null;
   telemetryState: 'online' | 'stale' | 'unreported';
   lifecycle: RuntimeTelemetry['lifecycle'] | null;
@@ -59,15 +59,17 @@ export type LinkOperationalInput = {
 };
 
 export const NODE_STATUS_BOUNDARIES = [
-  { tone: 'green' as const, label: '绿色', detail: '节点身份已完成注册认证；在线状态单独依据 Runtime 遥测展示。' },
-  { tone: 'orange' as const, label: '黄色', detail: '节点正在应用配置、启动，或节点自身遥测已中断。' },
+  { tone: 'gray' as const, label: '灰色', detail: '节点未认证、未接入、尚未上报或遥测已中断，当前不在线。' },
+  { tone: 'green' as const, label: '绿色', detail: '节点身份已认证且 Runtime 遥测在线，数据面正常上报。' },
+  { tone: 'orange' as const, label: '橙色', detail: '节点正在注册、启动、应用策略或执行其他状态切换。' },
   { tone: 'red' as const, label: '红色', detail: '节点拒绝配置，或 Runtime 本身明确异常；不包含 Lane、Peer 和路由故障。' },
 ];
 
 export const SITE_STATUS_BOUNDARIES = [
-  { tone: 'green' as const, label: '绿色', detail: '站点至少有一个完成注册认证的节点；Lane 状态不影响站点颜色。' },
-  { tone: 'orange' as const, label: '黄色', detail: '站点已创建节点，但还没有节点完成注册认证。' },
-  { tone: 'gray' as const, label: '灰色', detail: '站点尚未配置任何节点。' },
+  { tone: 'gray' as const, label: '灰色', detail: '站点没有在线节点，且当前没有配置切换或明确故障。' },
+  { tone: 'green' as const, label: '绿色', detail: '站点内已认证节点均在线且 Runtime 稳定；Lane 状态不影响站点颜色。' },
+  { tone: 'orange' as const, label: '橙色', detail: '站点至少有一个节点正在注册、启动或应用策略。' },
+  { tone: 'red' as const, label: '红色', detail: '站点至少有一个节点拒绝配置或 Runtime 明确异常。' },
 ];
 
 export const LINK_STATUS_BOUNDARIES = [
@@ -88,10 +90,10 @@ export function nodeOperationalStatus(input: NodeOperationalInput): OperationalS
   if (input.telemetryState === 'online' && !input.failOpenRequired && (input.lifecycle === 'degraded' || input.lifecycle === 'stopped')) {
     return { code: 'runtime_fault', label: runtimeErrorStatusLabel(input.runtimeErrorCode) ?? '运行异常', detail: input.runtimeErrorDetail || runtimeUserFailureDetail(input.runtimeErrorCode, counters, `Runtime 状态：${input.lifecycle}`), tone: 'red' };
   }
-  if (!input.attached) return { code: 'registered', label: '已注册', detail: '节点身份已签发，尚未接入 SD-WAN 网络', tone: 'green' };
+  if (!input.attached) return { code: 'registered', label: '未接入', detail: '节点身份已签发，但当前未接入 SD-WAN 网络', tone: 'gray' };
   if (input.applyState === 'pending') return { code: 'policy_updating', label: '策略更新中', detail: '等待 Cloud 发布或节点确认当前策略', tone: 'orange' };
-  if (input.telemetryState === 'stale') return { code: 'telemetry_stale', label: '状态中断', detail: '超过遥测新鲜度窗口没有收到节点上报', tone: 'orange' };
-  if (input.telemetryState === 'unreported') return { code: 'registered', label: '已认证', detail: '节点身份已完成认证，等待 Runtime 首次上报', tone: 'green' };
+  if (input.telemetryState === 'stale') return { code: 'telemetry_stale', label: '离线', detail: '超过遥测新鲜度窗口没有收到节点上报', tone: 'gray' };
+  if (input.telemetryState === 'unreported') return { code: 'registered', label: '未上线', detail: '节点身份已完成认证，但 Runtime 尚未上报在线状态', tone: 'gray' };
   if (input.lifecycle === 'starting' || input.lifecycle === 'unknown' || input.lifecycle === null) {
     return { code: 'starting', label: '正在启动', detail: 'Runtime 在线，但数据面尚未进入稳定运行状态', tone: 'orange' };
   }

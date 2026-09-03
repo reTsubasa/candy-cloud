@@ -306,7 +306,7 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
           <path className="topology-site-link" d={aggregate
             ? `M ${center} 68 C ${center} 105, ${x} 105, ${x} ${siteY}`
             : `M ${center} 150 C ${center} 174, ${x} 166, ${x} ${siteY}`} />
-          <g className={`topology-site-node ${site.registeredNodeCount > 0 ? 'ok' : site.nodes.length > 0 ? 'pending' : 'neutral'}`} transform={`translate(${x - 90} ${siteY})`}>
+          <g className={`topology-site-node ${site.status.tone === 'green' ? 'ok' : site.status.tone === 'orange' ? 'pending' : site.status.tone === 'red' ? 'error' : 'neutral'}`} transform={`translate(${x - 90} ${siteY})`}>
             <rect width="180" height={siteCardHeight} rx="7" />
             <circle cx="18" cy="22" r="5" />
             <text className="site-name" x="31" y="26">{ellipsis(site.name, 19)}</text>
@@ -314,8 +314,8 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
             <line x1="14" y1="62" x2="166" y2="62" />
             <text x="14" y="83">节点 {site.nodes.length}</text><text className="value" x="166" y="83" textAnchor="end">已认证 {site.registeredNodeCount}</text>
             <text x="14" y="106">在线 {site.onlineNodeCount}</text><text className="value" x="166" y="106" textAnchor="end">路由 {site.routeCount} · 出口 {site.egressCount}</text>
-            {site.nodes.length === 0 ? <text className="sub" x="14" y="132">等待节点接入</text> : site.nodes.slice(0, maximumNodeRows).map((node, nodeIndex) => <g className={`topology-node-state tone-${node.registered ? 'green' : 'gray'}`} key={node.id} transform={`translate(0 ${126 + nodeIndex * 18})`}>
-              <circle cx="18" cy="6" r="3.5" /><text x="28" y="10">{ellipsis(node.name, 12)}</text><text className="state" x="166" y="10" textAnchor="end">{node.registered ? '已认证' : '待认证'}</text>
+            {site.nodes.length === 0 ? <text className="sub" x="14" y="132">等待节点接入</text> : site.nodes.slice(0, maximumNodeRows).map((node, nodeIndex) => <g className={`topology-node-state tone-${node.status.tone}`} key={node.id} transform={`translate(0 ${126 + nodeIndex * 18})`}>
+              <circle cx="18" cy="6" r="3.5" /><text x="28" y="10">{ellipsis(node.name, 12)}</text><text className="state" x="166" y="10" textAnchor="end">{node.status.label}</text>
             </g>)}
             {site.nodes.length > maximumNodeRows && <text className="sub" x="14" y={126 + maximumNodeRows * 18 + 10}>另有 {site.nodes.length - maximumNodeRows} 个节点</text>}
           </g>

@@ -5,6 +5,7 @@ import {
   type LinkOperationalCode,
   type NodeOperationalCode,
   type OperationalStatus,
+  type OperationalTone,
 } from './operational-status';
 
 export type OperationalResourceKey = 'sites' | 'nodes' | 'segments' | 'attachments' | 'prefixes' | 'peers' | 'paths' | 'egress' | 'policies' | 'dns' | 'relays';
@@ -21,7 +22,7 @@ export type OperationalNode = {
   name: string;
   siteId: string;
   registered: boolean;
-  applyState: 'active' | 'rejected' | 'pending';
+  applyState: 'active' | 'rejected' | 'pending' | 'unknown';
   errorCode: string | null;
   reportedAt: string | null;
   telemetryState: 'online' | 'stale' | 'unreported';
@@ -50,6 +51,7 @@ export type OperationalSite = {
   hasRejectedNode: boolean;
   routeCount: number;
   egressCount: number;
+  status: OperationalStatus<'empty' | 'unregistered' | 'healthy' | 'warning' | 'fault'>;
 };
 
 export type OperationalPathTelemetry = RuntimePathTelemetry & {
@@ -140,6 +142,18 @@ function readinessLabel(readiness: RuntimeActivationReadiness | null): string {
   return '等待激活';
 }
 
+function siteOperationalStatus(nodes: OperationalNode[]): OperationalSite['status'] {
+  if (nodes.length === 0) return { code: 'empty', label: '暂无节点', detail: '站点尚未配置节点', tone: 'gray' };
+  const severity: Record<OperationalTone, number> = { gray: 0, green: 1, orange: 2, red: 3 };
+  const worst = nodes.reduce<OperationalNode | null>((current, node) => (
+    !current || severity[node.status.tone] > severity[current.status.tone] ? node : current
+  ), null);
+  if (!worst || worst.status.tone === 'gray') return { code: 'unregistered', label: '离线', detail: '站点当前没有在线节点', tone: 'gray' };
+  if (worst.status.tone === 'red') return { code: 'fault', label: '节点故障', detail: worst.status.detail, tone: 'red' };
+  if (worst.status.tone === 'orange') return { code: 'warning', label: '节点未就绪', detail: worst.status.detail, tone: 'orange' };
+  return { code: 'healthy', label: '节点在线', detail: '站点内已认证节点均在线且 Runtime 稳定', tone: 'green' };
+}
+
 export function buildOperationalTopology(
   resources: OperationalResources,
   statuses: RuntimeConfigurationStatus[],
@@ -167,7 +181,9 @@ export function buildOperationalTopology(
     const telemetryState = !runtime || !Number.isFinite(reportedMs)
       ? 'unreported'
       : nowMs - reportedMs <= staleAfterSeconds * 1000 ? 'online' : 'stale';
-    const applyState = status?.current && status.state === 'active'
+    const applyState = !status
+      ? 'unknown'
+      : status.current && status.state === 'active'
       ? 'active'
       : status?.current && status.state === 'rejected' ? 'rejected' : 'pending';
     const registered = item.metadata.state === 'ACTIVE';
@@ -236,6 +252,7 @@ export function buildOperationalTopology(
         hasRejectedNode: siteNodes.some((node) => node.applyState === 'rejected'),
         routeCount: selectedPrefixes.filter((prefix) => value(prefix, 'site_id') === item.metadata.id).length,
         egressCount: selectedEgresses.filter((egress) => value(egress, 'site_id') === item.metadata.id).length,
+        status: siteOperationalStatus(siteNodes),
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
