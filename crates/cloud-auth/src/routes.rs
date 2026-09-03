@@ -1420,7 +1420,14 @@ fn valid_runtime_stream_path(path: &RuntimePathTelemetryHttpRequest) -> bool {
     path.streams.iter().all(|stream| {
         matches!(
             stream.state.as_str(),
-            "opening" | "ready" | "draining" | "congested" | "resetting" | "closed"
+            "starting"
+                | "opening"
+                | "ready"
+                | "draining"
+                | "congested"
+                | "resetting"
+                | "failed"
+                | "closed"
         ) && stream.stream_id != 0
             && stream.generation != 0
             && path

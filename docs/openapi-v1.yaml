@@ -1935,7 +1935,7 @@ components:
       properties:
         slot: { type: integer, minimum: 0, maximum: 65535 }
         stream_id: { type: integer, minimum: 1 }
-        state: { type: string, enum: [opening, ready, draining, congested, resetting, closed] }
+        state: { type: string, enum: [starting, opening, ready, draining, congested, resetting, failed, closed] }
         generation: { type: integer, minimum: 1 }
         tx_packets: { type: integer, minimum: 0 }
         rx_packets: { type: integer, minimum: 0 }
