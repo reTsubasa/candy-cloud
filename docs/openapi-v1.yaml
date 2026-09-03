@@ -708,16 +708,18 @@ paths:
         client certificate and persisted identity. Certificates become renewable 48
         hours before expiry. Cloud atomically inserts the replacement certificate,
         marks the exact authenticated certificate SUPERSEDED, and appends an audit
-        event. The operational key record is not rotated or replaced.
+        event. The operational key record is not rotated or replaced. An exact
+        request-id replay made with the superseded certificate during the bounded
+        emergency window returns the original response and cannot issue again.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: "#/components/schemas/CertificateRenewalRequest" }
-            example: { request_id: automatic-renewal-20260903T080000Z }
+            example: { request_id: 018f624d-a61c-7abc-8d0f-4fc178812103 }
       responses:
         "200":
-          description: A replacement certificate for the same device and operational key.
+          description: A replacement certificate or exact replay for the same device and operational key.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CertificateRenewalResponse" }
@@ -1619,19 +1621,16 @@ components:
       additionalProperties: false
       required: [request_id]
       properties:
-        request_id:
-          type: string
-          minLength: 1
-          maxLength: 120
-          pattern: '^[A-Za-z0-9._:-]+$'
+        request_id: { $ref: "#/components/schemas/Uuid" }
     CertificateRenewalResponse:
       type: object
       additionalProperties: false
-      required: [certificate_der, certificate_chain_pem, not_after]
+      required: [certificate_der, certificate_chain_pem, not_after, replayed]
       properties:
         certificate_der: { type: string, contentEncoding: base64 }
         certificate_chain_pem: { type: string }
         not_after: { type: string, format: date-time }
+        replayed: { type: boolean }
     GrantRequest:
       type: object
       additionalProperties: false

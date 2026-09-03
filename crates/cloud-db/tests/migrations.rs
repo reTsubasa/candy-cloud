@@ -29,6 +29,7 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "enrollment_activation_codes",
         "enrollment_challenges",
         "device_certificates",
+        "device_certificate_renewals",
         "segments",
         "sites",
         "site_prefixes",
@@ -67,6 +68,17 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+}
+
+#[test]
+fn certificate_renewal_migration_preserves_exact_replay_identity() {
+    let migration = include_str!("../migrations/0032_device_certificate_renewals.sql");
+    assert!(migration
+        .contains("UNIQUE KEY uq_device_certificate_renewal_request (device_id, request_id)"));
+    assert!(migration
+        .contains("UNIQUE KEY uq_device_certificate_renewal_previous (previous_certificate_id)"));
+    assert!(migration.contains("FOREIGN KEY (certificate_id) REFERENCES device_certificates(id)"));
+    assert!(migration.contains("replay_until TIMESTAMP(6) NOT NULL"));
 }
 
 #[test]

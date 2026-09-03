@@ -167,12 +167,17 @@ proved that the original transaction cannot be recovered.
 An enrolled device renews its certificate through
 `POST /auth/v1/device-certificates/renew` during the final 48 hours of the
 seven-day certificate lifetime. The only request field is a bounded request
-id. Organization, tenant, device, device-key, current certificate, assurance,
+id (a canonical non-zero UUID). Organization, tenant, device, device-key, current certificate, assurance,
 and operational public key come exclusively from the verified active mTLS
 certificate and the persisted identity. Cloud reuses the operational public
 key and atomically inserts the replacement certificate, marks the exact old
 certificate `SUPERSEDED`, and writes `DEVICE_CERTIFICATE_RENEWED` audit data.
-The device key row is unchanged. Stable failures are
+The device key row is unchanged. Cloud stores the exact response by device and
+request id. For up to 12 hours (and never beyond the old certificate expiry),
+the superseded certificate is accepted only on this renewal route and only the
+matching request id can replay the original certificate with `replayed: true`;
+it cannot sign a second certificate. Every other device route continues to
+reject the superseded certificate. Stable failures are
 `invalid_certificate_renewal_request`, `certificate_renewal_not_due`,
 `device_certificate_changed`, and `certificate_renewal_unavailable`.
 

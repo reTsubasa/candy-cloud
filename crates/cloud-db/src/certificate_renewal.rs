@@ -23,6 +23,15 @@ pub struct CertificateRenewalIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertificateRenewalScope {
+    pub organization_id: Uuid,
+    pub tenant_id: Uuid,
+    pub device_id: Uuid,
+    pub device_key_id: Uuid,
+    pub authenticated_certificate_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertificateRenewalWrite {
     pub request_id: String,
     pub organization_id: Uuid,
@@ -42,11 +51,20 @@ pub struct CertificateRenewalWrite {
     pub not_before: DateTime<Utc>,
     pub not_after: DateTime<Utc>,
     pub renewed_at: DateTime<Utc>,
+    pub replay_until: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertificateRenewalRecord {
+    pub certificate_der: Vec<u8>,
+    pub certificate_chain_pem: String,
+    pub not_after: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CertificateRenewalOutcome {
     Renewed,
+    Replay(CertificateRenewalRecord),
     IdentityChanged,
 }
 
@@ -96,12 +114,69 @@ impl CertificateRenewalRepository {
         row.map(identity_from_row).transpose()
     }
 
+    pub async fn load_replay(
+        &self,
+        scope: &CertificateRenewalScope,
+        request_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<Option<CertificateRenewalRecord>, RepositoryError> {
+        if [
+            scope.organization_id,
+            scope.tenant_id,
+            scope.device_id,
+            scope.device_key_id,
+            scope.authenticated_certificate_id,
+            request_id,
+        ]
+        .iter()
+        .any(Uuid::is_nil)
+        {
+            return Err(RepositoryError::InvalidDeviceCertificateScope);
+        }
+        let row = sqlx::query(
+            "SELECT dc.certificate_der, dc.certificate_chain_pem, dc.not_after FROM device_certificate_renewals renewal JOIN device_certificates dc ON dc.id = renewal.certificate_id AND dc.organization_id = renewal.organization_id AND dc.tenant_id = renewal.tenant_id AND dc.device_id = renewal.device_id AND dc.device_key_id = renewal.device_key_id WHERE renewal.organization_id = ? AND renewal.tenant_id = ? AND renewal.device_id = ? AND renewal.device_key_id = ? AND renewal.request_id = ? AND (renewal.previous_certificate_id = ? OR renewal.certificate_id = ?) AND renewal.replay_until > ?",
+        )
+        .bind(scope.organization_id)
+        .bind(scope.tenant_id)
+        .bind(scope.device_id)
+        .bind(scope.device_key_id)
+        .bind(request_id.to_string())
+        .bind(scope.authenticated_certificate_id)
+        .bind(scope.authenticated_certificate_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(renewal_record_from_row).transpose()
+    }
+
     pub async fn renew(
         &self,
         write: &CertificateRenewalWrite,
     ) -> Result<CertificateRenewalOutcome, RepositoryError> {
         validate_write(write)?;
         let mut transaction = self.pool.begin().await?;
+        let replay = sqlx::query(
+            "SELECT renewal.previous_certificate_id, renewal.replay_until, dc.certificate_der, dc.certificate_chain_pem, dc.not_after FROM device_certificate_renewals renewal JOIN device_certificates dc ON dc.id = renewal.certificate_id WHERE renewal.organization_id = ? AND renewal.tenant_id = ? AND renewal.device_id = ? AND renewal.device_key_id = ? AND renewal.request_id = ? FOR UPDATE",
+        )
+        .bind(write.organization_id)
+        .bind(write.tenant_id)
+        .bind(write.device_id)
+        .bind(write.device_key_id)
+        .bind(&write.request_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some(replay) = replay {
+            if replay.try_get::<Uuid, _>("previous_certificate_id")?
+                != write.previous_certificate_id
+                || replay.try_get::<DateTime<Utc>, _>("replay_until")? <= write.renewed_at
+            {
+                transaction.rollback().await?;
+                return Ok(CertificateRenewalOutcome::IdentityChanged);
+            }
+            let record = renewal_record_from_row(replay)?;
+            transaction.commit().await?;
+            return Ok(CertificateRenewalOutcome::Replay(record));
+        }
         let current = sqlx::query(
             "SELECT dc.id FROM device_certificates dc JOIN organizations org ON org.id = dc.organization_id AND org.status = 'ACTIVE' JOIN tenants t ON t.id = dc.tenant_id AND t.organization_id = org.id AND t.status = 'ACTIVE' JOIN devices d ON d.id = dc.device_id AND d.tenant_id = dc.tenant_id AND d.status = 'ACTIVE' JOIN device_keys dk ON dk.id = dc.device_key_id AND dk.device_id = d.id AND dk.tenant_id = dc.tenant_id AND dk.status = 'ACTIVE' WHERE dc.organization_id = ? AND dc.tenant_id = ? AND dc.device_id = ? AND dc.device_key_id = ? AND dk.public_key = ? AND dk.assurance_level = ? AND dc.assurance_level = ? AND dc.id = ? AND dc.status = 'ACTIVE' AND dc.not_before <= ? AND dc.not_after > ? FOR UPDATE",
         )
@@ -118,6 +193,26 @@ impl CertificateRenewalRepository {
         .fetch_optional(&mut *transaction)
         .await?;
         if current.is_none() {
+            let replay = sqlx::query(
+                "SELECT renewal.previous_certificate_id, renewal.replay_until, dc.certificate_der, dc.certificate_chain_pem, dc.not_after FROM device_certificate_renewals renewal JOIN device_certificates dc ON dc.id = renewal.certificate_id WHERE renewal.organization_id = ? AND renewal.tenant_id = ? AND renewal.device_id = ? AND renewal.device_key_id = ? AND renewal.request_id = ? FOR UPDATE",
+            )
+            .bind(write.organization_id)
+            .bind(write.tenant_id)
+            .bind(write.device_id)
+            .bind(write.device_key_id)
+            .bind(&write.request_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if let Some(replay) = replay {
+                if replay.try_get::<Uuid, _>("previous_certificate_id")?
+                    == write.previous_certificate_id
+                    && replay.try_get::<DateTime<Utc>, _>("replay_until")? > write.renewed_at
+                {
+                    let record = renewal_record_from_row(replay)?;
+                    transaction.commit().await?;
+                    return Ok(CertificateRenewalOutcome::Replay(record));
+                }
+            }
             transaction.rollback().await?;
             return Ok(CertificateRenewalOutcome::IdentityChanged);
         }
@@ -154,6 +249,20 @@ impl CertificateRenewalRepository {
         .bind(write.assurance_level)
         .bind(write.not_before)
         .bind(write.not_after)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO device_certificate_renewals (id, organization_id, tenant_id, device_id, device_key_id, previous_certificate_id, certificate_id, request_id, replay_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(write.organization_id)
+        .bind(write.tenant_id)
+        .bind(write.device_id)
+        .bind(write.device_key_id)
+        .bind(write.previous_certificate_id)
+        .bind(write.certificate_id)
+        .bind(&write.request_id)
+        .bind(write.replay_until)
         .execute(&mut *transaction)
         .await?;
         sqlx::query(
@@ -196,8 +305,29 @@ fn identity_from_row(
     Ok(identity)
 }
 
+fn renewal_record_from_row(
+    row: sqlx::mysql::MySqlRow,
+) -> Result<CertificateRenewalRecord, RepositoryError> {
+    let record = CertificateRenewalRecord {
+        certificate_der: row.try_get("certificate_der")?,
+        certificate_chain_pem: row.try_get("certificate_chain_pem")?,
+        not_after: row.try_get("not_after")?,
+    };
+    if record.certificate_der.is_empty()
+        || record.certificate_der.len() > MAX_CERTIFICATE_DER_LEN
+        || record.certificate_chain_pem.is_empty()
+        || record.certificate_chain_pem.len() > MAX_CERTIFICATE_CHAIN_LEN
+    {
+        return Err(RepositoryError::InvalidDeviceCertificateRecord);
+    }
+    Ok(record)
+}
+
 fn validate_write(write: &CertificateRenewalWrite) -> Result<(), RepositoryError> {
     if !bounded(&write.request_id, MAX_REQUEST_ID_LEN)
+        || Uuid::parse_str(&write.request_id)
+            .map(|request_id| !request_id.is_nil() && request_id.to_string() == write.request_id)
+            != Ok(true)
         || [
             write.organization_id,
             write.tenant_id,
@@ -221,6 +351,8 @@ fn validate_write(write: &CertificateRenewalWrite) -> Result<(), RepositoryError
         || write.assurance_level > 3
         || write.not_before != write.renewed_at
         || write.not_after <= write.not_before
+        || write.replay_until <= write.renewed_at
+        || write.replay_until > write.not_after
     {
         return Err(RepositoryError::InvalidDeviceCertificateScope);
     }

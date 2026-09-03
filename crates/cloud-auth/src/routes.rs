@@ -602,7 +602,7 @@ where
 {
     certificate_renewal_app(service).route_layer(middleware::from_fn_with_state(
         Arc::new(authenticator),
-        require_device_identity,
+        require_device_renewal_identity,
     ))
 }
 
@@ -743,6 +743,33 @@ async fn require_device_identity(
             .map_err(|_| ApiError::Unauthenticated)?;
     let actor = authenticator
         .authenticate_verified_certificate(&certificate_der, chrono::Utc::now())
+        .await
+        .map_err(|error| match error {
+            DeviceIdentityError::InvalidCertificate | DeviceIdentityError::InactiveCertificate => {
+                ApiError::Unauthenticated
+            }
+            DeviceIdentityError::Unavailable => ApiError::Service(GrantServiceError::Unavailable),
+        })?;
+    request.extensions_mut().insert(actor);
+    Ok(next.run(request).await)
+}
+
+async fn require_device_renewal_identity(
+    State(authenticator): State<Arc<DeviceIdentityAuthenticator>>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let encoded = request
+        .headers()
+        .get(&VERIFIED_DEVICE_CERTIFICATE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty() && value.len() <= 96 * 1024)
+        .ok_or(ApiError::Unauthenticated)?;
+    let certificate_der =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+            .map_err(|_| ApiError::Unauthenticated)?;
+    let actor = authenticator
+        .authenticate_verified_renewal_certificate(&certificate_der, chrono::Utc::now())
         .await
         .map_err(|error| match error {
             DeviceIdentityError::InvalidCertificate | DeviceIdentityError::InactiveCertificate => {
@@ -937,6 +964,7 @@ where
         certificate_der: encode_standard_base64(receipt.certificate_der),
         certificate_chain_pem: receipt.certificate_chain_pem,
         not_after: receipt.not_after,
+        replayed: receipt.replayed,
     }))
 }
 
@@ -1635,6 +1663,7 @@ struct CertificateRenewalHttpResponse {
     certificate_der: String,
     certificate_chain_pem: String,
     not_after: chrono::DateTime<chrono::Utc>,
+    replayed: bool,
 }
 
 #[derive(Debug, Deserialize)]

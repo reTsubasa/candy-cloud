@@ -117,11 +117,12 @@ async fn renewal_reuses_operational_key_and_atomically_supersedes_old_certificat
         1,
     )
     .unwrap();
+    let request_id = Uuid::new_v4().to_string();
     let coordinator = CertificateRenewalCoordinator::new(pool.clone(), issuer);
     let receipt = coordinator
         .renew(CertificateRenewalCommand {
             actor,
-            request_id: "automatic-renewal-01".into(),
+            request_id: request_id.clone(),
         })
         .await
         .unwrap();
@@ -167,10 +168,36 @@ async fn renewal_reuses_operational_key_and_atomically_supersedes_old_certificat
     assert_eq!(renewed_identity.device_id(), device_id);
     assert_eq!(renewed_identity.device_key_id(), device_key_id);
     assert_eq!(renewed_identity.certificate_id(), new_certificate_id);
+    let replay_actor = authenticator
+        .authenticate_verified_renewal_certificate(&old.certificate_der, Utc::now())
+        .await
+        .unwrap();
+    let replay = coordinator
+        .renew(CertificateRenewalCommand {
+            actor: replay_actor.clone(),
+            request_id: request_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.certificate_der, receipt.certificate_der);
+    assert_eq!(replay.certificate_chain_pem, receipt.certificate_chain_pem);
+    assert_eq!(replay.not_after, receipt.not_after);
+    let wrong_replay = coordinator
+        .renew(CertificateRenewalCommand {
+            actor: replay_actor,
+            request_id: Uuid::new_v4().to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        wrong_replay,
+        cloud_auth::certificate_renewal::CertificateRenewalError::IdentityChanged
+    );
     let not_due = coordinator
         .renew(CertificateRenewalCommand {
             actor: renewed_identity,
-            request_id: "automatic-renewal-too-early".into(),
+            request_id: Uuid::new_v4().to_string(),
         })
         .await
         .unwrap_err();
@@ -185,7 +212,22 @@ async fn renewal_reuses_operational_key_and_atomically_supersedes_old_certificat
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert!(audit_metadata.contains("automatic-renewal-01"));
+    assert!(audit_metadata.contains(&request_id));
     assert!(audit_metadata.contains(&old_certificate_id.to_string()));
     assert!(audit_metadata.contains(&device_key_id.to_string()));
+    let certificate_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM device_certificates WHERE device_id = ?")
+            .bind(device_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events WHERE tenant_id = ? AND action = 'DEVICE_CERTIFICATE_RENEWED'",
+    )
+    .bind(tenant_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(certificate_count, 2);
+    assert_eq!(audit_count, 1);
 }

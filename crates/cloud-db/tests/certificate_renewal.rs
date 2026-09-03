@@ -63,7 +63,7 @@ async fn renewal_insert_failure_rolls_back_old_certificate_revocation() {
 
     let outcome = CertificateRenewalRepository::new(pool.clone())
         .renew(&CertificateRenewalWrite {
-            request_id: "rollback-test".into(),
+            request_id: Uuid::new_v4().to_string(),
             organization_id,
             tenant_id,
             device_id,
@@ -81,6 +81,7 @@ async fn renewal_insert_failure_rolls_back_old_certificate_revocation() {
             not_before: now,
             not_after: now + Duration::days(7),
             renewed_at: now,
+            replay_until: now + Duration::hours(1),
         })
         .await;
     assert!(outcome.is_err());
@@ -101,7 +102,7 @@ async fn renewal_insert_failure_rolls_back_old_certificate_revocation() {
 
     let stale = CertificateRenewalRepository::new(pool)
         .renew(&CertificateRenewalWrite {
-            request_id: "wrong-current".into(),
+            request_id: Uuid::new_v4().to_string(),
             organization_id,
             tenant_id,
             device_id,
@@ -119,6 +120,7 @@ async fn renewal_insert_failure_rolls_back_old_certificate_revocation() {
             not_before: now,
             not_after: now + Duration::days(7),
             renewed_at: now,
+            replay_until: now + Duration::hours(1),
         })
         .await
         .unwrap();

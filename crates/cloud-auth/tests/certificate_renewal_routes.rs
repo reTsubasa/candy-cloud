@@ -60,6 +60,7 @@ async fn renewal_uses_only_the_authenticated_device_scope() {
         certificate_der: vec![251, 255],
         certificate_chain_pem: "test-chain".into(),
         not_after: chrono::DateTime::from_timestamp(1_800_604_800, 0).unwrap(),
+        replayed: false,
     }));
     let authenticated = actor();
     let response = certificate_renewal_app(service.clone())
@@ -69,7 +70,9 @@ async fn renewal_uses_only_the_authenticated_device_scope() {
                 .uri("/v1/device-certificates/renew")
                 .header("content-type", "application/json")
                 .extension(authenticated.clone())
-                .body(Body::from(r#"{"request_id":"renew-01"}"#))
+                .body(Body::from(
+                    r#"{"request_id":"018f624d-a61c-7abc-8d0f-4fc178812100"}"#,
+                ))
                 .unwrap(),
         )
         .await
@@ -77,7 +80,7 @@ async fn renewal_uses_only_the_authenticated_device_scope() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let command = service.commands.lock().unwrap().pop().unwrap();
-    assert_eq!(command.request_id, "renew-01");
+    assert_eq!(command.request_id, "018f624d-a61c-7abc-8d0f-4fc178812100");
     assert_eq!(command.actor, authenticated);
     let body = response.into_body().collect().await.unwrap().to_bytes();
     assert!(body.windows(4).any(|item| item == b"+/8="));
@@ -87,7 +90,7 @@ async fn renewal_uses_only_the_authenticated_device_scope() {
 async fn renewal_rejects_body_supplied_identity() {
     let service = service(Err(CertificateRenewalError::Unavailable));
     let body = format!(
-        r#"{{"request_id":"renew-02","device_id":"{}"}}"#,
+        r#"{{"request_id":"018f624d-a61c-7abc-8d0f-4fc178812101","device_id":"{}"}}"#,
         Uuid::new_v4()
     );
     let response = certificate_renewal_app(service.clone())
@@ -138,7 +141,9 @@ async fn renewal_exposes_stable_domain_error_codes() {
                     .uri("/v1/device-certificates/renew")
                     .header("content-type", "application/json")
                     .extension(actor())
-                    .body(Body::from(r#"{"request_id":"renew-errors"}"#))
+                    .body(Body::from(
+                        r#"{"request_id":"018f624d-a61c-7abc-8d0f-4fc178812102"}"#,
+                    ))
                     .unwrap(),
             )
             .await

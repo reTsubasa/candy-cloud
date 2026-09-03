@@ -72,6 +72,38 @@ impl DeviceIdentityAuthenticator {
         )
         .map_err(|_| DeviceIdentityError::InvalidCertificate)
     }
+
+    pub async fn authenticate_verified_renewal_certificate(
+        &self,
+        certificate_der: &[u8],
+        now: DateTime<Utc>,
+    ) -> Result<AuthenticatedDevice, DeviceIdentityError> {
+        let claims = parse_claims(certificate_der, &self.environment)?;
+        let record = self
+            .identities
+            .authenticate_for_certificate_renewal(
+                claims.device_id,
+                claims.device_key_id,
+                certificate_der,
+                &self.environment,
+                now,
+            )
+            .await
+            .map_err(|_| DeviceIdentityError::Unavailable)?
+            .ok_or(DeviceIdentityError::InactiveCertificate)?;
+        if record.assurance_level != claims.assurance_level {
+            return Err(DeviceIdentityError::InvalidCertificate);
+        }
+        AuthenticatedDevice::new(
+            record.organization_id,
+            record.tenant_id,
+            record.device_id,
+            record.device_key_id,
+            record.certificate_id,
+            record.assurance_level,
+        )
+        .map_err(|_| DeviceIdentityError::InvalidCertificate)
+    }
 }
 
 struct DeviceCertificateClaims {

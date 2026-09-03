@@ -1,0 +1,22 @@
+CREATE TABLE device_certificate_renewals (
+    id BINARY(16) NOT NULL PRIMARY KEY,
+    organization_id BINARY(16) NOT NULL,
+    tenant_id BINARY(16) NOT NULL,
+    device_id BINARY(16) NOT NULL,
+    device_key_id BINARY(16) NOT NULL,
+    previous_certificate_id BINARY(16) NOT NULL,
+    certificate_id BINARY(16) NOT NULL,
+    request_id CHAR(36) NOT NULL,
+    replay_until TIMESTAMP(6) NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_device_certificate_renewal_request (device_id, request_id),
+    UNIQUE KEY uq_device_certificate_renewal_previous (previous_certificate_id),
+    UNIQUE KEY uq_device_certificate_renewal_certificate (certificate_id),
+    KEY idx_device_certificate_renewal_replay (previous_certificate_id, replay_until),
+    CONSTRAINT fk_device_certificate_renewal_org FOREIGN KEY (organization_id) REFERENCES organizations(id),
+    CONSTRAINT fk_device_certificate_renewal_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+    CONSTRAINT fk_device_certificate_renewal_device FOREIGN KEY (device_id) REFERENCES devices(id),
+    CONSTRAINT fk_device_certificate_renewal_key FOREIGN KEY (device_key_id) REFERENCES device_keys(id),
+    CONSTRAINT fk_device_certificate_renewal_previous FOREIGN KEY (previous_certificate_id) REFERENCES device_certificates(id),
+    CONSTRAINT fk_device_certificate_renewal_certificate FOREIGN KEY (certificate_id) REFERENCES device_certificates(id)
+) ENGINE=InnoDB;
