@@ -1816,6 +1816,7 @@ components:
         ready_route_owners: { type: integer, minimum: 0 }
         fail_open_required: { type: boolean }
         last_error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }, { type: "null" }] }
+        last_error_detail: { oneOf: [{ type: string, minLength: 1, maxLength: 1024 }, { type: "null" }] }
         rtt_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         jitter_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         packet_loss_ppm: { oneOf: [{ type: integer, minimum: 0, maximum: 1000000 }, { type: "null" }] }
@@ -1823,6 +1824,8 @@ components:
         tx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         reconnects: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         path_changes: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        transport_mode: { oneOf: [{ type: string, const: stream_primary }, { type: "null" }] }
+        runtime_generation: { oneOf: [{ type: integer, minimum: 1 }, { type: "null" }] }
         paths:
           type: array
           maxItems: 256
@@ -1850,7 +1853,7 @@ components:
         peer_attachment_id: { $ref: "#/components/schemas/Uuid" }
         candidate_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
         path_kind: { type: string, enum: [direct, relay] }
-        transport: { type: string, const: quic_udp }
+        transport: { type: string, const: quic_stream }
         connection_epoch: { type: integer, minimum: 1 }
         rtt_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         jitter_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
@@ -1859,13 +1862,58 @@ components:
         tx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         reconnects: { type: integer, minimum: 0 }
         path_changes: { type: integer, minimum: 0 }
+        transport_mode: { oneOf: [{ type: string, const: stream_primary }, { type: "null" }] }
+        route_generation: { oneOf: [{ type: integer, minimum: 1 }, { type: "null" }] }
+        congestion_state: { oneOf: [{ type: string, enum: [normal, congested, recovering] }, { type: "null" }] }
+        stream_count: { oneOf: [{ type: integer, minimum: 0, maximum: 8 }, { type: "null" }] }
+        ready_streams: { oneOf: [{ type: integer, minimum: 0, maximum: 8 }, { type: "null" }] }
+        queue_depth: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        queue_limit: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        last_ack_seq: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        streams:
+          type: array
+          maxItems: 8
+          default: []
+          items: { $ref: "#/components/schemas/RuntimeStreamTelemetry" }
+    RuntimeStreamTelemetry:
+      type: object
+      additionalProperties: false
+      required: [slot, stream_id, state, generation, tx_packets, rx_packets, tx_bytes, rx_bytes, tx_frames, rx_frames, active_flows, queue_depth, queue_limit, queue_peak, reset_count, decode_errors, high_watermark_hits, low_watermark_hits, blocked_ms, send_window_bytes]
+      properties:
+        slot: { type: integer, minimum: 0, maximum: 65535 }
+        stream_id: { type: integer, minimum: 1 }
+        state: { type: string, enum: [opening, ready, draining, congested, resetting, closed] }
+        generation: { type: integer, minimum: 1 }
+        tx_packets: { type: integer, minimum: 0 }
+        rx_packets: { type: integer, minimum: 0 }
+        tx_bytes: { type: integer, minimum: 0 }
+        rx_bytes: { type: integer, minimum: 0 }
+        tx_frames: { type: integer, minimum: 0 }
+        rx_frames: { type: integer, minimum: 0 }
+        active_flows: { type: integer, minimum: 0 }
+        queue_depth: { type: integer, minimum: 0 }
+        queue_limit: { type: integer, minimum: 1 }
+        queue_peak: { type: integer, minimum: 0 }
+        last_ack_seq: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        ack_rtt_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        rx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        tx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        reset_count: { type: integer, minimum: 0 }
+        decode_errors: { type: integer, minimum: 0 }
+        high_watermark_hits: { type: integer, minimum: 0 }
+        low_watermark_hits: { type: integer, minimum: 0 }
+        blocked_ms: { type: integer, minimum: 0 }
+        send_window_bytes: { type: integer, minimum: 0 }
+        last_tx_monotonic_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        last_rx_monotonic_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        last_error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }, { type: "null" }] }
     RuntimeTelemetryInventory:
       type: object
       additionalProperties: false
       required: [schema_version, stale_after_seconds, items]
       properties:
         schema_version: { type: integer, const: 1 }
-        stale_after_seconds: { type: integer, const: 90 }
+        stale_after_seconds: { type: integer, const: 60 }
         items:
           type: array
           maxItems: 4096
@@ -1873,7 +1921,7 @@ components:
     RuntimeTelemetryItem:
       type: object
       additionalProperties: false
-      required: [device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, paths, local_networks, reported_at]
+      required: [device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, paths, local_networks, reported_at]
       properties:
         device_id: { $ref: "#/components/schemas/Uuid" }
         device_key_id: { $ref: "#/components/schemas/Uuid" }
@@ -1886,6 +1934,7 @@ components:
         ready_route_owners: { type: integer, minimum: 0 }
         fail_open_required: { type: boolean }
         last_error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }, { type: "null" }] }
+        last_error_detail: { oneOf: [{ type: string, minLength: 1, maxLength: 1024 }, { type: "null" }] }
         rtt_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         jitter_ms: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         packet_loss_ppm: { oneOf: [{ type: integer, minimum: 0, maximum: 1000000 }, { type: "null" }] }
@@ -1893,6 +1942,8 @@ components:
         tx_bps: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         reconnects: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         path_changes: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+        transport_mode: { oneOf: [{ type: string, const: stream_primary }, { type: "null" }] }
+        runtime_generation: { oneOf: [{ type: integer, minimum: 1 }, { type: "null" }] }
         paths:
           type: array
           maxItems: 256

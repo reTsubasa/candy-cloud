@@ -933,6 +933,116 @@ async fn runtime_telemetry_uses_authenticated_identity_and_rejects_impossible_co
         .local_networks
         .is_none());
 
+    let stream = serde_json::json!({
+        "slot": 0,
+        "stream_id": 11,
+        "state": "ready",
+        "generation": 7,
+        "tx_packets": 42,
+        "rx_packets": 40,
+        "tx_bytes": 4000,
+        "rx_bytes": 3000,
+        "tx_frames": 42,
+        "rx_frames": 40,
+        "active_flows": 2,
+        "queue_depth": 1,
+        "queue_limit": 128,
+        "queue_peak": 8,
+        "last_ack_seq": 41,
+        "ack_rtt_ms": 3,
+        "rx_bps": 8000,
+        "tx_bps": 16000,
+        "reset_count": 0,
+        "decode_errors": 0,
+        "high_watermark_hits": 0,
+        "low_watermark_hits": 1,
+        "blocked_ms": 0,
+        "send_window_bytes": 65536,
+        "last_tx_monotonic_ms": 1000,
+        "last_rx_monotonic_ms": 1001,
+        "last_error_code": null
+    });
+    let path = serde_json::json!({
+        "peer_attachment_id": Uuid::new_v4(),
+        "candidate_id": Uuid::new_v4(),
+        "path_kind": "direct",
+        "transport": "quic_stream",
+        "connection_epoch": 1,
+        "rtt_ms": 10,
+        "jitter_ms": 1,
+        "packet_loss_ppm": 0,
+        "rx_bps": 8000,
+        "tx_bps": 16000,
+        "reconnects": 0,
+        "path_changes": 0,
+        "transport_mode": "stream_primary",
+        "route_generation": 7,
+        "congestion_state": "normal",
+        "stream_count": 1,
+        "ready_streams": 1,
+        "queue_depth": 1,
+        "queue_limit": 128,
+        "last_ack_seq": 41,
+        "streams": [stream]
+    });
+    let stream_body = serde_json::json!({
+        "schema_version": 1,
+        "boot_id": Uuid::new_v4(),
+        "sequence": 2,
+        "lifecycle": "active",
+        "configured_peers": 1,
+        "active_peers": 1,
+        "required_route_owners": 1,
+        "ready_route_owners": 1,
+        "fail_open_required": false,
+        "last_error_code": null,
+        "rtt_ms": 10,
+        "jitter_ms": 1,
+        "packet_loss_ppm": 0,
+        "rx_bps": 8000,
+        "tx_bps": 16000,
+        "reconnects": 0,
+        "path_changes": 0,
+        "transport_mode": "stream_primary",
+        "runtime_generation": 7,
+        "paths": [path]
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/runtime/telemetry")
+                .header("content-type", "application/json")
+                .extension(actor.clone())
+                .body(Body::from(stream_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let command = service.telemetry.lock().unwrap().pop().unwrap();
+    assert_eq!(command.transport_mode.as_deref(), Some("stream_primary"));
+    assert_eq!(command.paths[0].streams[0].stream_id, 11);
+
+    let mut invalid_stream = stream_body;
+    invalid_stream["paths"][0]["streams"][0]["queue_depth"] = serde_json::json!(129);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/runtime/telemetry")
+                .header("content-type", "application/json")
+                .extension(actor.clone())
+                .body(Body::from(invalid_stream.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(service.telemetry.lock().unwrap().is_empty());
+
     let mut invalid = body.clone();
     invalid["active_peers"] = serde_json::json!(3);
     let response = app

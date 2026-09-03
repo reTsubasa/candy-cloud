@@ -490,6 +490,11 @@ impl RuntimeTelemetryWrite {
             || matches!(self.lifecycle, RuntimeLifecycle::FailOpen) != self.fail_open_required
             || !error_is_valid
             || !detail_is_valid
+            || self
+                .transport_mode
+                .as_deref()
+                .is_some_and(|mode| mode != "stream_primary")
+            || self.runtime_generation == Some(0)
             || self.paths.len() > MAX_RUNTIME_PATHS
             || self
                 .local_networks
@@ -505,6 +510,7 @@ impl RuntimeTelemetryWrite {
                 || path.transport != "quic_stream"
                 || path.connection_epoch == 0
                 || path.packet_loss_ppm.is_some_and(|value| value > 1_000_000)
+                || !validate_runtime_stream_path(path)
                 || !peer_attachments.insert(path.peer_attachment_id)
         }) {
             return Err(RuntimeConfigurationError::InvalidScope);
@@ -517,6 +523,139 @@ impl RuntimeTelemetryWrite {
             return Err(RuntimeConfigurationError::InvalidScope);
         }
         Ok(())
+    }
+}
+
+fn validate_runtime_stream_path(path: &RuntimePathTelemetryWrite) -> bool {
+    if path
+        .transport_mode
+        .as_deref()
+        .is_some_and(|mode| mode != "stream_primary")
+        || path.route_generation == Some(0)
+        || path
+            .congestion_state
+            .as_deref()
+            .is_some_and(|state| !matches!(state, "normal" | "congested" | "recovering"))
+        || path.stream_count.is_some_and(|count| count > 8)
+        || path
+            .ready_streams
+            .zip(path.stream_count)
+            .is_some_and(|(ready, total)| ready > total)
+        || path
+            .queue_depth
+            .zip(path.queue_limit)
+            .is_some_and(|(depth, limit)| depth > limit)
+        || path.streams.len() > 8
+        || path
+            .stream_count
+            .is_some_and(|count| count as usize != path.streams.len())
+    {
+        return false;
+    }
+    let mut slots = HashSet::with_capacity(path.streams.len());
+    let mut stream_ids = HashSet::with_capacity(path.streams.len());
+    path.streams.iter().all(|stream| {
+        matches!(
+            stream.state.as_str(),
+            "opening" | "ready" | "draining" | "congested" | "resetting" | "closed"
+        ) && stream.stream_id != 0
+            && stream.generation != 0
+            && path
+                .route_generation
+                .is_none_or(|generation| generation == stream.generation)
+            && stream.queue_limit > 0
+            && stream.queue_depth <= stream.queue_limit
+            && stream.queue_peak >= stream.queue_depth
+            && stream.last_error_code.as_deref().is_none_or(|value| {
+                !value.is_empty()
+                    && value.len() <= 80
+                    && value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+                    })
+            })
+            && slots.insert(stream.slot)
+            && stream_ids.insert(stream.stream_id)
+    })
+}
+
+#[cfg(test)]
+mod runtime_stream_validation_tests {
+    use super::*;
+
+    fn stream_path() -> RuntimePathTelemetryWrite {
+        RuntimePathTelemetryWrite {
+            peer_attachment_id: Uuid::new_v4(),
+            candidate_id: Some(Uuid::new_v4()),
+            path_kind: RuntimePathKind::Direct,
+            transport: "quic_stream".into(),
+            connection_epoch: 1,
+            rtt_ms: Some(10),
+            jitter_ms: Some(1),
+            packet_loss_ppm: Some(0),
+            rx_bps: Some(8_000),
+            tx_bps: Some(16_000),
+            reconnects: 0,
+            path_changes: 0,
+            transport_mode: Some("stream_primary".into()),
+            route_generation: Some(7),
+            congestion_state: Some("normal".into()),
+            stream_count: Some(1),
+            ready_streams: Some(1),
+            queue_depth: Some(1),
+            queue_limit: Some(128),
+            last_ack_seq: Some(41),
+            streams: vec![RuntimeStreamTelemetryWrite {
+                slot: 0,
+                stream_id: 11,
+                state: "ready".into(),
+                generation: 7,
+                tx_packets: 42,
+                rx_packets: 40,
+                tx_bytes: 4_000,
+                rx_bytes: 3_000,
+                tx_frames: 42,
+                rx_frames: 40,
+                active_flows: 2,
+                queue_depth: 1,
+                queue_limit: 128,
+                queue_peak: 8,
+                last_ack_seq: Some(41),
+                ack_rtt_ms: Some(3),
+                rx_bps: Some(8_000),
+                tx_bps: Some(16_000),
+                reset_count: 0,
+                decode_errors: 0,
+                high_watermark_hits: 0,
+                low_watermark_hits: 1,
+                blocked_ms: 0,
+                send_window_bytes: 65_536,
+                last_tx_monotonic_ms: Some(1_000),
+                last_rx_monotonic_ms: Some(1_001),
+                last_error_code: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn accepts_consistent_stream_telemetry_and_rejects_corrupt_bounds() {
+        let path = stream_path();
+        assert!(validate_runtime_stream_path(&path));
+
+        let mut invalid_queue = path.clone();
+        invalid_queue.streams[0].queue_depth = 129;
+        assert!(!validate_runtime_stream_path(&invalid_queue));
+
+        let mut wrong_generation = path.clone();
+        wrong_generation.streams[0].generation = 8;
+        assert!(!validate_runtime_stream_path(&wrong_generation));
+
+        let mut duplicate_slot = path;
+        duplicate_slot.stream_count = Some(2);
+        duplicate_slot
+            .streams
+            .push(duplicate_slot.streams[0].clone());
+        duplicate_slot.streams[1].stream_id = 12;
+        assert!(!validate_runtime_stream_path(&duplicate_slot));
     }
 }
 

@@ -1139,6 +1139,11 @@ where
             value.is_empty() || value.len() > 1024 || value.chars().any(char::is_control)
         })
         || matches!(request.lifecycle, RuntimeLifecycleHttp::FailOpen) != request.fail_open_required
+        || request
+            .transport_mode
+            .as_deref()
+            .is_some_and(|mode| mode != "stream_primary")
+        || request.runtime_generation == Some(0)
         || request.paths.len() > 256
         || request
             .local_networks
@@ -1150,6 +1155,7 @@ where
                 || path.transport != "quic_stream"
                 || path.connection_epoch == 0
                 || path.packet_loss_ppm.is_some_and(|value| value > 1_000_000)
+                || !valid_runtime_stream_path(path)
                 || !peer_attachments.insert(path.peer_attachment_id)
         })
         || request.local_networks.as_ref().is_some_and(|networks| {
@@ -1224,35 +1230,39 @@ where
                     queue_depth: path.queue_depth,
                     queue_limit: path.queue_limit,
                     last_ack_seq: path.last_ack_seq,
-                    streams: path.streams.into_iter().map(|stream| RuntimeStreamTelemetryCommand {
-                        slot: stream.slot,
-                        stream_id: stream.stream_id,
-                        state: stream.state,
-                        generation: stream.generation,
-                        tx_packets: stream.tx_packets,
-                        rx_packets: stream.rx_packets,
-                        tx_bytes: stream.tx_bytes,
-                        rx_bytes: stream.rx_bytes,
-                        tx_frames: stream.tx_frames,
-                        rx_frames: stream.rx_frames,
-                        active_flows: stream.active_flows,
-                        queue_depth: stream.queue_depth,
-                        queue_limit: stream.queue_limit,
-                        queue_peak: stream.queue_peak,
-                        last_ack_seq: stream.last_ack_seq,
-                        ack_rtt_ms: stream.ack_rtt_ms,
-                        rx_bps: stream.rx_bps,
-                        tx_bps: stream.tx_bps,
-                        reset_count: stream.reset_count,
-                        decode_errors: stream.decode_errors,
-                        high_watermark_hits: stream.high_watermark_hits,
-                        low_watermark_hits: stream.low_watermark_hits,
-                        blocked_ms: stream.blocked_ms,
-                        send_window_bytes: stream.send_window_bytes,
-                        last_tx_monotonic_ms: stream.last_tx_monotonic_ms,
-                        last_rx_monotonic_ms: stream.last_rx_monotonic_ms,
-                        last_error_code: stream.last_error_code,
-                    }).collect(),
+                    streams: path
+                        .streams
+                        .into_iter()
+                        .map(|stream| RuntimeStreamTelemetryCommand {
+                            slot: stream.slot,
+                            stream_id: stream.stream_id,
+                            state: stream.state,
+                            generation: stream.generation,
+                            tx_packets: stream.tx_packets,
+                            rx_packets: stream.rx_packets,
+                            tx_bytes: stream.tx_bytes,
+                            rx_bytes: stream.rx_bytes,
+                            tx_frames: stream.tx_frames,
+                            rx_frames: stream.rx_frames,
+                            active_flows: stream.active_flows,
+                            queue_depth: stream.queue_depth,
+                            queue_limit: stream.queue_limit,
+                            queue_peak: stream.queue_peak,
+                            last_ack_seq: stream.last_ack_seq,
+                            ack_rtt_ms: stream.ack_rtt_ms,
+                            rx_bps: stream.rx_bps,
+                            tx_bps: stream.tx_bps,
+                            reset_count: stream.reset_count,
+                            decode_errors: stream.decode_errors,
+                            high_watermark_hits: stream.high_watermark_hits,
+                            low_watermark_hits: stream.low_watermark_hits,
+                            blocked_ms: stream.blocked_ms,
+                            send_window_bytes: stream.send_window_bytes,
+                            last_tx_monotonic_ms: stream.last_tx_monotonic_ms,
+                            last_rx_monotonic_ms: stream.last_rx_monotonic_ms,
+                            last_error_code: stream.last_error_code,
+                        })
+                        .collect(),
                 })
                 .collect(),
             local_networks: request.local_networks.map(|networks| {
@@ -1271,6 +1281,55 @@ where
         .await
         .map_err(ApiError::RuntimeConfiguration)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn valid_runtime_stream_path(path: &RuntimePathTelemetryHttpRequest) -> bool {
+    if path
+        .transport_mode
+        .as_deref()
+        .is_some_and(|mode| mode != "stream_primary")
+        || path.route_generation == Some(0)
+        || path
+            .congestion_state
+            .as_deref()
+            .is_some_and(|state| !matches!(state, "normal" | "congested" | "recovering"))
+        || path.stream_count.is_some_and(|count| count > 8)
+        || path
+            .ready_streams
+            .zip(path.stream_count)
+            .is_some_and(|(ready, total)| ready > total)
+        || path
+            .queue_depth
+            .zip(path.queue_limit)
+            .is_some_and(|(depth, limit)| depth > limit)
+        || path.streams.len() > 8
+        || path
+            .stream_count
+            .is_some_and(|count| count as usize != path.streams.len())
+    {
+        return false;
+    }
+    let mut slots = HashSet::with_capacity(path.streams.len());
+    let mut stream_ids = HashSet::with_capacity(path.streams.len());
+    path.streams.iter().all(|stream| {
+        matches!(
+            stream.state.as_str(),
+            "opening" | "ready" | "draining" | "congested" | "resetting" | "closed"
+        ) && stream.stream_id != 0
+            && stream.generation != 0
+            && path
+                .route_generation
+                .is_none_or(|generation| generation == stream.generation)
+            && stream.queue_limit > 0
+            && stream.queue_depth <= stream.queue_limit
+            && stream.queue_peak >= stream.queue_depth
+            && stream
+                .last_error_code
+                .as_deref()
+                .is_none_or(valid_runtime_error_code)
+            && slots.insert(stream.slot)
+            && stream_ids.insert(stream.stream_id)
+    })
 }
 
 fn insert_configuration_response_headers(
