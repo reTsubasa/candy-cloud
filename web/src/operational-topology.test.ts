@@ -294,6 +294,12 @@ describe('operational topology', () => {
     expect(snapshot.links[0].status).toMatchObject({ code: 'endpoint_offline', tone: 'gray' });
   });
 
+  it('keeps a line gray when its endpoint nodes are gray for non-telemetry reasons', () => {
+    const resources = fixture();
+    const snapshot = buildOperationalTopology(resources, [], {}, 'segment', [], 90, Date.parse('2026-08-18T10:00:00Z'));
+    expect(snapshot.links[0].status.tone).toBe('gray');
+  });
+
   it('marks a link active only with fresh telemetry in both endpoint directions', () => {
     const now = Date.parse('2026-08-18T10:00:00Z');
     const path = {

@@ -339,7 +339,7 @@ export function buildOperationalTopology(
         || rejectedNodes.length > 0;
       const endpointFailed = failedEndpointLabels.length > 0;
       const endpointOffline = endpointNodes.some((siteNodes) => (
-        siteNodes.length === 0 || siteNodes.every((node) => node.telemetryState !== 'online')
+        siteNodes.length === 0 || siteNodes.every((node) => node.status.tone === 'gray')
       ));
       const policyUpdating = !configurationFailed && (
         peerReadiness?.reason_codes.some((code) => code === 'config_pending' || code === 'node_apply_pending') === true
