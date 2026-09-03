@@ -696,6 +696,42 @@ paths:
         "409": { $ref: "#/components/responses/DeviceConflict" }
         "422": { $ref: "#/components/responses/UnprocessableJson" }
         "503": { $ref: "#/components/responses/DeviceUnavailable" }
+  /v1/device-certificates/renew:
+    post:
+      tags: [Enrollment]
+      operationId: renewDeviceCertificate
+      summary: Replace the authenticated device's expiring certificate
+      security: [{ deviceMtls: [] }]
+      description: |-
+        Organization, tenant, device, device-key, current certificate, assurance,
+        and operational public key are derived exclusively from the verified active
+        client certificate and persisted identity. Certificates become renewable 48
+        hours before expiry. Cloud atomically inserts the replacement certificate,
+        marks the exact authenticated certificate SUPERSEDED, and appends an audit
+        event. The operational key record is not rotated or replaced.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CertificateRenewalRequest" }
+            example: { request_id: automatic-renewal-20260903T080000Z }
+      responses:
+        "200":
+          description: A replacement certificate for the same device and operational key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CertificateRenewalResponse" }
+        "400":
+          description: Request id is invalid.
+          content: { application/json: { schema: { $ref: "#/components/schemas/DeviceProblem" } } }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "409":
+          description: Certificate is not yet renewable or changed during renewal.
+          content: { application/json: { schema: { $ref: "#/components/schemas/DeviceProblem" } } }
+        "422": { $ref: "#/components/responses/UnprocessableJson" }
+        "503":
+          description: Certificate renewal could not be completed atomically.
+          content: { application/json: { schema: { $ref: "#/components/schemas/DeviceProblem" } } }
   /v1/access-grants:
     post:
       tags: [Grants]
@@ -1578,6 +1614,24 @@ components:
         certificate_chain_pem: { type: string }
         not_after: { type: string, format: date-time }
         replayed: { type: boolean }
+    CertificateRenewalRequest:
+      type: object
+      additionalProperties: false
+      required: [request_id]
+      properties:
+        request_id:
+          type: string
+          minLength: 1
+          maxLength: 120
+          pattern: '^[A-Za-z0-9._:-]+$'
+    CertificateRenewalResponse:
+      type: object
+      additionalProperties: false
+      required: [certificate_der, certificate_chain_pem, not_after]
+      properties:
+        certificate_der: { type: string, contentEncoding: base64 }
+        certificate_chain_pem: { type: string }
+        not_after: { type: string, format: date-time }
     GrantRequest:
       type: object
       additionalProperties: false

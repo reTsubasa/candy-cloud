@@ -18,6 +18,7 @@ forwarding:
 | `/api/v1/tenants/...` | `cloud-api:8080/v1/tenants/...` | EdDSA management bearer JWT |
 | `/identity/v1/auth/...` | `cloud-identity:8082/v1/auth/...` | Candy Cloud human account identity |
 | `/auth/v1/enrollment/...` | `cloud-auth:8081/v1/enrollment/...` | single-use node join code, then key proof |
+| `/auth/v1/device-certificates/renew` | `cloud-auth:8081/v1/device-certificates/renew` | Candy Device CA mTLS |
 | `/auth/v1/access-grants` | `cloud-auth:8081/v1/access-grants` | Candy Device CA mTLS |
 | `/auth/v1/runtime/...` | `cloud-auth:8081/v1/runtime/...` | Candy Device CA mTLS |
 
@@ -162,6 +163,18 @@ The fixed binary request fields use base64url without padding. Certificate DER
 uses standard base64. Runtime must reuse the same request id after timeout or a
 lost response. It must not start a second enrollment with new keys until it has
 proved that the original transaction cannot be recovered.
+
+An enrolled device renews its certificate through
+`POST /auth/v1/device-certificates/renew` during the final 48 hours of the
+seven-day certificate lifetime. The only request field is a bounded request
+id. Organization, tenant, device, device-key, current certificate, assurance,
+and operational public key come exclusively from the verified active mTLS
+certificate and the persisted identity. Cloud reuses the operational public
+key and atomically inserts the replacement certificate, marks the exact old
+certificate `SUPERSEDED`, and writes `DEVICE_CERTIFICATE_RENEWED` audit data.
+The device key row is unchanged. Stable failures are
+`invalid_certificate_renewal_request`, `certificate_renewal_not_due`,
+`device_certificate_changed`, and `certificate_renewal_unavailable`.
 
 ## Grant issuance
 

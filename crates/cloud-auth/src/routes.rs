@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::certificate_renewal::{
+    CertificateRenewalCommand, CertificateRenewalCoordinator, CertificateRenewalError,
+    CertificateRenewalReceipt,
+};
 use crate::device_identity::{DeviceIdentityAuthenticator, DeviceIdentityError};
 use crate::domain::{
     DeviceEnrollment, DomainError, GrantRequest, ServiceClass, MAX_REQUEST_ID_LEN,
@@ -73,6 +77,7 @@ pub enum AuthContextError {
     InvalidSubject,
     InvalidDevice,
     InvalidDeviceKey,
+    InvalidDeviceCertificate,
     InvalidAssuranceLevel,
 }
 
@@ -97,6 +102,7 @@ pub struct AuthenticatedDevice {
     tenant_id: Uuid,
     device_id: Uuid,
     device_key_id: Uuid,
+    certificate_id: Uuid,
     assurance_level: u64,
 }
 
@@ -106,6 +112,7 @@ impl AuthenticatedDevice {
         tenant_id: Uuid,
         device_id: Uuid,
         device_key_id: Uuid,
+        certificate_id: Uuid,
         assurance_level: u64,
     ) -> Result<Self, AuthContextError> {
         if organization_id.is_nil() {
@@ -120,6 +127,9 @@ impl AuthenticatedDevice {
         if device_key_id.is_nil() {
             return Err(AuthContextError::InvalidDeviceKey);
         }
+        if certificate_id.is_nil() {
+            return Err(AuthContextError::InvalidDeviceCertificate);
+        }
         if assurance_level > 3 {
             return Err(AuthContextError::InvalidAssuranceLevel);
         }
@@ -128,6 +138,7 @@ impl AuthenticatedDevice {
             tenant_id,
             device_id,
             device_key_id,
+            certificate_id,
             assurance_level,
         })
     }
@@ -146,6 +157,10 @@ impl AuthenticatedDevice {
 
     pub const fn device_key_id(&self) -> Uuid {
         self.device_key_id
+    }
+
+    pub const fn certificate_id(&self) -> Uuid {
+        self.certificate_id
     }
 
     pub const fn assurance_level(&self) -> u64 {
@@ -510,6 +525,22 @@ pub trait EnrollmentHttpService: Send + Sync + 'static {
     ) -> ServiceFuture<'_, Result<EnrollmentCompleteReceipt, EnrollmentCoordinatorError>>;
 }
 
+pub trait CertificateRenewalHttpService: Send + Sync + 'static {
+    fn renew_certificate(
+        &self,
+        command: CertificateRenewalCommand,
+    ) -> ServiceFuture<'_, Result<CertificateRenewalReceipt, CertificateRenewalError>>;
+}
+
+impl CertificateRenewalHttpService for CertificateRenewalCoordinator {
+    fn renew_certificate(
+        &self,
+        command: CertificateRenewalCommand,
+    ) -> ServiceFuture<'_, Result<CertificateRenewalReceipt, CertificateRenewalError>> {
+        Box::pin(async move { CertificateRenewalCoordinator::renew(self, command).await })
+    }
+}
+
 impl EnrollmentHttpService for EnrollmentCoordinator {
     fn challenge(
         &self,
@@ -545,6 +576,31 @@ where
     S: TenantAuthService,
 {
     authenticated_app(service).route_layer(middleware::from_fn_with_state(
+        Arc::new(authenticator),
+        require_device_identity,
+    ))
+}
+
+pub fn certificate_renewal_app<S>(service: Arc<S>) -> Router
+where
+    S: CertificateRenewalHttpService,
+{
+    Router::new()
+        .route(
+            "/v1/device-certificates/renew",
+            post(renew_device_certificate::<S>),
+        )
+        .with_state(service)
+}
+
+pub fn device_authenticated_certificate_renewal_app<S>(
+    service: Arc<S>,
+    authenticator: DeviceIdentityAuthenticator,
+) -> Router
+where
+    S: CertificateRenewalHttpService,
+{
+    certificate_renewal_app(service).route_layer(middleware::from_fn_with_state(
         Arc::new(authenticator),
         require_device_identity,
     ))
@@ -859,6 +915,28 @@ where
         certificate_chain_pem: receipt.certificate_chain_pem,
         not_after: receipt.not_after,
         replayed: receipt.replayed,
+    }))
+}
+
+async fn renew_device_certificate<S>(
+    actor: AuthenticatedDevice,
+    State(service): State<Arc<S>>,
+    Json(request): Json<CertificateRenewalHttpRequest>,
+) -> Result<Json<CertificateRenewalHttpResponse>, ApiError>
+where
+    S: CertificateRenewalHttpService,
+{
+    let receipt = service
+        .renew_certificate(CertificateRenewalCommand {
+            actor,
+            request_id: request.request_id,
+        })
+        .await
+        .map_err(ApiError::CertificateRenewal)?;
+    Ok(Json(CertificateRenewalHttpResponse {
+        certificate_der: encode_standard_base64(receipt.certificate_der),
+        certificate_chain_pem: receipt.certificate_chain_pem,
+        not_after: receipt.not_after,
     }))
 }
 
@@ -1548,6 +1626,19 @@ struct EnrollmentCompleteHttpResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CertificateRenewalHttpRequest {
+    request_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CertificateRenewalHttpResponse {
+    certificate_der: String,
+    certificate_chain_pem: String,
+    not_after: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GrantIssueHttpRequest {
     request_id: String,
     node_pool_id: Uuid,
@@ -1845,6 +1936,7 @@ pub enum ApiError {
     InvalidEncoding,
     InvalidRequest(DomainError),
     Enrollment(EnrollmentCoordinatorError),
+    CertificateRenewal(CertificateRenewalError),
     Service(GrantServiceError),
     InvalidRuntimeConfigurationStatus,
     InvalidRuntimeTelemetry,
@@ -1871,6 +1963,20 @@ impl IntoResponse for ApiError {
             Self::Enrollment(EnrollmentCoordinatorError::Unavailable) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
             }
+            Self::CertificateRenewal(CertificateRenewalError::InvalidRequest) => (
+                StatusCode::BAD_REQUEST,
+                "invalid_certificate_renewal_request",
+            ),
+            Self::CertificateRenewal(CertificateRenewalError::NotDue) => {
+                (StatusCode::CONFLICT, "certificate_renewal_not_due")
+            }
+            Self::CertificateRenewal(CertificateRenewalError::IdentityChanged) => {
+                (StatusCode::CONFLICT, "device_certificate_changed")
+            }
+            Self::CertificateRenewal(CertificateRenewalError::Unavailable) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "certificate_renewal_unavailable",
+            ),
             Self::Service(GrantServiceError::Denied) => (StatusCode::FORBIDDEN, "denied"),
             Self::Service(GrantServiceError::Conflict) => (StatusCode::CONFLICT, "conflict"),
             Self::Service(GrantServiceError::Unavailable) => {

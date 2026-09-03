@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Duration, Utc};
 use cloud_db::{
     enrollment::{
@@ -82,15 +84,15 @@ pub enum EnrollmentCoordinatorError {
 pub struct EnrollmentCoordinator {
     challenges: EnrollmentRepository,
     completions: EnrollmentCompletionRepository,
-    certificate_issuer: DeviceCertificateIssuer,
+    certificate_issuer: Arc<DeviceCertificateIssuer>,
 }
 
 impl EnrollmentCoordinator {
-    pub fn new(pool: DbPool, certificate_issuer: DeviceCertificateIssuer) -> Self {
+    pub fn new(pool: DbPool, certificate_issuer: impl Into<Arc<DeviceCertificateIssuer>>) -> Self {
         Self {
             challenges: EnrollmentRepository::new(pool.clone()),
             completions: EnrollmentCompletionRepository::new(pool),
-            certificate_issuer,
+            certificate_issuer: certificate_issuer.into(),
         }
     }
 

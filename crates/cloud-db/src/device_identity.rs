@@ -13,6 +13,7 @@ pub struct DeviceCertificateIdentityRecord {
     pub tenant_id: Uuid,
     pub device_id: Uuid,
     pub device_key_id: Uuid,
+    pub certificate_id: Uuid,
     pub assurance_level: u64,
 }
 
@@ -44,7 +45,7 @@ impl DeviceCertificateIdentityRepository {
             return Err(RepositoryError::InvalidDeviceCertificateScope);
         }
         let row = sqlx::query(
-            "SELECT dc.organization_id, dc.tenant_id, d.id AS device_id, dk.id AS device_key_id, dc.assurance_level FROM device_certificates dc JOIN organizations org ON org.id = dc.organization_id AND org.status = 'ACTIVE' JOIN tenants t ON t.id = dc.tenant_id AND t.organization_id = org.id AND t.status = 'ACTIVE' JOIN devices d ON d.id = dc.device_id AND d.tenant_id = dc.tenant_id JOIN device_keys dk ON dk.id = dc.device_key_id AND dk.device_id = d.id AND dk.tenant_id = dc.tenant_id WHERE d.id = ? AND dk.id = ? AND dc.certificate_der = ? AND dc.environment = ? AND d.status = 'ACTIVE' AND dk.status = 'ACTIVE' AND dc.status = 'ACTIVE' AND dc.not_before <= ? AND dc.not_after > ?",
+            "SELECT dc.organization_id, dc.tenant_id, d.id AS device_id, dk.id AS device_key_id, dc.id AS certificate_id, dc.assurance_level FROM device_certificates dc JOIN organizations org ON org.id = dc.organization_id AND org.status = 'ACTIVE' JOIN tenants t ON t.id = dc.tenant_id AND t.organization_id = org.id AND t.status = 'ACTIVE' JOIN devices d ON d.id = dc.device_id AND d.tenant_id = dc.tenant_id JOIN device_keys dk ON dk.id = dc.device_key_id AND dk.device_id = d.id AND dk.tenant_id = dc.tenant_id WHERE d.id = ? AND dk.id = ? AND dc.certificate_der = ? AND dc.environment = ? AND d.status = 'ACTIVE' AND dk.status = 'ACTIVE' AND dc.status = 'ACTIVE' AND dc.not_before <= ? AND dc.not_after > ?",
         )
         .bind(device_id)
         .bind(device_key_id)
@@ -66,12 +67,14 @@ fn record_from_row(
         tenant_id: row.try_get("tenant_id")?,
         device_id: row.try_get("device_id")?,
         device_key_id: row.try_get("device_key_id")?,
+        certificate_id: row.try_get("certificate_id")?,
         assurance_level: row.try_get("assurance_level")?,
     };
     if record.organization_id.is_nil()
         || record.tenant_id.is_nil()
         || record.device_id.is_nil()
         || record.device_key_id.is_nil()
+        || record.certificate_id.is_nil()
         || record.assurance_level > 3
     {
         return Err(RepositoryError::InvalidDeviceCertificateRecord);

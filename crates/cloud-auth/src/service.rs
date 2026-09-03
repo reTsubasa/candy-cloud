@@ -849,8 +849,15 @@ mod tests {
             service_permission: "private.connect".into(),
         };
         let command = GrantIssueCommand {
-            actor: AuthenticatedDevice::new(Uuid::new_v4(), tenant_id, device_id, device_key_id, 2)
-                .unwrap(),
+            actor: AuthenticatedDevice::new(
+                Uuid::new_v4(),
+                tenant_id,
+                device_id,
+                device_key_id,
+                Uuid::new_v4(),
+                2,
+            )
+            .unwrap(),
             request_id: "request-1".into(),
             request,
         };

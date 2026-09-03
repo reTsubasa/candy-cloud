@@ -113,6 +113,7 @@ def main() -> None:
         "/v1/tenants/{tenant_id}/runtime-telemetry": {"get:"},
         "/v1/enrollment/challenges": {"post:"},
         "/v1/enrollment/complete": {"post:"},
+        "/v1/device-certificates/renew": {"post:"},
         "/v1/access-grants": {"post:"},
         "/v1/runtime/capabilities": {"get:"},
         "/v1/runtime/profile": {"get:"},
@@ -266,6 +267,7 @@ def main() -> None:
     for route in [
         "/v1/enrollment/challenges",
         "/v1/enrollment/complete",
+        "/v1/device-certificates/renew",
         "/v1/access-grants",
     ]:
         require(auth_routes, route, "cloud-auth router")

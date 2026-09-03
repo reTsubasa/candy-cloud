@@ -1,3 +1,4 @@
+pub mod certificate_renewal;
 pub mod certificates;
 pub mod db_mapping;
 pub mod device_identity;

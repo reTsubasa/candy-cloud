@@ -67,7 +67,15 @@ fn device_actor(
     device_id: Uuid,
     device_key_id: Uuid,
 ) -> AuthenticatedDevice {
-    AuthenticatedDevice::new(organization_id, tenant_id, device_id, device_key_id, 2).unwrap()
+    AuthenticatedDevice::new(
+        organization_id,
+        tenant_id,
+        device_id,
+        device_key_id,
+        Uuid::new_v4(),
+        2,
+    )
+    .unwrap()
 }
 
 #[derive(Default)]

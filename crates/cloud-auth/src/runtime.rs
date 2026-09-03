@@ -13,8 +13,8 @@ use crate::{
     issuance::IssuerConfig,
     keyring::load_signing_key,
     routes::{
-        bootstrap_app, device_authenticated_app, device_authenticated_runtime_app, enrollment_app,
-        BootstrapHttpService,
+        bootstrap_app, device_authenticated_app, device_authenticated_certificate_renewal_app,
+        device_authenticated_runtime_app, enrollment_app, BootstrapHttpService,
     },
     service::{
         DatabaseRuntimeConfigurationService, DatabaseTenantAuthService, GrantIssuanceCoordinator,
@@ -86,11 +86,11 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
             (None, false)
         }
     };
-    let certificate_issuer = load_device_ca(&config)?;
+    let certificate_issuer = Arc::new(load_device_ca(&config)?);
     let enrollment_repository = cloud_db::enrollment::EnrollmentRepository::new(pool.clone());
     let enrollment = enrollment_app(Arc::new(EnrollmentCoordinator::new(
         pool.clone(),
-        certificate_issuer,
+        certificate_issuer.clone(),
     )));
     let bootstrap_signing_key = load_signing_seed(&config)?;
     let grant_verification_key = crate::routes::RuntimeGrantVerificationKeyDelivery {
@@ -120,6 +120,15 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
         DeviceIdentityAuthenticator::new(pool.clone(), config.environment.clone())
             .map_err(anyhow::Error::msg)?;
     let grants = device_authenticated_app(grant_service, device_authenticator.clone());
+    let certificate_renewal = device_authenticated_certificate_renewal_app(
+        Arc::new(
+            crate::certificate_renewal::CertificateRenewalCoordinator::new(
+                pool.clone(),
+                certificate_issuer,
+            ),
+        ),
+        device_authenticator.clone(),
+    );
     let runtime_configuration = device_authenticated_runtime_app(
         Arc::new(DatabaseRuntimeConfigurationService::new(
             cloud_db::sdwan::SdwanRepository::new(pool.clone()),
@@ -142,6 +151,7 @@ pub async fn build_app(config: CloudAuthConfig) -> Result<Router> {
     Ok(bootstrap
         .merge(enrollment)
         .merge(grants)
+        .merge(certificate_renewal)
         .merge(runtime_configuration)
         .merge(health))
 }

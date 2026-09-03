@@ -67,6 +67,7 @@ impl DeviceIdentityAuthenticator {
             record.tenant_id,
             record.device_id,
             record.device_key_id,
+            record.certificate_id,
             record.assurance_level,
         )
         .map_err(|_| DeviceIdentityError::InvalidCertificate)
