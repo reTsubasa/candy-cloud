@@ -326,6 +326,8 @@ pub struct RuntimeTelemetryCommand {
     pub tx_bps: Option<u64>,
     pub reconnects: Option<u64>,
     pub path_changes: Option<u64>,
+    pub transport_mode: Option<String>,
+    pub runtime_generation: Option<u64>,
     pub paths: Vec<RuntimePathTelemetryCommand>,
     pub local_networks: Option<Vec<RuntimeLocalNetworkTelemetryCommand>>,
 }
@@ -353,6 +355,46 @@ pub struct RuntimePathTelemetryCommand {
     pub tx_bps: Option<u64>,
     pub reconnects: u64,
     pub path_changes: u64,
+    pub transport_mode: Option<String>,
+    pub route_generation: Option<u64>,
+    pub congestion_state: Option<String>,
+    pub stream_count: Option<u32>,
+    pub ready_streams: Option<u32>,
+    pub queue_depth: Option<u64>,
+    pub queue_limit: Option<u64>,
+    pub last_ack_seq: Option<u64>,
+    pub streams: Vec<RuntimeStreamTelemetryCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeStreamTelemetryCommand {
+    pub slot: u16,
+    pub stream_id: u64,
+    pub state: String,
+    pub generation: u64,
+    pub tx_packets: u64,
+    pub rx_packets: u64,
+    pub tx_bytes: u64,
+    pub rx_bytes: u64,
+    pub tx_frames: u64,
+    pub rx_frames: u64,
+    pub active_flows: u64,
+    pub queue_depth: u64,
+    pub queue_limit: u64,
+    pub queue_peak: u64,
+    pub last_ack_seq: Option<u64>,
+    pub ack_rtt_ms: Option<u32>,
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+    pub reset_count: u64,
+    pub decode_errors: u64,
+    pub high_watermark_hits: u64,
+    pub low_watermark_hits: u64,
+    pub blocked_ms: u64,
+    pub send_window_bytes: u64,
+    pub last_tx_monotonic_ms: Option<u64>,
+    pub last_rx_monotonic_ms: Option<u64>,
+    pub last_error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1105,7 +1147,7 @@ where
         || request.paths.iter().any(|path| {
             path.peer_attachment_id.is_nil()
                 || path.candidate_id.is_some_and(|value| value.is_nil())
-                || path.transport != "quic_udp"
+                || path.transport != "quic_stream"
                 || path.connection_epoch == 0
                 || path.packet_loss_ppm.is_some_and(|value| value > 1_000_000)
                 || !peer_attachments.insert(path.peer_attachment_id)
@@ -1153,6 +1195,8 @@ where
             tx_bps: request.tx_bps,
             reconnects: request.reconnects,
             path_changes: request.path_changes,
+            transport_mode: request.transport_mode,
+            runtime_generation: request.runtime_generation,
             paths: request
                 .paths
                 .into_iter()
@@ -1172,6 +1216,43 @@ where
                     tx_bps: path.tx_bps,
                     reconnects: path.reconnects,
                     path_changes: path.path_changes,
+                    transport_mode: path.transport_mode,
+                    route_generation: path.route_generation,
+                    congestion_state: path.congestion_state,
+                    stream_count: path.stream_count,
+                    ready_streams: path.ready_streams,
+                    queue_depth: path.queue_depth,
+                    queue_limit: path.queue_limit,
+                    last_ack_seq: path.last_ack_seq,
+                    streams: path.streams.into_iter().map(|stream| RuntimeStreamTelemetryCommand {
+                        slot: stream.slot,
+                        stream_id: stream.stream_id,
+                        state: stream.state,
+                        generation: stream.generation,
+                        tx_packets: stream.tx_packets,
+                        rx_packets: stream.rx_packets,
+                        tx_bytes: stream.tx_bytes,
+                        rx_bytes: stream.rx_bytes,
+                        tx_frames: stream.tx_frames,
+                        rx_frames: stream.rx_frames,
+                        active_flows: stream.active_flows,
+                        queue_depth: stream.queue_depth,
+                        queue_limit: stream.queue_limit,
+                        queue_peak: stream.queue_peak,
+                        last_ack_seq: stream.last_ack_seq,
+                        ack_rtt_ms: stream.ack_rtt_ms,
+                        rx_bps: stream.rx_bps,
+                        tx_bps: stream.tx_bps,
+                        reset_count: stream.reset_count,
+                        decode_errors: stream.decode_errors,
+                        high_watermark_hits: stream.high_watermark_hits,
+                        low_watermark_hits: stream.low_watermark_hits,
+                        blocked_ms: stream.blocked_ms,
+                        send_window_bytes: stream.send_window_bytes,
+                        last_tx_monotonic_ms: stream.last_tx_monotonic_ms,
+                        last_rx_monotonic_ms: stream.last_rx_monotonic_ms,
+                        last_error_code: stream.last_error_code,
+                    }).collect(),
                 })
                 .collect(),
             local_networks: request.local_networks.map(|networks| {
@@ -1575,6 +1656,10 @@ struct RuntimeTelemetryHttpRequest {
     reconnects: Option<u64>,
     path_changes: Option<u64>,
     #[serde(default)]
+    transport_mode: Option<String>,
+    #[serde(default)]
+    runtime_generation: Option<u64>,
+    #[serde(default)]
     paths: Vec<RuntimePathTelemetryHttpRequest>,
     #[serde(default)]
     local_networks: Option<Vec<RuntimeLocalNetworkTelemetryHttpRequest>>,
@@ -1605,6 +1690,63 @@ struct RuntimePathTelemetryHttpRequest {
     tx_bps: Option<u64>,
     reconnects: u64,
     path_changes: u64,
+    #[serde(default)]
+    transport_mode: Option<String>,
+    #[serde(default)]
+    route_generation: Option<u64>,
+    #[serde(default)]
+    congestion_state: Option<String>,
+    #[serde(default)]
+    stream_count: Option<u32>,
+    #[serde(default)]
+    ready_streams: Option<u32>,
+    #[serde(default)]
+    queue_depth: Option<u64>,
+    #[serde(default)]
+    queue_limit: Option<u64>,
+    #[serde(default)]
+    last_ack_seq: Option<u64>,
+    #[serde(default)]
+    streams: Vec<RuntimeStreamTelemetryHttpRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeStreamTelemetryHttpRequest {
+    slot: u16,
+    stream_id: u64,
+    state: String,
+    generation: u64,
+    tx_packets: u64,
+    rx_packets: u64,
+    tx_bytes: u64,
+    rx_bytes: u64,
+    tx_frames: u64,
+    rx_frames: u64,
+    active_flows: u64,
+    queue_depth: u64,
+    queue_limit: u64,
+    queue_peak: u64,
+    #[serde(default)]
+    last_ack_seq: Option<u64>,
+    #[serde(default)]
+    ack_rtt_ms: Option<u32>,
+    #[serde(default)]
+    rx_bps: Option<u64>,
+    #[serde(default)]
+    tx_bps: Option<u64>,
+    reset_count: u64,
+    decode_errors: u64,
+    high_watermark_hits: u64,
+    low_watermark_hits: u64,
+    blocked_ms: u64,
+    send_window_bytes: u64,
+    #[serde(default)]
+    last_tx_monotonic_ms: Option<u64>,
+    #[serde(default)]
+    last_rx_monotonic_ms: Option<u64>,
+    #[serde(default)]
+    last_error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]

@@ -182,6 +182,8 @@ export type RuntimeTelemetry = {
   tx_bps: number | null;
   reconnects: number | null;
   path_changes: number | null;
+  transport_mode?: 'stream_primary' | string | null;
+  runtime_generation?: number | null;
   paths: RuntimePathTelemetry[];
   local_networks: RuntimeLocalNetworkTelemetry[];
   reported_at: string;
@@ -208,6 +210,45 @@ export type RuntimePathTelemetry = {
   tx_bps: number | null;
   reconnects: number;
   path_changes: number;
+  transport_mode?: 'stream_primary' | string | null;
+  route_generation?: number | null;
+  congestion_state?: string | null;
+  stream_count?: number | null;
+  ready_streams?: number | null;
+  queue_depth?: number | null;
+  queue_limit?: number | null;
+  last_ack_seq?: number | null;
+  streams?: RuntimeStreamTelemetry[];
+};
+
+export type RuntimeStreamTelemetry = {
+  slot: number;
+  stream_id: number;
+  state: string;
+  generation: number;
+  tx_packets: number;
+  rx_packets: number;
+  tx_bytes: number;
+  rx_bytes: number;
+  tx_frames: number;
+  rx_frames: number;
+  active_flows: number;
+  queue_depth: number;
+  queue_limit: number;
+  queue_peak: number;
+  last_ack_seq: number | null;
+  ack_rtt_ms: number | null;
+  rx_bps: number | null;
+  tx_bps: number | null;
+  reset_count: number;
+  decode_errors: number;
+  high_watermark_hits: number;
+  low_watermark_hits: number;
+  blocked_ms: number;
+  send_window_bytes: number;
+  last_tx_monotonic_ms: number | null;
+  last_rx_monotonic_ms: number | null;
+  last_error_code: string | null;
 };
 
 export type RuntimeTelemetryResponse = {

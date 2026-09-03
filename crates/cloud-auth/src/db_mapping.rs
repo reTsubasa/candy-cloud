@@ -208,7 +208,7 @@ mod tests {
     fn production_projection_record_issues_core_tun_permission() {
         let mut value = record();
         value.service_permission = "private.tun.connect".into();
-        value.quota_json = r#"{"allowed_features":1025,"max_outer_connections_per_node":2,"max_outer_connections_per_pool":4,"max_active_sessions_per_connection":128,"max_udp_flows_per_connection":256,"max_pending_opens":32,"max_speculative_streams":8,"max_datagram_record":1200,"upload_rate_bps":10000000,"download_rate_bps":20000000}"#.into();
+        value.quota_json = r#"{"allowed_features":9217,"max_outer_connections_per_node":2,"max_outer_connections_per_pool":4,"max_active_sessions_per_connection":128,"max_udp_flows_per_connection":256,"max_pending_opens":32,"max_speculative_streams":8,"max_datagram_record":1200,"upload_rate_bps":10000000,"download_rate_bps":20000000}"#.into();
         let projection_id = Uuid::new_v4();
         let projection_content_hash = vec![0x71; 32];
         value.route_policy = Some(cloud_db::authorization::AuthorizationRoutePolicy {

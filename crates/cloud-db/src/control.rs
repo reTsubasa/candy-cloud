@@ -139,6 +139,8 @@ pub struct RuntimeTelemetryRecord {
     pub tx_bps: Option<u64>,
     pub reconnects: Option<u64>,
     pub path_changes: Option<u64>,
+    pub transport_mode: Option<String>,
+    pub runtime_generation: Option<u64>,
     pub paths: Vec<RuntimePathTelemetryWrite>,
     pub local_networks: Vec<RuntimeLocalNetworkTelemetryWrite>,
     pub reported_at: DateTime<Utc>,
@@ -510,7 +512,7 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, CAST(paths_json AS CHAR) AS paths_json, CAST(local_networks_json AS CHAR) AS local_networks_json, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
+            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, CAST(paths_json AS CHAR) AS paths_json, CAST(local_networks_json AS CHAR) AS local_networks_json, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -554,6 +556,8 @@ impl ControlRepository {
                     tx_bps: row.try_get("tx_bps")?,
                     reconnects: row.try_get("reconnects")?,
                     path_changes: row.try_get("path_changes")?,
+                    transport_mode: row.try_get("transport_mode")?,
+                    runtime_generation: row.try_get("runtime_generation")?,
                     paths,
                     local_networks,
                     reported_at: row.try_get("reported_at")?,

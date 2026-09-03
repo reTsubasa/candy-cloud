@@ -372,6 +372,8 @@ pub struct RuntimeTelemetryWrite {
     pub tx_bps: Option<u64>,
     pub reconnects: Option<u64>,
     pub path_changes: Option<u64>,
+    pub transport_mode: Option<String>,
+    pub runtime_generation: Option<u64>,
     pub paths: Vec<RuntimePathTelemetryWrite>,
     pub local_networks: Option<Vec<RuntimeLocalNetworkTelemetryWrite>>,
 }
@@ -399,6 +401,55 @@ pub struct RuntimePathTelemetryWrite {
     pub tx_bps: Option<u64>,
     pub reconnects: u64,
     pub path_changes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub congestion_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready_streams: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_depth: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_limit: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_ack_seq: Option<u64>,
+    #[serde(default)]
+    pub streams: Vec<RuntimeStreamTelemetryWrite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeStreamTelemetryWrite {
+    pub slot: u16,
+    pub stream_id: u64,
+    pub state: String,
+    pub generation: u64,
+    pub tx_packets: u64,
+    pub rx_packets: u64,
+    pub tx_bytes: u64,
+    pub rx_bytes: u64,
+    pub tx_frames: u64,
+    pub rx_frames: u64,
+    pub active_flows: u64,
+    pub queue_depth: u64,
+    pub queue_limit: u64,
+    pub queue_peak: u64,
+    pub last_ack_seq: Option<u64>,
+    pub ack_rtt_ms: Option<u32>,
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+    pub reset_count: u64,
+    pub decode_errors: u64,
+    pub high_watermark_hits: u64,
+    pub low_watermark_hits: u64,
+    pub blocked_ms: u64,
+    pub send_window_bytes: u64,
+    pub last_tx_monotonic_ms: Option<u64>,
+    pub last_rx_monotonic_ms: Option<u64>,
+    pub last_error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -451,7 +502,7 @@ impl RuntimeTelemetryWrite {
         if self.paths.iter().any(|path| {
             path.peer_attachment_id.is_nil()
                 || path.candidate_id.is_some_and(|value| value.is_nil())
-                || path.transport != "quic_udp"
+                || path.transport != "quic_stream"
                 || path.connection_epoch == 0
                 || path.packet_loss_ppm.is_some_and(|value| value > 1_000_000)
                 || !peer_attachments.insert(path.peer_attachment_id)
@@ -1408,7 +1459,7 @@ impl SdwanRepository {
             serde_json::to_string(telemetry.local_networks.as_deref().unwrap_or(&[]))
                 .map_err(|_| RuntimeConfigurationError::InvalidScope)?;
         sqlx::query(
-            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, paths_json, local_networks_json, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), IF(? = 1, CAST(? AS JSON), JSON_ARRAY()), ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), last_error_detail = VALUES(last_error_detail), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), paths_json = VALUES(paths_json), local_networks_json = IF(? = 1, VALUES(local_networks_json), local_networks_json), reported_at = VALUES(reported_at)",
+            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, paths_json, local_networks_json, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), IF(? = 1, CAST(? AS JSON), JSON_ARRAY()), ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), last_error_detail = VALUES(last_error_detail), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), transport_mode = VALUES(transport_mode), runtime_generation = VALUES(runtime_generation), paths_json = VALUES(paths_json), local_networks_json = IF(? = 1, VALUES(local_networks_json), local_networks_json), reported_at = VALUES(reported_at)",
         )
         .bind(telemetry.lookup.tenant_id)
         .bind(telemetry.lookup.device_id)
@@ -1430,6 +1481,8 @@ impl SdwanRepository {
         .bind(telemetry.tx_bps)
         .bind(telemetry.reconnects)
         .bind(telemetry.path_changes)
+        .bind(telemetry.transport_mode.as_deref())
+        .bind(telemetry.runtime_generation)
         .bind(paths_json)
         .bind(local_networks_present)
         .bind(local_networks_json)
