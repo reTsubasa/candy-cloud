@@ -60,6 +60,7 @@ describe('operational status boundaries', () => {
       activeDirectionCount: 1,
       missingDirectionLabels: ['香港 -> 美国'],
     }).detail).toBe('香港 -> 美国 未建立；检查发起端策略、认证日志和公网 UDP 端点');
+    expect(linkOperationalStatus({ ...configured, endpointOffline: true, configurationFailed: true })).toMatchObject({ code: 'endpoint_offline', tone: 'gray' });
   });
 
   it.each([
@@ -79,6 +80,7 @@ describe('operational status boundaries', () => {
 
   it.each([
     ['not_configured', { configuredPathCount: 0 }, 'orange'],
+    ['endpoint_offline', { endpointOffline: true }, 'gray'],
     ['policy_updating', { policyUpdating: true }, 'orange'],
     ['authenticating', {}, 'orange'],
     ['one_way', { activeDirectionCount: 1 }, 'orange'],
@@ -96,5 +98,9 @@ describe('operational status boundaries', () => {
       endpointFailed: false,
       ...overrides,
     })).toMatchObject({ code, tone });
+  });
+
+  it('lets endpoint offline override an unconfigured or failed line', () => {
+    expect(linkOperationalStatus({ configuredPathCount: 0, activeDirectionCount: 0, staleDirectionCount: 0, policyUpdating: false, configurationFailed: true, endpointFailed: true, endpointOffline: true })).toMatchObject({ code: 'endpoint_offline', tone: 'gray' });
   });
 });

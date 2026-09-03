@@ -142,8 +142,8 @@ describe('operational topology', () => {
 
   it('does not present a configured path as active before readiness', () => {
     const snapshot = buildOperationalTopology(fixture(), [], {}, 'segment');
-    expect(snapshot.links[0].state).toBe('authenticating');
-    expect(snapshot.links[0].status.tone).toBe('orange');
+    expect(snapshot.links[0].state).toBe('endpoint_offline');
+    expect(snapshot.links[0].status.tone).toBe('gray');
     expect(snapshot.readinessLabel).toBe('等待 Cloud 生成配置');
   });
 
@@ -275,8 +275,8 @@ describe('operational topology', () => {
     expect(snapshot.telemetryCoverageCount).toBe(1);
     expect(snapshot.activeLinkCount).toBe(0);
     expect(snapshot.links[0].activeDirectionCount).toBe(1);
-    expect(snapshot.links[0]).toMatchObject({ siteAName: '上海', siteBName: '东京', state: 'one_way' });
-    expect(snapshot.links[0].status.detail).toBe('东京 -> 上海 未建立；检查发起端策略、认证日志和公网 UDP 端点');
+    expect(snapshot.links[0]).toMatchObject({ siteAName: '上海', siteBName: '东京', state: 'endpoint_offline' });
+    expect(snapshot.links[0].status.detail).toContain('线路随站点状态置灰');
     expect(snapshot.links[0].activePathCount).toBe(1);
     expect(snapshot.links[0].activePaths[0].sourceSiteId).toBe('site-a');
     expect(snapshot.links[0].activePaths[0].destinationSiteId).toBe('site-b');
@@ -284,6 +284,14 @@ describe('operational topology', () => {
     expect(snapshot.averageRttMs).toBe(42);
     expect(snapshot.averagePacketLossPpm).toBe(12_500);
     expect(snapshot.rxBps).toBe(20_000_000);
+  });
+
+  it('propagates an offline site to its control and data-plane link state', () => {
+    const now = Date.parse('2026-08-18T10:00:00Z');
+    const online = fixture();
+    const snapshot = buildOperationalTopology(online, [configurationStatus('a'), configurationStatus('b')], {}, 'segment', [], 90, now);
+    expect(snapshot.sites.every((site) => site.status.tone === 'gray')).toBe(true);
+    expect(snapshot.links[0].status).toMatchObject({ code: 'endpoint_offline', tone: 'gray' });
   });
 
   it('marks a link active only with fresh telemetry in both endpoint directions', () => {
@@ -335,7 +343,7 @@ describe('operational topology', () => {
       attachments: [...resources.attachments, thirdAttachment],
     }, [configurationStatus('a'), configurationStatus('b')], {}, 'segment', [telemetry], 90, Date.parse('2026-08-18T10:00:00Z'));
     expect(snapshot.links[0].activePathCount).toBe(0);
-    expect(snapshot.links[0].state).toBe('authenticating');
+    expect(snapshot.links[0].state).toBe('endpoint_offline');
   });
 
   it('binds the three-site field telemetry to the correct peer endpoints', () => {

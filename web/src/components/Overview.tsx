@@ -289,21 +289,24 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
   const height = siteBottom + 42 + linkLaneCount * linkLaneGap + 32;
   const siteX = (index: number) => siteCount <= 1 ? center : 100 + index * ((width - 200) / (siteCount - 1));
   const siteById = Object.fromEntries(snapshot.sites.map((site, index) => [site.id, { ...site, x: siteX(index) }]));
+  const allSitesOffline = snapshot.sites.length > 0 && snapshot.sites.every((site) => site.status.tone === 'gray');
+  const controlLinkTone = !controlReady ? 'red' : allSitesOffline ? 'gray' : snapshot.readiness?.ready ? 'green' : 'orange';
+  const segmentTone = !controlReady ? 'red' : allSitesOffline ? 'gray' : snapshot.readiness?.ready ? 'green' : 'orange';
   return <><div className="topology-canvas" aria-label="SD-WAN 运行拓扑">
     <svg viewBox={`0 0 ${width} ${height}`} role="img" style={{ minWidth: width, height }}>
       <g className={`topology-control-node ${controlReady ? 'ok' : 'error'}`} transform={`translate(${center - 98} 20)`}>
         <rect width="196" height="48" rx="6" /><circle cx="20" cy="24" r="5" /><text x="34" y="21">Candy Cloud</text><text className="sub" x="34" y="36">控制面 · {controlReady ? '正常' : '异常'}</text>
       </g>
       {!aggregate && <>
-        <line className="topology-control-link" x1={center} y1="68" x2={center} y2="92" />
-        <g className={`topology-segment-node ${snapshot.readiness?.ready ? 'ok' : 'warn'}`} transform={`translate(${center - 120} 92)`}>
+        <line className={`topology-control-link tone-${controlLinkTone}`} x1={center} y1="68" x2={center} y2="92" />
+        <g className={`topology-segment-node tone-${segmentTone}`} transform={`translate(${center - 120} 92)`}>
           <rect width="240" height="58" rx="7" /><text x="120" y="24" textAnchor="middle">{ellipsis(snapshot.segment?.name ?? '网络分段', 24)}</text><text className="sub" x="120" y="42" textAnchor="middle">{snapshot.segment?.overlayCidr} · {snapshot.readinessLabel}</text>
         </g>
       </>}
       {snapshot.sites.map((site, index) => {
         const x = siteX(index);
         return <g key={site.id}>
-          <path className="topology-site-link" d={aggregate
+          <path className={`topology-site-link tone-${site.status.tone}`} d={aggregate
             ? `M ${center} 68 C ${center} 105, ${x} 105, ${x} ${siteY}`
             : `M ${center} 150 C ${center} 174, ${x} 166, ${x} ${siteY}`} />
           <g className={`topology-site-node ${site.status.tone === 'green' ? 'ok' : site.status.tone === 'orange' ? 'pending' : site.status.tone === 'red' ? 'error' : 'neutral'}`} transform={`translate(${x - 90} ${siteY})`}>

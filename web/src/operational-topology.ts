@@ -338,6 +338,9 @@ export function buildOperationalTopology(
       const configurationFailed = peerReadiness?.reason_codes.includes('node_apply_failed') === true
         || rejectedNodes.length > 0;
       const endpointFailed = failedEndpointLabels.length > 0;
+      const endpointOffline = endpointNodes.some((siteNodes) => (
+        siteNodes.length === 0 || siteNodes.every((node) => node.telemetryState !== 'online')
+      ));
       const policyUpdating = !configurationFailed && (
         peerReadiness?.reason_codes.some((code) => code === 'config_pending' || code === 'node_apply_pending') === true
         || endpointNodes.some((siteNodes) => siteNodes.some((node) => node.applyState === 'pending'))
@@ -348,6 +351,7 @@ export function buildOperationalTopology(
       ];
       const operationalStatus = linkOperationalStatus({
         configuredPathCount: paths.length,
+        endpointOffline,
         activeDirectionCount,
         staleDirectionCount,
         policyUpdating,

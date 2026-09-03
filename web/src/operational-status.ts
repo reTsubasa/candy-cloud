@@ -22,6 +22,7 @@ export type NodeOperationalCode =
 
 export type LinkOperationalCode =
   | 'not_configured'
+  | 'endpoint_offline'
   | 'policy_updating'
   | 'authenticating'
   | 'one_way'
@@ -48,6 +49,7 @@ export type NodeOperationalInput = {
 
 export type LinkOperationalInput = {
   configuredPathCount: number;
+  endpointOffline?: boolean;
   activeDirectionCount: number;
   staleDirectionCount: number;
   policyUpdating: boolean;
@@ -73,9 +75,10 @@ export const SITE_STATUS_BOUNDARIES = [
 ];
 
 export const LINK_STATUS_BOUNDARIES = [
+  { tone: 'gray' as const, label: '灰色', detail: '任一端站点没有在线节点；线路随端点状态置灰。' },
   { tone: 'green' as const, label: '绿色', detail: '两端均有新鲜的已协商认证路径遥测，双向数据面成立。' },
   { tone: 'orange' as const, label: '黄色', detail: '仅完成配置、正在更新/认证、只有单向成立，或链路遥测已过期。' },
-  { tone: 'red' as const, label: '红色', detail: '配置应用失败，或至少一端没有可工作的节点。' },
+  { tone: 'red' as const, label: '红色', detail: '两端仍有在线节点，但配置应用或数据面明确故障。' },
 ];
 
 export function nodeOperationalStatus(input: NodeOperationalInput): OperationalStatus<NodeOperationalCode> {
@@ -101,6 +104,7 @@ export function nodeOperationalStatus(input: NodeOperationalInput): OperationalS
 }
 
 export function linkOperationalStatus(input: LinkOperationalInput): OperationalStatus<LinkOperationalCode> {
+  if (input.endpointOffline) return { code: 'endpoint_offline', label: '端点离线', detail: '至少一个端点站点没有在线节点，线路随站点状态置灰', tone: 'gray' };
   if (input.configuredPathCount === 0) return { code: 'not_configured', label: '线路未配置', detail: '互联关系已建立，但尚未设置候选线路', tone: 'orange' };
   if (input.configurationFailed) return { code: 'configuration_failed', label: '配置失败', detail: input.failedEndpointLabels?.length ? `${input.failedEndpointLabels.join('、')}拒绝了当前互联策略` : '至少一个端点拒绝了当前互联策略', tone: 'red' };
   if (input.endpointFailed) return { code: 'endpoint_failed', label: '端点故障', detail: input.failedEndpointLabels?.length ? `${input.failedEndpointLabels.join('、')}没有可工作的节点` : '至少一端没有可工作的节点', tone: 'red' };
