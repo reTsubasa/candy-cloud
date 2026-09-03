@@ -66,9 +66,9 @@ export const NODE_STATUS_BOUNDARIES = [
 ];
 
 export const SITE_STATUS_BOUNDARIES = [
-  { tone: 'gray' as const, label: '灰色', detail: '站点没有在线节点，且当前没有配置切换或明确故障。' },
+  { tone: 'gray' as const, label: '灰色', detail: '站点没有在线节点；已认证但未上线、遥测中断或全体离线都显示灰色。' },
   { tone: 'green' as const, label: '绿色', detail: '站点内已认证节点均在线且 Runtime 稳定；Lane 状态不影响站点颜色。' },
-  { tone: 'orange' as const, label: '橙色', detail: '站点至少有一个节点正在注册、启动或应用策略。' },
+  { tone: 'orange' as const, label: '橙色', detail: '站点存在节点状态变化，或仅部分节点在线；全体离线不使用橙色。' },
   { tone: 'red' as const, label: '红色', detail: '站点至少有一个节点拒绝配置或 Runtime 明确异常。' },
 ];
 

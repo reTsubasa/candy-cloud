@@ -5,7 +5,6 @@ import {
   type LinkOperationalCode,
   type NodeOperationalCode,
   type OperationalStatus,
-  type OperationalTone,
 } from './operational-status';
 
 export type OperationalResourceKey = 'sites' | 'nodes' | 'segments' | 'attachments' | 'prefixes' | 'peers' | 'paths' | 'egress' | 'policies' | 'dns' | 'relays';
@@ -144,13 +143,19 @@ function readinessLabel(readiness: RuntimeActivationReadiness | null): string {
 
 function siteOperationalStatus(nodes: OperationalNode[]): OperationalSite['status'] {
   if (nodes.length === 0) return { code: 'empty', label: '暂无节点', detail: '站点尚未配置节点', tone: 'gray' };
-  const severity: Record<OperationalTone, number> = { gray: 0, green: 1, orange: 2, red: 3 };
-  const worst = nodes.reduce<OperationalNode | null>((current, node) => (
-    !current || severity[node.status.tone] > severity[current.status.tone] ? node : current
-  ), null);
-  if (!worst || worst.status.tone === 'gray') return { code: 'unregistered', label: '离线', detail: '站点当前没有在线节点', tone: 'gray' };
-  if (worst.status.tone === 'red') return { code: 'fault', label: '节点故障', detail: worst.status.detail, tone: 'red' };
-  if (worst.status.tone === 'orange') return { code: 'warning', label: '节点未就绪', detail: worst.status.detail, tone: 'orange' };
+  const fault = nodes.find((node) => node.status.tone === 'red');
+  if (fault) return { code: 'fault', label: '节点故障', detail: fault.status.detail, tone: 'red' };
+
+  // A site is gray when no node is currently online. Registration or a pending
+  // configuration does not make an offline site operationally orange.
+  const onlineNodes = nodes.filter((node) => node.telemetryState === 'online');
+  if (onlineNodes.length === 0) return { code: 'unregistered', label: '离线', detail: '站点当前没有在线节点', tone: 'gray' };
+
+  const transition = nodes.find((node) => node.status.tone === 'orange');
+  if (transition) return { code: 'warning', label: '状态变化', detail: transition.status.detail, tone: 'orange' };
+  if (onlineNodes.length !== nodes.length) {
+    return { code: 'warning', label: '部分在线', detail: `${onlineNodes.length}/${nodes.length} 个节点在线，其余节点当前离线`, tone: 'orange' };
+  }
   return { code: 'healthy', label: '节点在线', detail: '站点内已认证节点均在线且 Runtime 稳定', tone: 'green' };
 }
 

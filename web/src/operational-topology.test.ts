@@ -196,6 +196,35 @@ describe('operational topology', () => {
     expect(site?.status).toMatchObject({ tone: 'gray', code: 'unregistered' });
   });
 
+  it('keeps a site gray when every authenticated node is offline, including pending nodes', () => {
+    const resources = fixture();
+    const snapshot = buildOperationalTopology(resources, [{
+      device_id: 'device-a',
+      device_key_id: 'key-a',
+      projection_publication_id: 'projection',
+      state: 'active',
+      error_code: null,
+      reported_at: '2026-08-18T00:00:00Z',
+      current: false,
+    }], {}, 'segment', [], 90, Date.parse('2026-08-18T10:00:00Z'));
+    const site = snapshot.sites.find((item) => item.id === 'site-a');
+    expect(site?.status).toMatchObject({ tone: 'gray', code: 'unregistered', label: '离线' });
+  });
+
+  it('marks a mixed online and offline site orange instead of green', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    const extraNode = resource('node-a-offline', 'NODE', {
+      display_name: '东京备用网关', site_id: threeSiteIds.sites.wrt,
+      device_id: 'device-a-offline', device_key_id: 'key-a-offline',
+    });
+    const extraAttachment = resource('attachment-a-offline', 'ATTACHMENT', {
+      segment_id: threeSiteIds.segment, site_id: threeSiteIds.sites.wrt, node_id: extraNode.metadata.id,
+    });
+    const snapshot = buildOperationalTopology({ ...resources, nodes: [...resources.nodes, extraNode], attachments: [...resources.attachments, extraAttachment] }, [], {}, threeSiteIds.segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    const site = snapshot.sites.find((item) => item.id === threeSiteIds.sites.wrt);
+    expect(site?.status).toMatchObject({ tone: 'orange', code: 'warning', label: '部分在线' });
+  });
+
   it('keeps the default topology global instead of selecting one segment', () => {
     const secondSegment = resource('segment-2', 'SEGMENT', { name: '办公网络', overlay_prefix: { network: '100.65.0.0', prefix_len: 24 } });
     const secondSite = resource('site-c', 'SITE', { name: '深圳', kind: 'EDGE' });
