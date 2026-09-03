@@ -138,7 +138,7 @@ pub enum PrepareGrantError {
     MissingRoutePolicy,
     #[error("TUN Grant route projection does not match the authorization snapshot")]
     RoutePolicyMismatch,
-    #[error("TUN Grant quota lacks DATAGRAM or IP packet tunnel features")]
+    #[error("TUN Grant quota lacks reliable IP packet stream and IP packet tunnel features")]
     MissingTunnelFeatures,
     #[error("Grant signing failed")]
     Signing(#[from] GrantIssueError),
