@@ -379,6 +379,8 @@ pub struct RuntimeTelemetryWrite {
     pub local_networks: Option<Vec<RuntimeLocalNetworkTelemetryWrite>>,
 }
 
+type PreviousRuntimeTelemetry = (Uuid, u64, String, Option<String>, bool, Option<String>);
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeLocalNetworkTelemetryWrite {
     pub network_id: String,
@@ -1604,7 +1606,7 @@ impl SdwanRepository {
                 }
             }
         }
-        let current: Option<(Uuid, u64, String, Option<String>, bool, Option<String>)> = sqlx::query_as(
+        let current: Option<PreviousRuntimeTelemetry> = sqlx::query_as(
             "SELECT boot_id, sequence, lifecycle, dataplane_phase, fail_open_required, last_error_code FROM runtime_telemetry_latest WHERE tenant_id = ? AND device_id = ? AND device_key_id = ? FOR UPDATE",
         )
         .bind(telemetry.lookup.tenant_id)
