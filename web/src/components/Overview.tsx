@@ -243,6 +243,9 @@ export function Overview({ session, onOpenLogs }: Props) {
             </section>
             <section>
               <header><strong>数据面遥测</strong><Tag color={topology.onlineNodeCount > 0 ? 'green' : 'gray'}>{topology.onlineNodeCount > 0 ? `${topology.onlineNodeCount} 个节点在线` : '无新鲜上报'}</Tag></header>
+              {topology.nodes.filter((node) => node.telemetry?.dataplane_phase).length > 0 && <div className="dataplane-phase-list">
+                {topology.nodes.filter((node) => node.telemetry?.dataplane_phase).map((node) => <div key={node.id}><span>{node.name}</span><strong>{dataplanePhaseLabel(node.telemetry?.dataplane_phase ?? null)}</strong></div>)}
+              </div>}
               <div className="telemetry-grid">
                 <div><span>往返时延</span><strong>{formatMetric(topology.averageRttMs, ' ms')}</strong></div>
                 <div><span>丢包</span><strong>{topology.averagePacketLossPpm === null ? '—' : `${(topology.averagePacketLossPpm / 10_000).toFixed(2)}%`}</strong></div>
@@ -264,6 +267,17 @@ export function Overview({ session, onOpenLogs }: Props) {
       <QuickSetupWizard visible={setupVisible} session={session} onClose={() => { setSetupVisible(false); void load(); }} onChanged={() => void load()} />
     </section>
   );
+}
+
+function dataplanePhaseLabel(phase: string | null): string {
+  const labels: Record<string, string> = {
+    control_received: '已接收控制配置', control_verified: '控制配置已校验', config_compiled: '配置已编译',
+    netd_prepared: '主机网络已准备', core_policy_staged: 'Core 策略已暂存', peer_connecting: 'Peer 连接中',
+    peer_authenticated: 'Peer 已认证', stream_opening: 'Stream 建立中', stream_ready: 'Stream 已就绪',
+    route_owners_ready: '路由 owner 已就绪', steering_committed: '流量接管已提交', data_plane_active: '数据面运行中',
+    degraded: '数据面已降级', recovering: '数据面恢复中', failed: '数据面故障', stopping: '停止中', stopped: '已停止',
+  };
+  return phase ? labels[phase] ?? phase : '未上报';
 }
 
 function StatusMetric({ icon, label, value, detail, tone }: { icon: React.ReactNode; label: string; value: string; detail: string; tone: 'ok' | 'warn' | 'error' | 'neutral' }) {

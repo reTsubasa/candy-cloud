@@ -368,6 +368,7 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                         RuntimeLifecycle::Stopped => DbRuntimeLifecycle::Stopped,
                         RuntimeLifecycle::Unknown => DbRuntimeLifecycle::Unknown,
                     },
+                    dataplane_phase: command.dataplane_phase,
                     configured_peers: command.configured_peers,
                     active_peers: command.active_peers,
                     required_route_owners: command.required_route_owners,

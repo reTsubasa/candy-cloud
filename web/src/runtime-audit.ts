@@ -33,6 +33,11 @@ export function runtimeAuditEventDescription(
     const lifecycle = typeof metadata.lifecycle === 'string' ? metadata.lifecycle : '异常';
     return appendRuntimeErrorDetail(`${runtimeFailureDetail(metadata.error_code, counters, `Runtime 状态：${lifecycle}`)}。`, metadata);
   }
+  if (action === 'RUNTIME_DATAPLANE_PHASE_CHANGED') {
+    const phase = typeof metadata.dataplane_phase === 'string' ? metadata.dataplane_phase : '未知阶段';
+    const previous = typeof metadata.previous_dataplane_phase === 'string' ? metadata.previous_dataplane_phase : null;
+    return appendRuntimeErrorDetail(`数据面阶段：${previous ? `${previous} → ` : ''}${phase}`, metadata);
+  }
   if (action === 'RUNTIME_FAIL_OPEN_RECOVERED' || action === 'RUNTIME_LIFECYCLE_RECOVERED') {
     const previousReason = runtimeErrorReason(metadata.previous_error_code);
     return `${recoveredDetail ?? 'Runtime 已恢复运行。'}${previousReason ? ` 恢复前原因：${previousReason}。` : ''}`;

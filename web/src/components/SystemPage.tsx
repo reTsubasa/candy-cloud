@@ -77,6 +77,7 @@ const eventLabels: Record<string, { title: string; detail: string }> = {
   RUNTIME_FAIL_OPEN_RECOVERED: { title: '节点已恢复 SD-WAN 转发', detail: 'SD-WAN 数据面和路由已恢复运行。' },
   RUNTIME_LIFECYCLE_DEGRADED: { title: '节点运行状态异常', detail: 'Runtime 上报了停止、启动中或降级状态。' },
   RUNTIME_LIFECYCLE_RECOVERED: { title: '节点运行状态恢复', detail: 'Runtime 已恢复为活跃状态。' },
+  RUNTIME_DATAPLANE_PHASE_CHANGED: { title: '数据面阶段变化', detail: '节点数据面进入了新的处理阶段。' },
 };
 
 const objectLabels: Record<string, string> = {

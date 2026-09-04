@@ -1863,6 +1863,7 @@ components:
         boot_id: { $ref: "#/components/schemas/Uuid" }
         sequence: { type: integer, minimum: 1 }
         lifecycle: { type: string, enum: [starting, active, degraded, fail_open, stopped, unknown] }
+        dataplane_phase: { type: string, nullable: true, enum: [control_received, control_verified, config_compiled, netd_prepared, core_policy_staged, peer_connecting, peer_authenticated, stream_opening, stream_ready, route_owners_ready, steering_committed, data_plane_active, degraded, recovering, failed, stopping, stopped, null] }
         configured_peers: { type: integer, minimum: 0 }
         active_peers: { type: integer, minimum: 0 }
         required_route_owners: { type: integer, minimum: 0 }
@@ -1981,6 +1982,7 @@ components:
         boot_id: { $ref: "#/components/schemas/Uuid" }
         sequence: { type: integer, minimum: 1 }
         lifecycle: { type: string, enum: [starting, active, degraded, fail_open, stopped, unknown] }
+        dataplane_phase: { type: string, nullable: true, enum: [control_received, control_verified, config_compiled, netd_prepared, core_policy_staged, peer_connecting, peer_authenticated, stream_opening, stream_ready, route_owners_ready, steering_committed, data_plane_active, degraded, recovering, failed, stopping, stopped, null] }
         configured_peers: { type: integer, minimum: 0 }
         active_peers: { type: integer, minimum: 0 }
         required_route_owners: { type: integer, minimum: 0 }

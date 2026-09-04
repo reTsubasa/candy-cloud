@@ -1045,6 +1045,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         boot_id: Uuid::new_v4(),
         sequence: 1,
         lifecycle: RuntimeLifecycle::Active,
+        dataplane_phase: Some("data_plane_active".into()),
         configured_peers: 1,
         active_peers: 1,
         required_route_owners: 1,

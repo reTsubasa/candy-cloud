@@ -168,6 +168,7 @@ export type RuntimeTelemetry = {
   boot_id: string;
   sequence: number;
   lifecycle: 'starting' | 'active' | 'degraded' | 'fail_open' | 'stopped' | 'unknown';
+  dataplane_phase?: string | null;
   configured_peers: number;
   active_peers: number;
   required_route_owners: number;
