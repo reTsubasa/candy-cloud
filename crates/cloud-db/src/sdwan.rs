@@ -1664,11 +1664,11 @@ impl SdwanRepository {
         .execute(&mut *transaction)
         .await?;
         let lifecycle = telemetry.lifecycle.database_value();
-        let phase_transition = current.as_ref().is_some_and(
-            |(_, _, _, previous_phase, _, _)| {
+        let phase_transition = current
+            .as_ref()
+            .is_some_and(|(_, _, _, previous_phase, _, _)| {
                 previous_phase.as_deref() != telemetry.dataplane_phase.as_deref()
-            },
-        );
+            });
         if phase_transition {
             sqlx::query(
                 "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'DEVICE', ?, 'RUNTIME_DATAPLANE_PHASE_CHANGED', 'DEVICE', ?, JSON_OBJECT('device_name', ?, 'previous_dataplane_phase', ?, 'dataplane_phase', ?, 'runtime_generation', ?, 'error_code', ?, 'error_detail', ?, 'configured_peers', ?, 'active_peers', ?, 'required_route_owners', ?, 'ready_route_owners', ?))",
@@ -2192,9 +2192,12 @@ async fn load_current_runtime_configuration(
         return Err(RuntimeConfigurationError::MissingCurrentProjection);
     };
     let delivery_generation = if rollout_state == "BLOCKED" {
+        // A rejected member must retry the same signed generation. Sending
+        // current_generation - 1 makes Runtime/Core perform a forbidden
+        // rollback, tears down the active lane, and leaves the whole site in
+        // a permanent recovery loop. Other members remain on the committed
+        // snapshot while this member independently retries it.
         current_generation
-            .checked_sub(1)
-            .ok_or(RuntimeConfigurationError::MissingCurrentProjection)?
     } else if rollout_ordinal <= allowed_ordinal {
         current_generation
     } else {
