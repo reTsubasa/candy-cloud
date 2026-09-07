@@ -176,7 +176,21 @@ export function buildOperationalTopology(
   const selectedNodes = selectedSegmentId
     ? resources.nodes.filter((item) => attachedNodeIds.has(item.metadata.id))
     : resources.nodes;
-  const statusByIdentity = new Map(statuses.map((status) => [`${status.device_id}:${status.device_key_id}`, status]));
+  // The API intentionally returns the full receipt history so it can also feed
+  // the audit/log views.  A device can therefore have a newer *historical*
+  // rejected receipt than its currently applied generation.  Never let that
+  // historical row drive the live topology: prefer the current projection,
+  // then fall back to the newest receipt only when no current row exists.
+  const statusByIdentity = new Map<string, RuntimeConfigurationStatus>();
+  for (const status of statuses) {
+    const identity = `${status.device_id}:${status.device_key_id}`;
+    const previous = statusByIdentity.get(identity);
+    if (!previous || (status.current && !previous.current)
+      || (status.current === previous.current
+        && Date.parse(status.reported_at) > Date.parse(previous.reported_at))) {
+      statusByIdentity.set(identity, status);
+    }
+  }
   const telemetryByIdentity = new Map(telemetry.map((item) => [`${item.device_id}:${item.device_key_id}`, item]));
   const nodes: OperationalNode[] = selectedNodes.map((item) => {
     const identity = `${value(item, 'device_id')}:${value(item, 'device_key_id')}`;

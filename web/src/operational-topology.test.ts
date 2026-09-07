@@ -380,4 +380,29 @@ describe('operational topology', () => {
     });
     expect(namedPaths(threeSiteIds.peers.wrtUs)).toEqual([]);
   });
+
+  it('uses the current active receipt when a newer historical receipt was rejected', () => {
+    const { resources, telemetry: runtimeTelemetry } = threeSiteFixture();
+    const current = configurationStatus('wrt');
+    const historicalRejected: RuntimeConfigurationStatus = {
+      ...current,
+      projection_publication_id: 'old-rejected-projection',
+      state: 'rejected',
+      error_code: 'local_activation_failed',
+      reported_at: '2026-08-26T06:00:10Z',
+      current: false,
+    };
+    const snapshot = buildOperationalTopology(
+      resources,
+      [current, historicalRejected, configurationStatus('us'), configurationStatus('hk')],
+      {},
+      threeSiteIds.segment,
+      runtimeTelemetry,
+      90,
+      Date.parse('2026-08-26T06:00:20Z'),
+    );
+    const wrt = snapshot.nodes.find((node) => node.id === threeSiteIds.nodes.wrt);
+    expect(wrt?.applyState).toBe('active');
+    expect(wrt?.status.tone).toBe('green');
+  });
 });
