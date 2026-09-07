@@ -1476,7 +1476,9 @@ impl SdwanRepository {
                         .await?;
                     }
                 }
-                RuntimeConfigurationApplyState::Active if rollout_state == "COMMITTING" => {
+                RuntimeConfigurationApplyState::Active
+                    if matches!(rollout_state.as_str(), "COMMITTING" | "BLOCKED") =>
+                {
                     let active_count: i64 = sqlx::query_scalar(
                         "SELECT COUNT(*) FROM segment_route_publication_members member JOIN site_route_projection_publications projection ON projection.id = member.projection_publication_id LEFT JOIN runtime_configuration_status status ON status.tenant_id = projection.tenant_id AND status.device_id = projection.device_id AND status.device_key_id = projection.device_key_id AND status.projection_publication_id = projection.id WHERE member.tenant_id = ? AND member.segment_publication_id = (SELECT id FROM segment_route_publications WHERE tenant_id = ? AND segment_id = ? AND generation = ?) AND status.apply_state = 'ACTIVE'",
                     )
@@ -1486,9 +1488,15 @@ impl SdwanRepository {
                     .bind(configuration.segment_generation)
                     .fetch_one(&mut *transaction)
                     .await?;
+                    // A blocked rollout is recoverable: once every member has
+                    // re-applied the same signed generation, close it just as
+                    // we would close a normal COMMITTING rollout.  Previously
+                    // BLOCKED had no completion path, so Cloud kept reporting
+                    // "发布已阻断" forever even after all Runtime heartbeats
+                    // were ACTIVE again.
                     if active_count == i64::from(member_count) {
                         sqlx::query(
-                            "UPDATE runtime_configuration_rollouts SET state = 'COMPLETE' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND state = 'COMMITTING'",
+                            "UPDATE runtime_configuration_rollouts SET state = 'COMPLETE' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND state IN ('COMMITTING','BLOCKED')",
                         )
                         .bind(status.lookup.tenant_id)
                         .bind(configuration.segment_id)
