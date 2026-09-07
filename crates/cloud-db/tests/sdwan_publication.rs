@@ -1178,6 +1178,31 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     .await
     .unwrap();
     assert_eq!(rollout_state, "PREPARING");
+    // A pre-commit rejection blocks advancement, not delivery. The failing
+    // member must be able to retry the same signed candidate in Prepare phase.
+    repository
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: peer_runtime_lookup.clone(),
+            projection_publication_id: peer_runtime_before_ack.projection_publication_id,
+            projection_content_hash: peer_runtime_before_ack.projection_content_hash,
+            envelope_sha256: peer_runtime_before_ack.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Rejected,
+            error_code: Some("netd_prepare_failed".into()),
+        })
+        .await
+        .unwrap();
+    let blocked_state: String = sqlx::query_scalar(
+        "SELECT state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = 2",
+    ).bind(tenant_id).bind(segment_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(blocked_state, "BLOCKED");
+    for lookup in [&runtime_lookup, &peer_runtime_lookup] {
+        let RuntimeConfigurationState::Current(retry) = repository
+            .current_runtime_configuration(lookup).await.unwrap() else {
+            panic!("blocked rollout must keep its candidate available");
+        };
+        assert_eq!(retry.segment_generation, 2);
+        assert_eq!(retry.activation_phase, RuntimeConfigurationActivationPhase::Prepare);
+    }
     repository
         .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
             lookup: peer_runtime_lookup.clone(),
@@ -1233,11 +1258,38 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
             projection_publication_id: committing_peer_runtime.projection_publication_id,
             projection_content_hash: committing_peer_runtime.projection_content_hash,
             envelope_sha256: committing_peer_runtime.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Rejected,
+            error_code: Some("hot_transition_failed".into()),
+        })
+        .await
+        .unwrap();
+    let retrying_state: String = sqlx::query_scalar(
+        "SELECT state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = 2",
+    ).bind(tenant_id).bind(segment_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(retrying_state, "COMMITTING");
+    for lookup in [&runtime_lookup, &peer_runtime_lookup] {
+        let RuntimeConfigurationState::Current(retry) = repository
+            .current_runtime_configuration(lookup).await.unwrap() else {
+            panic!("committing rollout must not revert after a member rejects");
+        };
+        assert_eq!(retry.segment_generation, 2);
+        assert_eq!(retry.activation_phase, RuntimeConfigurationActivationPhase::Commit);
+    }
+    repository
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: peer_runtime_lookup.clone(),
+            projection_publication_id: committing_peer_runtime.projection_publication_id,
+            projection_content_hash: committing_peer_runtime.projection_content_hash,
+            envelope_sha256: committing_peer_runtime.envelope_sha256(),
             apply_state: RuntimeConfigurationApplyState::Active,
             error_code: None,
         })
         .await
         .unwrap();
+    let completed_state: String = sqlx::query_scalar(
+        "SELECT state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = 2",
+    ).bind(tenant_id).bind(segment_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(completed_state, "COMPLETE");
     forged.sequence = 3;
     assert!(matches!(
         repository.record_runtime_telemetry(&forged).await,
