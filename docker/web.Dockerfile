@@ -5,7 +5,11 @@
 FROM --platform=$BUILDPLATFORM node:22.18-alpine AS build
 WORKDIR /app
 COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
-RUN corepack enable
+# Pin pnpm explicitly. Corepack's rolling package-manager resolution can
+# select a version whose bundle is unavailable on the runner, leaving the
+# shim pointing at a missing pnpm.cjs and failing before dependency install.
+# Keep the builder reproducible and aligned with the lockfile toolchain.
+RUN npm install --global pnpm@11.19.0
 RUN pnpm install --frozen-lockfile
 COPY web/ ./
 RUN pnpm run build
