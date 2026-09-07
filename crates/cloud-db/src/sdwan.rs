@@ -1453,7 +1453,9 @@ impl SdwanRepository {
         .await?;
         if let Some((_ordinal, member_count, rollout_state)) = rollout_member {
             match status.apply_state {
-                RuntimeConfigurationApplyState::Prepared if rollout_state == "PREPARING" => {
+                RuntimeConfigurationApplyState::Prepared
+                    if matches!(rollout_state.as_str(), "PREPARING" | "BLOCKED") =>
+                {
                     let prepared_count: i64 = sqlx::query_scalar(
                         "SELECT COUNT(*) FROM segment_route_publication_members member JOIN site_route_projection_publications projection ON projection.id = member.projection_publication_id LEFT JOIN runtime_configuration_status status ON status.tenant_id = projection.tenant_id AND status.device_id = projection.device_id AND status.device_key_id = projection.device_key_id AND status.projection_publication_id = projection.id WHERE member.tenant_id = ? AND member.segment_publication_id = (SELECT id FROM segment_route_publications WHERE tenant_id = ? AND segment_id = ? AND generation = ?) AND status.apply_state = 'PREPARED'",
                     )
@@ -1465,7 +1467,7 @@ impl SdwanRepository {
                     .await?;
                     if prepared_count == i64::from(member_count) {
                         sqlx::query(
-                            "UPDATE runtime_configuration_rollouts SET state = 'COMMITTING' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND state = 'PREPARING'",
+                            "UPDATE runtime_configuration_rollouts SET state = 'COMMITTING' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND state IN ('PREPARING','BLOCKED')",
                         )
                         .bind(status.lookup.tenant_id)
                         .bind(configuration.segment_id)
@@ -1497,7 +1499,7 @@ impl SdwanRepository {
                 }
                 RuntimeConfigurationApplyState::Rejected => {
                     sqlx::query(
-                        "UPDATE runtime_configuration_rollouts SET state = 'BLOCKED' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND state IN ('PREPARING','COMMITTING')",
+                        "UPDATE runtime_configuration_rollouts SET state = 'BLOCKED' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? AND state = 'PREPARING'",
                     )
                     .bind(status.lookup.tenant_id)
                     .bind(configuration.segment_id)
@@ -2361,10 +2363,7 @@ async fn load_current_runtime_configuration(
         signed_projection_envelope: row.try_get("signed_projection_envelope")?,
         peer_projection_catalog,
         compatibility_generations,
-        activation_phase: if matches!(
-            rollout_state.as_str(),
-            "COMMITTING" | "COMPLETE" | "BLOCKED"
-        ) {
+        activation_phase: if matches!(rollout_state.as_str(), "COMMITTING" | "COMPLETE") {
             RuntimeConfigurationActivationPhase::Commit
         } else {
             RuntimeConfigurationActivationPhase::Prepare
