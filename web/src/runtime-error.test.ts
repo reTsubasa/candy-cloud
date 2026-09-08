@@ -45,7 +45,7 @@ describe('runtime error display', () => {
       'invalid_readiness_timeout', 'lease_clock_failed', 'local_activation_failed',
       'local_publish_failed', 'netd_commit_failed', 'netd_lease_failed',
       'netd_prepare_failed', 'netd_reconfigure_failed', 'netd_reconfigure_invalid_transition',
-      'netd_reconfigure_ipc_failed', 'netd_reconfigure_owner_conflict',
+      'netd_reconfigure_ipc_failed', 'netd_reconfigure_peer_closed', 'netd_reconfigure_owner_conflict',
       'netd_reconfigure_platform_failed', 'netd_reconfigure_system_failed',
       'netd_reconfigure_unauthorized', 'peer_datagram_read_failed',
       'peer_datagram_write_failed', 'proxy_fallback_failed', 'public_endpoint_required',

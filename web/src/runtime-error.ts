@@ -77,6 +77,7 @@ const runtimeErrors: Record<string, RuntimeErrorDescriptor> = {
   netd_reconfigure_unauthorized: network('网络管理权限校验失败', 'Runtime 进程身份未通过本机网络管理服务校验', 'configuration'),
   netd_reconfigure_system_failed: network('网络管理服务异常', '本机网络管理服务写入事务状态失败，未能完成热更新'),
   netd_reconfigure_ipc_failed: network('网络管理通信失败', 'Runtime 无法与本机网络管理服务完成热更新通信'),
+  netd_reconfigure_peer_closed: network('网络管理连接被关闭', 'netd 在重启或回滚事务期间关闭了请求连接，Runtime 将重连并重试同一配置代次'),
   grant_resolution_failed: authorization('节点授权获取失败', 'Runtime 无法从 Cloud 获取或解析当前节点授权'),
   grant_service_unavailable: authorization('授权服务不可用', '节点授权服务暂时不可用，且本地没有仍可使用的授权'),
   grant_authorization_denied: authorization('节点授权被拒绝', 'Cloud 拒绝签发该节点的 SD-WAN 授权', 'configuration'),
