@@ -489,7 +489,7 @@ impl ControlRepository {
         rows.into_iter()
             .map(|row| {
                 let apply_state: String = row.try_get("apply_state")?;
-                if !matches!(apply_state.as_str(), "ACTIVE" | "REJECTED") {
+                if !matches!(apply_state.as_str(), "PREPARED" | "ACTIVE" | "REJECTED") {
                     return Err(ControlStoreError::InvalidTransition);
                 }
                 Ok(RuntimeConfigurationStatusRecord {

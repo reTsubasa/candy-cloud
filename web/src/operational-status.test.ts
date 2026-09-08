@@ -32,6 +32,12 @@ describe('operational status boundaries', () => {
     expect(nodeOperationalStatus(node({ lifecycle: 'degraded' }))).toMatchObject({ code: 'runtime_fault', tone: 'red' });
   });
 
+  it.each(['stale', 'unreported'] as const)('keeps rejected %s nodes gray', (telemetryState) => {
+    expect(nodeOperationalStatus(node({
+      telemetryState, applyState: 'rejected', errorCode: 'invalid_policy', lifecycle: 'degraded',
+    })).tone).toBe('gray');
+  });
+
   it('keeps Lane, Peer and route failures out of node identity status', () => {
     expect(nodeOperationalStatus(node({
       failOpenRequired: true,

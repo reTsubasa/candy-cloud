@@ -118,6 +118,44 @@ function threeSiteFixture(): { resources: OperationalResources; telemetry: Runti
 }
 
 describe('operational topology', () => {
+  it.each(['rejected', 'prepared'] as const)('does not spread %s receipts to unrelated links', (state) => {
+    const { resources, telemetry } = threeSiteFixture();
+    const statuses = ['wrt', 'us', 'hk'].map(configurationStatus);
+    statuses[0] = { ...statuses[0], state, error_code: state === 'rejected' ? 'invalid_policy' : null };
+    const segment = threeSiteIds.segment;
+    const readiness: RuntimeActivationReadiness = {
+      schema_version: 1, segment_id: segment, ready: false, candidate_count: 6,
+      ready_candidate_count: 6, missing_transport_count: 0,
+      pending_apply_count: state === 'prepared' ? 1 : 0,
+      failed_apply_count: state === 'rejected' ? 1 : 0,
+      apply_error_codes: [], reason_codes: [state === 'rejected' ? 'node_apply_failed' : 'node_apply_pending'],
+    };
+    const snapshot = buildOperationalTopology(resources, statuses, { [segment]: readiness }, segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.hkUs)?.status.tone).toBe('green');
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)?.status.tone).toBe(state === 'rejected' ? 'red' : 'orange');
+    expect(snapshot.readiness?.ready).toBe(false);
+  });
+
+  it('makes offline rejected sites and their incident links gray', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    telemetry[0].reported_at = '2026-08-26T05:00:00Z';
+    const statuses = ['wrt', 'us', 'hk'].map(configurationStatus);
+    statuses[0] = { ...statuses[0], state: 'rejected', error_code: 'invalid_policy' };
+    const snapshot = buildOperationalTopology(resources, statuses, {}, '', telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.sites.find((site) => site.id === threeSiteIds.sites.wrt)?.status.tone).toBe('gray');
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)?.status.tone).toBe('gray');
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.hkUs)?.status.tone).toBe('green');
+  });
+
+  it.each([0, null] as const)('does not count stream paths with ready_streams=%s as active', (readyStreams) => {
+    const { resources, telemetry } = threeSiteFixture();
+    telemetry[0].transport_mode = 'stream_primary';
+    telemetry[0].paths[0] = { ...telemetry[0].paths[0], transport_mode: 'stream_primary', ready_streams: readyStreams, stream_count: 1 };
+    const snapshot = buildOperationalTopology(resources, ['wrt', 'us', 'hk'].map(configurationStatus), {}, '', telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)?.activeDirectionCount).toBe(1);
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.hkUs)?.status.tone).toBe('green');
+  });
+
   it('joins resources and runtime receipts without inventing telemetry', () => {
     const status: RuntimeConfigurationStatus = {
       device_id: 'device-a', device_key_id: 'key-a', projection_publication_id: 'projection',

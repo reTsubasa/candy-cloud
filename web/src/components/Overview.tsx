@@ -67,6 +67,7 @@ export function Overview({ session, onOpenLogs }: Props) {
   const [telemetry, setTelemetry] = useState<RuntimeTelemetry[]>([]);
   const [telemetryStaleAfter, setTelemetryStaleAfter] = useState(60);
   const [telemetryAvailable, setTelemetryAvailable] = useState(true);
+  const [statusesAvailable, setStatusesAvailable] = useState(true);
   const [readiness, setReadiness] = useState<Record<string, RuntimeActivationReadiness>>({});
   const [health, setHealth] = useState<HealthState>(initialHealth);
   const [loading, setLoading] = useState(true);
@@ -111,7 +112,9 @@ export function Overview({ session, onOpenLogs }: Props) {
     setResources(nextResources);
     setResourceErrors(nextErrors);
     const [statusResult, telemetryResult, readinessEntries] = await Promise.all([
-      fetchRuntimeConfigurationStatuses(session.token, tenantId).catch(() => ({ schema_version: 1 as const, items: [] })),
+      fetchRuntimeConfigurationStatuses(session.token, tenantId)
+        .then((result) => ({ items: result.items, available: true }))
+        .catch(() => ({ items: [] as RuntimeConfigurationStatus[], available: false })),
       fetchRuntimeTelemetry(session.token, tenantId)
         .then((result) => ({ result, available: true }))
         .catch(() => ({ result: { schema_version: 1, stale_after_seconds: 60, items: [] as RuntimeTelemetry[] }, available: false })),
@@ -124,6 +127,7 @@ export function Overview({ session, onOpenLogs }: Props) {
       })),
     ]);
     setStatuses(statusResult.items);
+    setStatusesAvailable(statusResult.available);
     setTelemetry(telemetryResult.result.items);
     setTelemetryStaleAfter(telemetryResult.result.stale_after_seconds);
     setTelemetryAvailable(telemetryResult.available);
@@ -160,6 +164,7 @@ export function Overview({ session, onOpenLogs }: Props) {
     if (controlReady && health.degraded.status !== null && health.degraded.status !== 200) items.push({ tone: 'warn', title: '控制面依赖降级', detail: health.degraded.text || '依赖探针返回异常状态，请在系统页查看具体服务' });
     if (resourceErrorCount > 0) items.push({ tone: 'error', title: '资源读取不完整', detail: `${resourceErrorCount} 类资源读取失败，拓扑仅显示已验证数据` });
     if (!telemetryAvailable) items.push({ tone: 'warn', title: '运行遥测不可用', detail: '无法读取 Runtime 最新状态，在线状态不会被推测' });
+    if (!statusesAvailable) items.push({ tone: 'warn', title: '策略应用状态不可用', detail: '无法读取节点配置回执，策略应用结果尚未确认' });
     for (const node of topology.nodes.filter((item) => item.status.tone === 'red')) {
       items.push({ tone: 'error', title: `${node.name} · ${node.status.label}`, detail: node.status.detail });
     }
@@ -176,7 +181,7 @@ export function Overview({ session, onOpenLogs }: Props) {
       items.push({ tone: 'warn', title: `${link.siteAName} ↔ ${link.siteBName} · ${link.status.label}`, detail: link.status.detail });
     }
     return items.slice(0, 6);
-  }, [controlReady, health, resourceErrorCount, telemetryAvailable, topology]);
+  }, [controlReady, health, resourceErrorCount, telemetryAvailable, statusesAvailable, topology]);
 
   return (
     <section className="workspace-section operational-overview">

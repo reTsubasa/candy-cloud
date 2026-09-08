@@ -143,13 +143,13 @@ function readinessLabel(readiness: RuntimeActivationReadiness | null): string {
 
 function siteOperationalStatus(nodes: OperationalNode[]): OperationalSite['status'] {
   if (nodes.length === 0) return { code: 'empty', label: '暂无节点', detail: '站点尚未配置节点', tone: 'gray' };
-  const fault = nodes.find((node) => node.status.tone === 'red');
-  if (fault) return { code: 'fault', label: '节点故障', detail: fault.status.detail, tone: 'red' };
 
   // A site is gray when no node is currently online. Registration or a pending
   // configuration does not make an offline site operationally orange.
-  const onlineNodes = nodes.filter((node) => node.telemetryState === 'online');
+  const onlineNodes = nodes.filter((node) => node.registered && node.telemetryState === 'online');
   if (onlineNodes.length === 0) return { code: 'unregistered', label: '离线', detail: '站点当前没有在线节点', tone: 'gray' };
+  const fault = onlineNodes.find((node) => node.status.tone === 'red');
+  if (fault) return { code: 'fault', label: '节点故障', detail: fault.status.detail, tone: 'red' };
 
   const transition = nodes.find((node) => node.status.tone === 'orange');
   if (transition) return { code: 'warning', label: '状态变化', detail: transition.status.detail, tone: 'orange' };
@@ -157,6 +157,20 @@ function siteOperationalStatus(nodes: OperationalNode[]): OperationalSite['statu
     return { code: 'warning', label: '部分在线', detail: `${onlineNodes.length}/${nodes.length} 个节点在线，其余节点当前离线`, tone: 'orange' };
   }
   return { code: 'healthy', label: '节点在线', detail: '站点内已认证节点均在线且 Runtime 稳定', tone: 'green' };
+}
+
+function pathIsReady(path: RuntimePathTelemetry, runtime: RuntimeTelemetry): boolean {
+  const streamTelemetry = path.transport_mode === 'stream_primary'
+    || runtime.transport_mode === 'stream_primary'
+    || path.ready_streams != null || path.stream_count != null || (path.streams?.length ?? 0) > 0;
+  if (streamTelemetry) {
+    return (path.ready_streams ?? 0) > 0
+      && (!path.streams?.length || path.streams.some((stream) => stream.state === 'ready'));
+  }
+  // Legacy reports do not identify stream readiness. Only retain their previous
+  // authenticated-path meaning when the whole reported data plane is ready.
+  return runtime.active_peers > 0
+    && runtime.ready_route_owners === runtime.required_route_owners;
 }
 
 export function buildOperationalTopology(
@@ -307,16 +321,19 @@ export function buildOperationalTopology(
       const siteBId = value(peer, 'site_b_id');
       const siteAName = siteNameById.get(siteAId) ?? '端点 A';
       const siteBName = siteNameById.get(siteBId) ?? '端点 B';
+      const peerAttachments = selectedAttachments.filter((attachment) => value(attachment, 'segment_id') === value(peer, 'segment_id'));
+      const peerNodeIds = new Set(peerAttachments.map((attachment) => value(attachment, 'node_id')));
+      const peerNodes = nodes.filter((node) => peerNodeIds.has(node.id));
       const attachmentIdsBySite = new Map([
-        [siteAId, new Set(selectedAttachments.filter((attachment) => value(attachment, 'site_id') === siteAId).map((attachment) => attachment.metadata.id))],
-        [siteBId, new Set(selectedAttachments.filter((attachment) => value(attachment, 'site_id') === siteBId).map((attachment) => attachment.metadata.id))],
+        [siteAId, new Set(peerAttachments.filter((attachment) => value(attachment, 'site_id') === siteAId).map((attachment) => attachment.metadata.id))],
+        [siteBId, new Set(peerAttachments.filter((attachment) => value(attachment, 'site_id') === siteBId).map((attachment) => attachment.metadata.id))],
       ]);
-      const activePaths: OperationalPathTelemetry[] = nodes.flatMap((node) => {
-        if (node.telemetryState !== 'online' || node.lifecycle !== 'active' || node.failOpenRequired || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
+      const activePaths: OperationalPathTelemetry[] = peerNodes.flatMap((node) => {
+        if (!node.registered || node.telemetryState !== 'online' || node.lifecycle !== 'active' || node.failOpenRequired || !node.telemetry || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
         const destinationSiteId = node.siteId === siteAId ? siteBId : siteAId;
         const destinationAttachmentIds = attachmentIdsBySite.get(destinationSiteId) ?? new Set<string>();
         return (node.telemetry?.paths ?? [])
-          .filter((path) => destinationAttachmentIds.has(path.peer_attachment_id))
+          .filter((path) => destinationAttachmentIds.has(path.peer_attachment_id) && pathIsReady(path, node.telemetry!))
           .map((path) => ({
             ...path,
             sourceSiteId: node.siteId,
@@ -327,7 +344,7 @@ export function buildOperationalTopology(
       });
       const activeDirections = new Set(activePaths.map((path) => `${path.sourceSiteId}:${path.destinationSiteId}`));
       const activeDirectionCount = activeDirections.size;
-      const staleDirections = nodes.flatMap((node) => {
+      const staleDirections = peerNodes.flatMap((node) => {
         if (node.telemetryState !== 'stale' || !node.telemetry || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
         const destinationSiteId = node.siteId === siteAId ? siteBId : siteAId;
         const destinationAttachmentIds = attachmentIdsBySite.get(destinationSiteId) ?? new Set<string>();
@@ -337,9 +354,8 @@ export function buildOperationalTopology(
       });
       const staleDirectionKeys = new Set(staleDirections);
       const staleDirectionCount = staleDirectionKeys.size;
-      const peerReadiness = readinessBySegment[value(peer, 'segment_id')];
-      const endpointNodes = [nodes.filter((node) => node.siteId === siteAId), nodes.filter((node) => node.siteId === siteBId)];
-      const rejectedNodes = endpointNodes.flat().filter((node) => node.applyState === 'rejected');
+      const endpointNodes = [peerNodes.filter((node) => node.siteId === siteAId), peerNodes.filter((node) => node.siteId === siteBId)];
+      const rejectedNodes = endpointNodes.flat().filter((node) => node.registered && node.telemetryState === 'online' && node.applyState === 'rejected');
       const failedEndpointLabels = endpointNodes.flatMap((siteNodes, index) => (
         siteNodes.length > 0 && siteNodes.every((node) => (
           !node.registered
@@ -349,16 +365,12 @@ export function buildOperationalTopology(
           ? [index === 0 ? siteAName : siteBName]
           : []
       ));
-      const configurationFailed = peerReadiness?.reason_codes.includes('node_apply_failed') === true
-        || rejectedNodes.length > 0;
+      const configurationFailed = rejectedNodes.length > 0;
       const endpointFailed = failedEndpointLabels.length > 0;
       const endpointOffline = endpointNodes.some((siteNodes) => (
         siteNodes.length === 0 || siteNodes.every((node) => node.status.tone === 'gray')
       ));
-      const policyUpdating = !configurationFailed && (
-        peerReadiness?.reason_codes.some((code) => code === 'config_pending' || code === 'node_apply_pending') === true
-        || endpointNodes.some((siteNodes) => siteNodes.some((node) => node.applyState === 'pending'))
-      );
+      const policyUpdating = !configurationFailed && endpointNodes.some((siteNodes) => siteNodes.some((node) => node.registered && node.telemetryState === 'online' && node.applyState === 'pending'));
       const expectedDirections = [
         { key: `${siteAId}:${siteBId}`, label: `${siteAName} -> ${siteBName}` },
         { key: `${siteBId}:${siteAId}`, label: `${siteBName} -> ${siteAName}` },

@@ -866,6 +866,14 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         })
         .await
         .unwrap();
+    let prepared_statuses = cloud_db::control::ControlRepository::new(pool.clone())
+        .runtime_configuration_statuses(tenant_id)
+        .await
+        .expect("PREPARED receipts must remain readable during atomic activation");
+    assert_eq!(prepared_statuses.len(), 2);
+    assert!(prepared_statuses
+        .iter()
+        .all(|status| status.apply_state == "PREPARED" && status.current));
     for (lookup, prepared) in [
         (&runtime_lookup, &first_runtime),
         (&peer_runtime_lookup, &first_peer_runtime),
@@ -1197,11 +1205,17 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     assert_eq!(blocked_state, "BLOCKED");
     for lookup in [&runtime_lookup, &peer_runtime_lookup] {
         let RuntimeConfigurationState::Current(retry) = repository
-            .current_runtime_configuration(lookup).await.unwrap() else {
+            .current_runtime_configuration(lookup)
+            .await
+            .unwrap()
+        else {
             panic!("blocked rollout must keep its candidate available");
         };
         assert_eq!(retry.segment_generation, 2);
-        assert_eq!(retry.activation_phase, RuntimeConfigurationActivationPhase::Prepare);
+        assert_eq!(
+            retry.activation_phase,
+            RuntimeConfigurationActivationPhase::Prepare
+        );
     }
     repository
         .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
@@ -1269,11 +1283,17 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     assert_eq!(retrying_state, "COMMITTING");
     for lookup in [&runtime_lookup, &peer_runtime_lookup] {
         let RuntimeConfigurationState::Current(retry) = repository
-            .current_runtime_configuration(lookup).await.unwrap() else {
+            .current_runtime_configuration(lookup)
+            .await
+            .unwrap()
+        else {
             panic!("committing rollout must not revert after a member rejects");
         };
         assert_eq!(retry.segment_generation, 2);
-        assert_eq!(retry.activation_phase, RuntimeConfigurationActivationPhase::Commit);
+        assert_eq!(
+            retry.activation_phase,
+            RuntimeConfigurationActivationPhase::Commit
+        );
     }
     repository
         .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
