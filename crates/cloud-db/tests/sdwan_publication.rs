@@ -1048,7 +1048,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         [10_u8; 32]
     );
     let active_candidate = write.projections[0].runtime_paths[0].candidate_id;
-    let telemetry = RuntimeTelemetryWrite {
+    let mut telemetry = RuntimeTelemetryWrite {
         lookup: runtime_lookup.clone(),
         boot_id: Uuid::new_v4(),
         sequence: 1,
@@ -1127,8 +1127,37 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         .record_runtime_telemetry(&telemetry)
         .await
         .unwrap();
+    // A candidate receipt must not erase the still-forwarding generation's
+    // path authorization, including when the candidate fails before commit.
+    for (state, error_code) in [
+        (RuntimeConfigurationApplyState::Prepared, None),
+        (
+            RuntimeConfigurationApplyState::Rejected,
+            Some("core_policy_prepare_failed".into()),
+        ),
+    ] {
+        repository
+            .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+                lookup: runtime_lookup.clone(),
+                projection_publication_id: second_runtime.projection_publication_id,
+                projection_content_hash: second_runtime.projection_content_hash,
+                envelope_sha256: second_runtime.envelope_sha256(),
+                apply_state: state,
+                error_code,
+            })
+            .await
+            .unwrap();
+        telemetry.sequence += 1;
+        repository
+            .record_runtime_telemetry(&telemetry)
+            .await
+            .expect("the active generation must keep reporting paths during candidate preparation");
+        let active: Uuid = sqlx::query_scalar("SELECT active_projection_publication_id FROM runtime_configuration_status WHERE tenant_id = ? AND device_id = ? AND device_key_id = ?")
+            .bind(tenant_id).bind(device_id).bind(device_key_id).fetch_one(&pool).await.unwrap();
+        assert_eq!(active, first_runtime.projection_publication_id);
+    }
     let mut forged = telemetry.clone();
-    forged.sequence = 2;
+    forged.sequence += 1;
     forged.paths[0].candidate_id = Some(Uuid::new_v4());
     assert!(matches!(
         repository.record_runtime_telemetry(&forged).await,
@@ -1185,7 +1214,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(rollout_state, "PREPARING");
+    assert_eq!(rollout_state, "BLOCKED");
     // A pre-commit rejection blocks advancement, not delivery. The failing
     // member must be able to retry the same signed candidate in Prepare phase.
     repository
@@ -1310,7 +1339,27 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         "SELECT state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = 2",
     ).bind(tenant_id).bind(segment_id).fetch_one(&pool).await.unwrap();
     assert_eq!(completed_state, "COMPLETE");
-    forged.sequence = 3;
+    repository
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: runtime_lookup.clone(),
+            projection_publication_id: committing_runtime.projection_publication_id,
+            projection_content_hash: committing_runtime.projection_content_hash,
+            envelope_sha256: committing_runtime.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Prepared,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    let receipt: (String, Uuid) = sqlx::query_as("SELECT apply_state, active_projection_publication_id FROM runtime_configuration_status WHERE tenant_id = ? AND device_id = ? AND device_key_id = ?")
+        .bind(tenant_id).bind(device_id).bind(device_key_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        receipt,
+        (
+            "ACTIVE".into(),
+            committing_runtime.projection_publication_id
+        )
+    );
+    forged.sequence += 1;
     assert!(matches!(
         repository.record_runtime_telemetry(&forged).await,
         Err(RuntimeConfigurationError::InvalidScope)

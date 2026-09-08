@@ -1384,6 +1384,18 @@ impl SdwanRepository {
         .bind(status.lookup.device_key_id)
         .fetch_optional(&mut *transaction)
         .await?;
+        // A delayed Prepare response must not move an already activated
+        // publication back behind the commit barrier.
+        if status.apply_state == RuntimeConfigurationApplyState::Prepared
+            && previous_status
+                .as_ref()
+                .is_some_and(|(publication, state, _)| {
+                    *publication == configuration.projection_publication_id && state == "ACTIVE"
+                })
+        {
+            transaction.commit().await?;
+            return Ok(());
+        }
         let now = Utc::now();
         sqlx::query(
             "INSERT INTO runtime_configuration_status (tenant_id, device_id, device_key_id, projection_publication_id, envelope_sha256, apply_state, error_code, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE projection_publication_id = VALUES(projection_publication_id), envelope_sha256 = VALUES(envelope_sha256), apply_state = VALUES(apply_state), error_code = VALUES(error_code), reported_at = VALUES(reported_at)",
@@ -1398,6 +1410,15 @@ impl SdwanRepository {
         .bind(now)
         .execute(&mut *transaction)
         .await?;
+        if status.apply_state == RuntimeConfigurationApplyState::Active {
+            sqlx::query("UPDATE runtime_configuration_status SET active_projection_publication_id = ? WHERE tenant_id = ? AND device_id = ? AND device_key_id = ?")
+                .bind(configuration.projection_publication_id)
+                .bind(status.lookup.tenant_id)
+                .bind(status.lookup.device_id)
+                .bind(status.lookup.device_key_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
         let device_update = sqlx::query("UPDATE devices SET last_seen_at = ? WHERE tenant_id = ? AND id = ? AND status = 'ACTIVE'")
             .bind(now)
             .bind(status.lookup.tenant_id)
@@ -1548,11 +1569,13 @@ impl SdwanRepository {
         let mut persisted_paths = telemetry.paths.as_slice();
         if !telemetry.paths.is_empty() {
             let committed_projection: Option<(Uuid, Uuid)> = sqlx::query_as(
-                "SELECT projection.id, projection.attachment_id FROM runtime_configuration_status status JOIN site_route_projection_publications projection ON projection.tenant_id = status.tenant_id AND projection.device_id = status.device_id AND projection.device_key_id = status.device_key_id AND projection.id = status.projection_publication_id JOIN segment_attachments attachment ON attachment.tenant_id = projection.tenant_id AND attachment.id = projection.attachment_id AND attachment.device_id = projection.device_id AND attachment.device_key_id = projection.device_key_id AND attachment.principal_kind = 'DEVICE' WHERE status.tenant_id = ? AND status.device_id = ? AND status.device_key_id = ? AND status.apply_state = 'ACTIVE' FOR SHARE",
+                "SELECT projection.id, projection.attachment_id FROM runtime_configuration_status status JOIN site_route_projection_publications projection ON projection.tenant_id = status.tenant_id AND projection.device_id = status.device_id AND projection.device_key_id = status.device_key_id AND projection.id = status.active_projection_publication_id JOIN segment_attachments attachment ON attachment.tenant_id = projection.tenant_id AND attachment.id = projection.attachment_id AND attachment.device_id = projection.device_id AND attachment.device_key_id = projection.device_key_id AND attachment.principal_kind = 'DEVICE' AND attachment.state IN ('ACTIVE','STANDBY') WHERE status.tenant_id = ? AND status.device_id = ? AND status.device_key_id = ? AND (? IS NULL OR projection.projection_generation = ?) FOR SHARE",
             )
             .bind(telemetry.lookup.tenant_id)
             .bind(telemetry.lookup.device_id)
             .bind(telemetry.lookup.device_key_id)
+            .bind(telemetry.runtime_generation)
+            .bind(telemetry.runtime_generation)
             .fetch_optional(&mut *transaction)
             .await?;
             let Some((projection_publication_id, local_attachment_id)) = committed_projection
@@ -1681,7 +1704,7 @@ impl SdwanRepository {
             });
         if phase_transition {
             sqlx::query(
-                "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'DEVICE', ?, 'RUNTIME_DATAPLANE_PHASE_CHANGED', 'DEVICE', ?, JSON_OBJECT('device_name', ?, 'previous_dataplane_phase', ?, 'dataplane_phase', ?, 'runtime_generation', ?, 'error_code', ?, 'error_detail', ?, 'configured_peers', ?, 'active_peers', ?, 'required_route_owners', ?, 'ready_route_owners', ?))",
+                "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'DEVICE', ?, 'RUNTIME_DATAPLANE_PHASE_CHANGED', 'DEVICE', ?, JSON_OBJECT('device_name', ?, 'previous_dataplane_phase', ?, 'dataplane_phase', ?, 'runtime_generation', ?, 'error_code', ?, 'error_detail', ?, 'configured_peers', ?, 'active_peers', ?, 'required_route_owners', ?, 'ready_route_owners', ?, 'boot_id', ?, 'sequence', ?))",
             )
             .bind(Uuid::now_v7())
             .bind(telemetry.lookup.tenant_id)
@@ -1697,6 +1720,8 @@ impl SdwanRepository {
             .bind(telemetry.active_peers)
             .bind(telemetry.required_route_owners)
             .bind(telemetry.ready_route_owners)
+            .bind(telemetry.boot_id.to_string())
+            .bind(telemetry.sequence)
             .execute(&mut *transaction)
             .await?;
         }
@@ -1711,7 +1736,10 @@ impl SdwanRepository {
                 } else if previous_lifecycle != lifecycle
                     || previous_error.as_deref() != telemetry.last_error_code.as_deref()
                 {
-                    Some(if lifecycle == "ACTIVE" {
+                    Some(if lifecycle == "ACTIVE"
+                        && !telemetry.fail_open_required
+                        && telemetry.last_error_code.is_none()
+                    {
                         "RUNTIME_LIFECYCLE_RECOVERED"
                     } else {
                         "RUNTIME_LIFECYCLE_DEGRADED"
@@ -1732,7 +1760,7 @@ impl SdwanRepository {
             }))
         {
             sqlx::query(
-                "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'DEVICE', ?, ?, 'DEVICE', ?, JSON_OBJECT('device_name', ?, 'previous_lifecycle', ?, 'lifecycle', ?, 'previous_dataplane_phase', ?, 'dataplane_phase', ?, 'fail_open_required', ?, 'previous_error_code', ?, 'error_code', ?, 'error_detail', ?, 'configured_peers', ?, 'active_peers', ?, 'required_route_owners', ?, 'ready_route_owners', ?))",
+                "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'DEVICE', ?, ?, 'DEVICE', ?, JSON_OBJECT('device_name', ?, 'previous_lifecycle', ?, 'lifecycle', ?, 'previous_dataplane_phase', ?, 'dataplane_phase', ?, 'fail_open_required', ?, 'previous_error_code', ?, 'error_code', ?, 'error_detail', ?, 'configured_peers', ?, 'active_peers', ?, 'required_route_owners', ?, 'ready_route_owners', ?, 'boot_id', ?, 'sequence', ?, 'runtime_generation', ?))",
             )
             .bind(Uuid::now_v7())
             .bind(telemetry.lookup.tenant_id)
@@ -1752,6 +1780,9 @@ impl SdwanRepository {
             .bind(telemetry.active_peers)
             .bind(telemetry.required_route_owners)
             .bind(telemetry.ready_route_owners)
+            .bind(telemetry.boot_id.to_string())
+            .bind(telemetry.sequence)
+            .bind(telemetry.runtime_generation)
             .execute(&mut *transaction)
             .await?;
         }
