@@ -32,6 +32,8 @@ describe('runtime error display', () => {
       'activation_invalid', 'activation_receipt_failed', 'all_peer_readers_stopped',
       'all_peer_reads_failed', 'all_peer_writes_failed', 'candidate_inspection_failed',
       'peer_negotiation_failed', 'peer_stream_task_failed',
+      'peer_prepare_failed', 'peer_prepare_timeout',
+      'peer_preparation_pending',
       'cloud_sync_failed', 'core_compatibility_verification_failed', 'core_discovery_failed',
       'core_exit', 'core_exit_during_hot_reload', 'core_hot_reload_failed',
       'core_policy_prepare_failed', 'core_policy_commit_unresolved', 'netd_lease_renewal_failed',
