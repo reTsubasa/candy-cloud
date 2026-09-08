@@ -34,6 +34,7 @@ describe('runtime error display', () => {
       'peer_negotiation_failed', 'peer_stream_task_failed',
       'cloud_sync_failed', 'core_compatibility_verification_failed', 'core_discovery_failed',
       'core_exit', 'core_exit_during_hot_reload', 'core_hot_reload_failed',
+      'core_policy_prepare_failed', 'core_policy_commit_unresolved', 'netd_lease_renewal_failed',
       'core_process_inspection_failed', 'core_readiness_failed', 'core_readiness_lost',
       'core_readiness_timeout', 'core_route_readiness_lost', 'core_runtime_failed',
       'core_start_failed', 'core_status_inspection_failed', 'core_status_invalid',
