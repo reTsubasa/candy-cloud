@@ -98,6 +98,7 @@ pub struct RuntimeConfigurationStatusRecord {
     pub device_id: Uuid,
     pub device_key_id: Uuid,
     pub projection_publication_id: Uuid,
+    pub active_projection_publication_id: Option<Uuid>,
     pub apply_state: String,
     pub error_code: Option<String>,
     pub reported_at: DateTime<Utc>,
@@ -481,7 +482,7 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT status.device_id, status.device_key_id, status.projection_publication_id, status.apply_state, status.error_code, status.reported_at, EXISTS(SELECT 1 FROM segment_attachments attachment JOIN segments segment ON segment.id = attachment.segment_id AND segment.tenant_id = attachment.tenant_id AND segment.state = 'ACTIVE' JOIN site_route_projection_publications projection ON projection.id = status.active_projection_publication_id AND projection.tenant_id = attachment.tenant_id AND projection.attachment_id = attachment.id AND projection.device_id = attachment.device_id AND projection.device_key_id = attachment.device_key_id AND projection.segment_generation = segment.current_generation AND projection.segment_content_hash = segment.current_content_hash WHERE attachment.tenant_id = status.tenant_id AND attachment.device_id = status.device_id AND attachment.device_key_id = status.device_key_id AND attachment.principal_kind = 'DEVICE' AND attachment.state IN ('ACTIVE','STANDBY')) AS current_configuration FROM runtime_configuration_status status WHERE status.tenant_id = ? ORDER BY status.reported_at DESC, status.device_id LIMIT 4096",
+            "SELECT status.device_id, status.device_key_id, status.projection_publication_id, status.active_projection_publication_id, status.apply_state, status.error_code, status.reported_at, EXISTS(SELECT 1 FROM segment_attachments attachment JOIN segments segment ON segment.id = attachment.segment_id AND segment.tenant_id = attachment.tenant_id AND segment.state = 'ACTIVE' JOIN site_route_projection_publications projection ON projection.id = status.active_projection_publication_id AND projection.tenant_id = attachment.tenant_id AND projection.attachment_id = attachment.id AND projection.device_id = attachment.device_id AND projection.device_key_id = attachment.device_key_id AND projection.segment_generation = segment.current_generation AND projection.segment_content_hash = segment.current_content_hash WHERE attachment.tenant_id = status.tenant_id AND attachment.device_id = status.device_id AND attachment.device_key_id = status.device_key_id AND attachment.principal_kind = 'DEVICE' AND attachment.state IN ('ACTIVE','STANDBY')) AS current_configuration FROM runtime_configuration_status status WHERE status.tenant_id = ? ORDER BY status.reported_at DESC, status.device_id LIMIT 4096",
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -496,6 +497,8 @@ impl ControlRepository {
                     device_id: row.try_get("device_id")?,
                     device_key_id: row.try_get("device_key_id")?,
                     projection_publication_id: row.try_get("projection_publication_id")?,
+                    active_projection_publication_id: row
+                        .try_get("active_projection_publication_id")?,
                     apply_state,
                     error_code: row.try_get("error_code")?,
                     reported_at: row.try_get("reported_at")?,

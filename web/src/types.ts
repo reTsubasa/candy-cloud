@@ -133,6 +133,7 @@ export type RuntimeConfigurationStatus = {
   device_id: string;
   device_key_id: string;
   projection_publication_id: string;
+  active_projection_publication_id?: string | null;
   state: 'prepared' | 'active' | 'rejected';
   error_code: string | null;
   reported_at: string;
