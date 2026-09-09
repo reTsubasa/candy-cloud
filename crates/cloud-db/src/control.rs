@@ -103,6 +103,12 @@ pub struct RuntimeConfigurationStatusRecord {
     pub error_code: Option<String>,
     pub reported_at: DateTime<Utc>,
     pub current: bool,
+    /// Publication that acts as the rollout handoff identity for this node.
+    pub handoff_id: Uuid,
+    pub segment_generation: Option<u64>,
+    pub rollout_phase: Option<String>,
+    pub rollout_ordinal: Option<u32>,
+    pub rollout_member_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -482,7 +488,7 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT status.device_id, status.device_key_id, status.projection_publication_id, status.active_projection_publication_id, status.apply_state, status.error_code, status.reported_at, EXISTS(SELECT 1 FROM segment_attachments attachment JOIN segments segment ON segment.id = attachment.segment_id AND segment.tenant_id = attachment.tenant_id AND segment.state = 'ACTIVE' JOIN site_route_projection_publications projection ON projection.id = status.active_projection_publication_id AND projection.tenant_id = attachment.tenant_id AND projection.attachment_id = attachment.id AND projection.device_id = attachment.device_id AND projection.device_key_id = attachment.device_key_id AND projection.segment_generation = segment.current_generation AND projection.segment_content_hash = segment.current_content_hash WHERE attachment.tenant_id = status.tenant_id AND attachment.device_id = status.device_id AND attachment.device_key_id = status.device_key_id AND attachment.principal_kind = 'DEVICE' AND attachment.state IN ('ACTIVE','STANDBY')) AS current_configuration FROM runtime_configuration_status status WHERE status.tenant_id = ? ORDER BY status.reported_at DESC, status.device_id LIMIT 4096",
+            "SELECT status.device_id, status.device_key_id, status.projection_publication_id, status.active_projection_publication_id, status.apply_state, status.error_code, status.reported_at, projection.segment_generation, member.rollout_ordinal, rollout.member_count AS rollout_member_count, rollout.state AS rollout_phase, EXISTS(SELECT 1 FROM segment_attachments attachment JOIN segments segment ON segment.id = attachment.segment_id AND segment.tenant_id = attachment.tenant_id AND segment.state = 'ACTIVE' JOIN site_route_projection_publications projection ON projection.id = status.active_projection_publication_id AND projection.tenant_id = attachment.tenant_id AND projection.attachment_id = attachment.id AND projection.device_id = attachment.device_id AND projection.device_key_id = attachment.device_key_id AND projection.segment_generation = segment.current_generation AND projection.segment_content_hash = segment.current_content_hash WHERE attachment.tenant_id = status.tenant_id AND attachment.device_id = status.device_id AND attachment.device_key_id = status.device_key_id AND attachment.principal_kind = 'DEVICE' AND attachment.state IN ('ACTIVE','STANDBY')) AS current_configuration FROM runtime_configuration_status status LEFT JOIN site_route_projection_publications projection ON projection.id = status.projection_publication_id AND projection.tenant_id = status.tenant_id LEFT JOIN segment_route_publication_members member ON member.tenant_id = projection.tenant_id AND member.projection_publication_id = projection.id LEFT JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = projection.tenant_id AND rollout.segment_id = projection.segment_id AND rollout.segment_generation = projection.segment_generation WHERE status.tenant_id = ? ORDER BY status.reported_at DESC, status.device_id LIMIT 4096",
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -503,6 +509,11 @@ impl ControlRepository {
                     error_code: row.try_get("error_code")?,
                     reported_at: row.try_get("reported_at")?,
                     current: row.try_get("current_configuration")?,
+                    handoff_id: row.try_get("projection_publication_id")?,
+                    segment_generation: row.try_get("segment_generation")?,
+                    rollout_phase: row.try_get("rollout_phase")?,
+                    rollout_ordinal: row.try_get("rollout_ordinal")?,
+                    rollout_member_count: row.try_get("rollout_member_count")?,
                 })
             })
             .collect()
