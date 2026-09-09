@@ -47,6 +47,8 @@ enum InputReadinessError {
     TransportIdentity,
     #[error("attachment pair has no peer policy")]
     PeerPolicy,
+    #[error("active attachment references a node that is not active yet")]
+    NodeIdentity,
 }
 
 #[derive(Clone)]
@@ -70,6 +72,7 @@ impl InputReadinessError {
             Self::PathCandidates => "ROUTE_INPUT_WAITING_FOR_PATHS",
             Self::TransportIdentity => "ROUTE_INPUT_WAITING_FOR_TRANSPORT",
             Self::PeerPolicy => "ROUTE_INPUT_WAITING_FOR_PEER_POLICY",
+            Self::NodeIdentity => "ROUTE_INPUT_WAITING_FOR_NODE",
         }
     }
 }
@@ -183,8 +186,14 @@ impl ControlRoutePublisher {
         let mut remote_egress_destinations_for_site: HashMap<Uuid, Vec<Ipv4PrefixV1>> =
             HashMap::new();
         let mut remote_egress_gateway_sites = HashSet::new();
+        let active_attachment_ids = attachments
+            .iter()
+            .filter(|(resource, _)| resource.metadata.state == ResourceState::Active)
+            .map(|(resource, _)| resource.metadata.id)
+            .collect::<HashSet<_>>();
         let attachment_sites = attachments
             .iter()
+            .filter(|(resource, _)| resource.metadata.state == ResourceState::Active)
             .map(|(_, attachment)| attachment.site_id)
             .collect::<HashSet<_>>();
         let effective_remote_egress_rules =
@@ -256,12 +265,27 @@ impl ControlRoutePublisher {
             .iter()
             .map(|(resource, _)| resource.metadata.id)
             .collect::<HashSet<_>>();
-        paths.retain(|(_, path)| active_peer_ids.contains(&path.peer_id));
+        // A revoked attachment may leave its old path resource behind until the
+        // next control edit. Do not let that stale path make validation fail for
+        // the whole segment; only active attachment pairs participate in this
+        // publication.
+        paths.retain(|(_, path)| {
+            active_peer_ids.contains(&path.peer_id)
+                && active_attachment_ids.contains(&path.source_attachment_id)
+                && active_attachment_ids.contains(&path.destination_attachment_id)
+        });
         let mut core_attachments = Vec::with_capacity(attachments.len());
         for (resource, value) in &attachments {
-            let node = nodes
-                .get(&value.node_id)
-                .context("Attachment references a missing Node")?;
+            let Some(node) = nodes.get(&value.node_id) else {
+                // A revoked attachment no longer participates in the data plane;
+                // once its Node is retired there is no principal to preserve.
+                // Omit it from the new snapshot while still allowing the
+                // publication to remove its previous projection.
+                if resource.metadata.state != ResourceState::Active {
+                    continue;
+                }
+                return Err(InputReadinessError::NodeIdentity.into());
+            };
             let state = if resource.metadata.state == ResourceState::Active {
                 AttachmentState::Active
             } else {
@@ -371,7 +395,7 @@ impl ControlRoutePublisher {
                     .context("relay path references a missing Relay")?;
                 nodes
                     .get(&relay.service_node_id)
-                    .context("Relay references a missing service Node")?;
+                    .ok_or(InputReadinessError::NodeIdentity)?;
             }
             if (value.kind == PathCandidateKindV1::Relay) != value.relay_id.is_some() {
                 bail!("path candidate relay binding does not match its kind");
@@ -1283,6 +1307,17 @@ mod tests {
             failure,
             PublicationFailure::Retryable { code, retry_after }
                 if code == "ROUTE_INPUT_WAITING_FOR_PATHS"
+                    && retry_after == std::time::Duration::from_secs(5)
+        ));
+    }
+
+    #[test]
+    fn inactive_node_identity_is_retryable_until_registration_completes() {
+        let failure = classify_input_error(InputReadinessError::NodeIdentity.into());
+        assert!(matches!(
+            failure,
+            PublicationFailure::Retryable { code, retry_after }
+                if code == "ROUTE_INPUT_WAITING_FOR_NODE"
                     && retry_after == std::time::Duration::from_secs(5)
         ));
     }

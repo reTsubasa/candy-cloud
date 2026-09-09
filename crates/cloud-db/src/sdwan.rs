@@ -1736,14 +1736,16 @@ impl SdwanRepository {
                 } else if previous_lifecycle != lifecycle
                     || previous_error.as_deref() != telemetry.last_error_code.as_deref()
                 {
-                    Some(if lifecycle == "ACTIVE"
-                        && !telemetry.fail_open_required
-                        && telemetry.last_error_code.is_none()
-                    {
-                        "RUNTIME_LIFECYCLE_RECOVERED"
-                    } else {
-                        "RUNTIME_LIFECYCLE_DEGRADED"
-                    })
+                    Some(
+                        if lifecycle == "ACTIVE"
+                            && !telemetry.fail_open_required
+                            && telemetry.last_error_code.is_none()
+                        {
+                            "RUNTIME_LIFECYCLE_RECOVERED"
+                        } else {
+                            "RUNTIME_LIFECYCLE_DEGRADED"
+                        },
+                    )
                 } else {
                     None
                 }

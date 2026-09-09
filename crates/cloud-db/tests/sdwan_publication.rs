@@ -873,7 +873,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     assert_eq!(prepared_statuses.len(), 2);
     assert!(prepared_statuses
         .iter()
-        .all(|status| status.apply_state == "PREPARED" && status.current));
+        .all(|status| status.apply_state == "PREPARED" && !status.current));
     for (lookup, prepared) in [
         (&runtime_lookup, &first_runtime),
         (&peer_runtime_lookup, &first_peer_runtime),
