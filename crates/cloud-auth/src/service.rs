@@ -373,6 +373,7 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                     active_peers: command.active_peers,
                     required_route_owners: command.required_route_owners,
                     ready_route_owners: command.ready_route_owners,
+                    failed_route_prefixes: command.failed_route_prefixes,
                     fail_open_required: command.fail_open_required,
                     last_error_code: command.last_error_code,
                     last_error_detail: command.last_error_detail,

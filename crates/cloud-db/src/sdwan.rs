@@ -363,6 +363,7 @@ pub struct RuntimeTelemetryWrite {
     pub active_peers: u32,
     pub required_route_owners: u32,
     pub ready_route_owners: u32,
+    pub failed_route_prefixes: Vec<String>,
     pub fail_open_required: bool,
     pub last_error_code: Option<String>,
     pub last_error_detail: Option<String>,
@@ -1664,7 +1665,7 @@ impl SdwanRepository {
             serde_json::to_string(telemetry.local_networks.as_deref().unwrap_or(&[]))
                 .map_err(|_| RuntimeConfigurationError::InvalidScope)?;
         sqlx::query(
-            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, dataplane_phase, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, paths_json, local_networks_json, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), IF(? = 1, CAST(? AS JSON), JSON_ARRAY()), ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), dataplane_phase = VALUES(dataplane_phase), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), last_error_detail = VALUES(last_error_detail), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), transport_mode = VALUES(transport_mode), runtime_generation = VALUES(runtime_generation), paths_json = VALUES(paths_json), local_networks_json = IF(? = 1, VALUES(local_networks_json), local_networks_json), reported_at = VALUES(reported_at)",
+            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, dataplane_phase, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, paths_json, local_networks_json, failed_route_prefixes_json, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), IF(? = 1, CAST(? AS JSON), JSON_ARRAY()), CAST(? AS JSON), ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), dataplane_phase = VALUES(dataplane_phase), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), last_error_detail = VALUES(last_error_detail), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), transport_mode = VALUES(transport_mode), runtime_generation = VALUES(runtime_generation), paths_json = VALUES(paths_json), local_networks_json = IF(? = 1, VALUES(local_networks_json), local_networks_json), failed_route_prefixes_json = VALUES(failed_route_prefixes_json), reported_at = VALUES(reported_at)",
         )
         .bind(telemetry.lookup.tenant_id)
         .bind(telemetry.lookup.device_id)
@@ -1692,6 +1693,7 @@ impl SdwanRepository {
         .bind(paths_json)
         .bind(local_networks_present)
         .bind(local_networks_json)
+        .bind(serde_json::to_string(&telemetry.failed_route_prefixes).map_err(|_| RuntimeConfigurationError::InvalidScope)?)
         .bind(now)
         .bind(local_networks_present)
         .execute(&mut *transaction)

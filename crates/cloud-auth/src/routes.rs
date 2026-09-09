@@ -332,6 +332,7 @@ pub struct RuntimeTelemetryCommand {
     pub active_peers: u32,
     pub required_route_owners: u32,
     pub ready_route_owners: u32,
+    pub failed_route_prefixes: Vec<String>,
     pub fail_open_required: bool,
     pub last_error_code: Option<String>,
     pub last_error_detail: Option<String>,
@@ -1252,6 +1253,8 @@ where
             .is_some_and(|mode| mode != "stream_primary")
         || request.runtime_generation == Some(0)
         || request.paths.len() > 256
+        || request.failed_route_prefixes.len() > 4096
+        || request.failed_route_prefixes.iter().any(|prefix| !valid_runtime_prefix(prefix))
         || request
             .local_networks
             .as_ref()
@@ -1299,6 +1302,7 @@ where
             active_peers: request.active_peers,
             required_route_owners: request.required_route_owners,
             ready_route_owners: request.ready_route_owners,
+            failed_route_prefixes: request.failed_route_prefixes,
             fail_open_required: request.fail_open_required,
             last_error_code: error_code,
             last_error_detail: request.last_error_detail,
@@ -1590,6 +1594,15 @@ fn valid_runtime_network(cidr: &str, address: &str) -> bool {
     network == (u32::from(address) & mask) && network == (network & mask)
 }
 
+fn valid_runtime_prefix(value: &str) -> bool {
+    let Some((network, length)) = value.split_once('/') else { return false; };
+    let Ok(address) = network.parse::<Ipv4Addr>() else { return false; };
+    let Ok(prefix) = length.parse::<u8>() else { return false; };
+    if prefix > 32 || length.is_empty() || length.len() > 2 { return false; }
+    let mask = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+    u32::from(address) & !mask == 0
+}
+
 fn valid_installation_instance_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 120
@@ -1834,6 +1847,8 @@ struct RuntimeTelemetryHttpRequest {
     active_peers: u32,
     required_route_owners: u32,
     ready_route_owners: u32,
+    #[serde(default)]
+    failed_route_prefixes: Vec<String>,
     fail_open_required: bool,
     last_error_code: Option<String>,
     #[serde(default)]

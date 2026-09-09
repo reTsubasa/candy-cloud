@@ -137,6 +137,7 @@ pub struct RuntimeTelemetryRecord {
     pub active_peers: u32,
     pub required_route_owners: u32,
     pub ready_route_owners: u32,
+    pub failed_route_prefixes: Vec<String>,
     pub fail_open_required: bool,
     pub last_error_code: Option<String>,
     pub last_error_detail: Option<String>,
@@ -527,7 +528,7 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, dataplane_phase, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, CAST(paths_json AS CHAR) AS paths_json, CAST(local_networks_json AS CHAR) AS local_networks_json, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
+            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, dataplane_phase, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, CAST(paths_json AS CHAR) AS paths_json, CAST(local_networks_json AS CHAR) AS local_networks_json, CAST(failed_route_prefixes_json AS CHAR) AS failed_route_prefixes_json, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -562,6 +563,7 @@ impl ControlRepository {
                     active_peers: row.try_get("active_peers")?,
                     required_route_owners: row.try_get("required_route_owners")?,
                     ready_route_owners: row.try_get("ready_route_owners")?,
+                    failed_route_prefixes: serde_json::from_str(&row.try_get::<String, _>("failed_route_prefixes_json")?).map_err(|_| ControlStoreError::InvalidTransition)?,
                     fail_open_required: row.try_get("fail_open_required")?,
                     last_error_code: row.try_get("last_error_code")?,
                     last_error_detail: row.try_get("last_error_detail")?,
