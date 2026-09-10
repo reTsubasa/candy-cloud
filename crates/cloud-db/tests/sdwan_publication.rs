@@ -1058,6 +1058,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         active_peers: 1,
         required_route_owners: 1,
         ready_route_owners: 1,
+        failed_route_prefixes: Vec::new(),
         fail_open_required: false,
         last_error_code: None,
         last_error_detail: None,
