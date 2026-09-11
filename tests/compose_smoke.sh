@@ -29,11 +29,11 @@ printf '%s\n' "$compose_config" | awk '
   /^  cloud-worker:$/ { worker = 1; next }
   worker && /^  [[:alnum:]_-]+:$/ { worker = 0 }
   worker && /target: runtime-core/ { target = 1 }
-  worker && /CORE_MODULE_VERSION: 0.3.14/ { version = 1 }
+  worker && /CORE_MODULE_VERSION: 0.3.46/ { version = 1 }
   worker && /CORE_MODULE_TARGET: x86_64-unknown-linux-gnu/ { architecture = 1 }
   worker && /CORE_MODULE_BUNDLE_URL:/ { url = 1 }
-  worker && /CORE_MODULE_BUNDLE_SHA256: 9aed981feb12da9b1963c567976ef70c05ee2de709c3df49d0ff6e844ac608dc/ { bundle = 1 }
-  worker && /CORE_MODULE_SHA256: a0fc973a43c2ac8e48076e7ce0a1fdaecb8bb8feb9f9885d29ab8a2c7ecdbcf9/ { module = 1 }
+  worker && /CORE_MODULE_BUNDLE_SHA256: 788f5322eaa3e67afd1822d53c6476dbcc771ba786ad315910385cda17b35112/ { bundle = 1 }
+  worker && /CORE_MODULE_SHA256: 6e74c7f1ad61a9d3aedb7b47c2cdc652c1408c85c9615870714047c644f475c5/ { module = 1 }
   END { exit (target && version && architecture && !url && bundle && module) ? 0 : 1 }
 ' || {
   echo "cloud-worker verified Core module build contract is missing" >&2
@@ -147,17 +147,17 @@ fi
 
 worker_image=$(docker inspect --format '{{.Image}}' "$worker_id")
 test "$(docker image inspect --format '{{.Architecture}}' "$worker_image")" = amd64
-module_path=/opt/candy/cores/0.3.14/libcandy_core_cloud.so
+module_path=/opt/candy/cores/0.3.46/libcandy_core_cloud.so
 test "$(docker exec "$worker_id" sha256sum "$module_path" | awk '{print $1}')" = \
-  a0fc973a43c2ac8e48076e7ce0a1fdaecb8bb8feb9f9885d29ab8a2c7ecdbcf9
-manifest_path=/opt/candy/cores/0.3.14/manifest.json
+  6e74c7f1ad61a9d3aedb7b47c2cdc652c1408c85c9615870714047c644f475c5
+manifest_path=/opt/candy/cores/0.3.46/manifest.json
 manifest=$(docker exec "$worker_id" sed -e ':a' -e 'N' -e '$!ba' -e 's/[[:space:]]//g' "$manifest_path")
 printf '%s\n' "$manifest" | grep -F '"release_kind":"candy-core"' >/dev/null
-printf '%s\n' "$manifest" | grep -F '"commit":"d49ebed945c2d3b4f2701148dc126e556bb04620"' >/dev/null
+printf '%s\n' "$manifest" | grep -F '"commit":"9e34b4c72d89f766ff6fe7100b6eb2f2d699acfe"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"target":"x86_64-unknown-linux-gnu"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"target_arch":"x86_64"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"libc":"glibc"' >/dev/null
 worker_logs=$(docker logs "$worker_id" 2>&1)
 printf '%s\n' "$worker_logs" | grep -F '"event":"core_module_ready"' >/dev/null
-printf '%s\n' "$worker_logs" | grep -F '"module_version":"0.3.14"' >/dev/null
+printf '%s\n' "$worker_logs" | grep -F '"module_version":"0.3.46"' >/dev/null
 docker volume inspect "${project_name}_candy-cloud-mysql-data" >/dev/null
