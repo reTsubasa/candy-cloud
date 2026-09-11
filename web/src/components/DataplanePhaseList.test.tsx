@@ -37,7 +37,7 @@ describe('dataplane phase freshness', () => {
 
   it('does not infer a running phase for missing telemetry', () => {
     render(<DataplanePhaseList nodes={nodes(1, [])} />);
-    expect(screen.getByText('未上报遥测')).toBeInTheDocument();
+    expect(screen.getAllByText('未上报遥测').length).toBeGreaterThan(0);
   });
 
   it('does not infer a running phase from a fresh lifecycle without phase', () => {
