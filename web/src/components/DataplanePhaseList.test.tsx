@@ -1,8 +1,10 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
 import { buildOperationalTopology, emptyOperationalResources } from '../operational-topology';
 import type { ControlResource, RuntimeTelemetry } from '../types';
 import { DataplanePhaseList } from './DataplanePhaseList';
+
+afterEach(cleanup);
 
 const node: ControlResource = {
   metadata: { schema_version: 1, id: 'node', tenant_id: 'tenant', revision: 1, state: 'ACTIVE' },
