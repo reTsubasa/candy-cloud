@@ -211,9 +211,10 @@ export function buildOperationalTopology(
     const status = statusByIdentity.get(identity);
     const runtime = telemetryByIdentity.get(identity) ?? null;
     const reportedMs = runtime ? Date.parse(runtime.reported_at) : Number.NaN;
-    const telemetryState = !runtime || !Number.isFinite(reportedMs)
+    const telemetryAgeMs = nowMs - reportedMs;
+    const telemetryState = !runtime || !Number.isFinite(reportedMs) || telemetryAgeMs < 0
       ? 'unreported'
-      : nowMs - reportedMs <= staleAfterSeconds * 1000 ? 'online' : 'stale';
+      : telemetryAgeMs <= staleAfterSeconds * 1000 ? 'online' : 'stale';
     const applyState = !status
       ? 'unknown'
       : status.current && status.state === 'active'
