@@ -14,7 +14,7 @@ import {
   Typography,
 } from '@arco-design/web-react';
 import { IconDelete, IconEdit, IconPlus, IconRefresh, IconRight, IconSafe, IconSearch, IconSync } from '@arco-design/web-react/icon';
-import { CloudApiError, deleteResource, fetchRuntimeActivationReadiness, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, getResource, listAllResources, listResourceReferences, listResources } from '../api';
+import { CloudApiError, createNodeUpgrade, deleteResource, fetchRuntimeActivationReadiness, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, getNodeUpgrades, getResource, listAllResources, listResourceReferences, listResources } from '../api';
 import { buildOperationalTopology, emptyOperationalResources, type OperationalResourceKey, type OperationalResources, type OperationalTopologySnapshot } from '../operational-topology';
 import type { OperationalStatus } from '../operational-status';
 import { pathDefinition, resourceDefinitions } from '../resource-definitions';
@@ -354,7 +354,19 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
     align: 'right' as const,
     render: (_: unknown, record: ControlResource) => (
       <Space size={4}>
-        {definition.kind === 'NODE' && <Tooltip content="重新生成加入文件"><Button type="text" size="small" icon={<IconSync />} aria-label="重新加入" onClick={() => onReenrollNode?.(record)} /></Tooltip>}
+        {definition.kind === 'NODE' && <>
+          <Tooltip content="升级 Runtime/Core"><Button type="text" size="small" icon={<IconRefresh />} aria-label="升级节点" onClick={() => void (async () => {
+            if (!tenantId) return;
+            try {
+              const status = await getNodeUpgrades(session.token, tenantId, record.metadata.id);
+              const targets = status.inventory?.targets.filter((item) => item.version !== item.current_version) ?? [];
+              if (targets.length === 0) { message.info?.('节点已是最新版本或尚未上报升级清单'); return; }
+              for (const target of targets) await createNodeUpgrade(session.token, tenantId, record.metadata.id, target);
+              message.success?.(`已创建 ${targets.length} 个升级任务`);
+            } catch (error) { message.error?.(error instanceof Error ? error.message : '创建升级任务失败'); }
+          })()} /></Tooltip>
+          <Tooltip content="重新生成加入文件"><Button type="text" size="small" icon={<IconSync />} aria-label="重新加入" onClick={() => onReenrollNode?.(record)} /></Tooltip>
+        </>}
         <Tooltip content="编辑"><Button type="text" size="small" icon={<IconEdit />} aria-label="编辑" onClick={() => setEditor({ visible: true, resource: record })} /></Tooltip>
         <Tooltip content="删除"><Button type="text" size="small" status="danger" icon={<IconDelete />} aria-label="删除" loading={deletingId === record.metadata.id} disabled={deletingId !== null} onClick={() => void openDelete(record)} /></Tooltip>
       </Space>

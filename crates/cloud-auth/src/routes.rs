@@ -461,6 +461,31 @@ pub enum RuntimeConfigurationServiceError {
 }
 
 pub trait RuntimeConfigurationService: Send + Sync + 'static {
+    fn upgrade_inventory(
+        &self,
+        _actor: AuthenticatedDevice,
+        _inventory: cloud_db::control::upgrades::UpgradeInventory,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async { Err(RuntimeConfigurationServiceError::Unavailable) })
+    }
+
+    fn pending_upgrade(
+        &self,
+        _actor: AuthenticatedDevice,
+    ) -> ServiceFuture<
+        '_,
+        Result<Option<cloud_db::control::upgrades::UpgradeJob>, RuntimeConfigurationServiceError>,
+    > {
+        Box::pin(async { Err(RuntimeConfigurationServiceError::Unavailable) })
+    }
+
+    fn upgrade_receipt(
+        &self,
+        _actor: AuthenticatedDevice,
+        _receipt: UpgradeReceipt,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async { Err(RuntimeConfigurationServiceError::Unavailable) })
+    }
     fn profile(
         &self,
         actor: AuthenticatedDevice,
@@ -613,6 +638,11 @@ where
     S: RuntimeConfigurationService,
 {
     Router::new()
+        .route(
+            "/v1/runtime/upgrades",
+            get(pending_upgrade::<S>).put(upgrade_receipt::<S>),
+        )
+        .route("/v1/runtime/upgrade-inventory", put(upgrade_inventory::<S>))
         .route("/v1/runtime/capabilities", get(runtime_capabilities))
         .route("/v1/runtime/profile", get(runtime_profile::<S>))
         .route(
@@ -630,6 +660,62 @@ where
         )
         .route("/v1/runtime/telemetry", put(record_runtime_telemetry::<S>))
         .with_state(service)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpgradeReceipt {
+    pub id: Uuid,
+    pub state: String,
+    pub error_code: Option<String>,
+}
+
+async fn upgrade_inventory<S: RuntimeConfigurationService>(
+    actor: AuthenticatedDevice,
+    State(service): State<Arc<S>>,
+    Json(inventory): Json<cloud_db::control::upgrades::UpgradeInventory>,
+) -> Result<StatusCode, ApiError> {
+    if !inventory.validate() {
+        return Err(ApiError::InvalidUpgrade);
+    }
+    service
+        .upgrade_inventory(actor, inventory)
+        .await
+        .map_err(ApiError::Upgrade)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn pending_upgrade<S: RuntimeConfigurationService>(
+    actor: AuthenticatedDevice,
+    State(service): State<Arc<S>>,
+) -> Result<Json<Option<cloud_db::control::upgrades::UpgradeJob>>, ApiError> {
+    service
+        .pending_upgrade(actor)
+        .await
+        .map(Json)
+        .map_err(ApiError::Upgrade)
+}
+
+async fn upgrade_receipt<S: RuntimeConfigurationService>(
+    actor: AuthenticatedDevice,
+    State(service): State<Arc<S>>,
+    Json(receipt): Json<UpgradeReceipt>,
+) -> Result<StatusCode, ApiError> {
+    if receipt.id.is_nil()
+        || !matches!(receipt.state.as_str(), "running" | "succeeded" | "failed")
+        || (receipt.state == "failed") != receipt.error_code.is_some()
+        || receipt
+            .error_code
+            .as_deref()
+            .is_some_and(|e| !cloud_db::control::upgrades::identifier(e))
+    {
+        return Err(ApiError::InvalidUpgrade);
+    }
+    service
+        .upgrade_receipt(actor, receipt)
+        .await
+        .map_err(ApiError::Upgrade)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn withdraw_runtime_transport_identity<S>(
@@ -1254,7 +1340,10 @@ where
         || request.runtime_generation == Some(0)
         || request.paths.len() > 256
         || request.failed_route_prefixes.len() > 4096
-        || request.failed_route_prefixes.iter().any(|prefix| !valid_runtime_prefix(prefix))
+        || request
+            .failed_route_prefixes
+            .iter()
+            .any(|prefix| !valid_runtime_prefix(prefix))
         || request
             .local_networks
             .as_ref()
@@ -1595,11 +1684,23 @@ fn valid_runtime_network(cidr: &str, address: &str) -> bool {
 }
 
 fn valid_runtime_prefix(value: &str) -> bool {
-    let Some((network, length)) = value.split_once('/') else { return false; };
-    let Ok(address) = network.parse::<Ipv4Addr>() else { return false; };
-    let Ok(prefix) = length.parse::<u8>() else { return false; };
-    if prefix > 32 || length.is_empty() || length.len() > 2 { return false; }
-    let mask = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+    let Some((network, length)) = value.split_once('/') else {
+        return false;
+    };
+    let Ok(address) = network.parse::<Ipv4Addr>() else {
+        return false;
+    };
+    let Ok(prefix) = length.parse::<u8>() else {
+        return false;
+    };
+    if prefix > 32 || length.is_empty() || length.len() > 2 {
+        return false;
+    }
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
     u32::from(address) & !mask == 0
 }
 
@@ -1994,6 +2095,8 @@ pub enum ApiError {
     CertificateRenewal(CertificateRenewalError),
     Service(GrantServiceError),
     InvalidRuntimeConfigurationStatus,
+    InvalidUpgrade,
+    Upgrade(RuntimeConfigurationServiceError),
     InvalidRuntimeTelemetry,
     RuntimeConfiguration(RuntimeConfigurationServiceError),
 }
@@ -2045,6 +2148,14 @@ impl IntoResponse for ApiError {
                 "invalid_runtime_configuration_status",
             ),
             Self::InvalidRuntimeTelemetry => (StatusCode::BAD_REQUEST, "invalid_runtime_telemetry"),
+            Self::InvalidUpgrade => (StatusCode::BAD_REQUEST, "invalid_upgrade_request"),
+            Self::Upgrade(RuntimeConfigurationServiceError::Conflict) => {
+                (StatusCode::CONFLICT, "upgrade_state_conflict")
+            }
+            Self::Upgrade(RuntimeConfigurationServiceError::Unavailable) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "upgrade_storage_unavailable",
+            ),
             Self::RuntimeConfiguration(RuntimeConfigurationServiceError::Conflict) => {
                 (StatusCode::CONFLICT, "configuration_changed")
             }

@@ -20,6 +20,8 @@ use crate::sdwan::{
 };
 use crate::DbPool;
 
+pub mod upgrades;
+
 const MAX_ACTOR_LEN: usize = 120;
 const MAX_IDEMPOTENCY_KEY_LEN: usize = 160;
 const MAX_REQUEST_PATH_LEN: usize = 500;
@@ -563,7 +565,10 @@ impl ControlRepository {
                     active_peers: row.try_get("active_peers")?,
                     required_route_owners: row.try_get("required_route_owners")?,
                     ready_route_owners: row.try_get("ready_route_owners")?,
-                    failed_route_prefixes: serde_json::from_str(&row.try_get::<String, _>("failed_route_prefixes_json")?).map_err(|_| ControlStoreError::InvalidTransition)?,
+                    failed_route_prefixes: serde_json::from_str(
+                        &row.try_get::<String, _>("failed_route_prefixes_json")?,
+                    )
+                    .map_err(|_| ControlStoreError::InvalidTransition)?,
                     fail_open_required: row.try_get("fail_open_required")?,
                     last_error_code: row.try_get("last_error_code")?,
                     last_error_detail: row.try_get("last_error_detail")?,

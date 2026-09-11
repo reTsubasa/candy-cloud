@@ -165,6 +165,59 @@ impl DatabaseRuntimeConfigurationService {
 }
 
 impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
+    fn upgrade_inventory(
+        &self,
+        actor: crate::routes::AuthenticatedDevice,
+        inventory: cloud_db::control::upgrades::UpgradeInventory,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async move {
+            self.control
+                .record_upgrade_inventory(
+                    actor.tenant_id(),
+                    actor.device_id(),
+                    actor.device_key_id(),
+                    inventory,
+                )
+                .await
+                .map_err(upgrade_error)
+        })
+    }
+
+    fn pending_upgrade(
+        &self,
+        actor: crate::routes::AuthenticatedDevice,
+    ) -> ServiceFuture<
+        '_,
+        Result<Option<cloud_db::control::upgrades::UpgradeJob>, RuntimeConfigurationServiceError>,
+    > {
+        Box::pin(async move {
+            self.control
+                .pending_node_upgrade(actor.tenant_id(), actor.device_id(), actor.device_key_id())
+                .await
+                .map_err(upgrade_error)
+        })
+    }
+
+    fn upgrade_receipt(
+        &self,
+        actor: crate::routes::AuthenticatedDevice,
+        receipt: crate::routes::UpgradeReceipt,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async move {
+            self.control
+                .update_node_upgrade(
+                    actor.tenant_id(),
+                    actor.device_id(),
+                    actor.device_key_id(),
+                    receipt.id,
+                    &receipt.state,
+                    receipt.error_code.as_deref(),
+                )
+                .await
+                .map_err(upgrade_error)
+        })
+    }
+
     fn profile(
         &self,
         actor: crate::routes::AuthenticatedDevice,
@@ -564,6 +617,15 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                     _ => RuntimeConfigurationServiceError::Unavailable,
                 })
         })
+    }
+}
+
+fn upgrade_error(error: cloud_db::control::ControlStoreError) -> RuntimeConfigurationServiceError {
+    match error {
+        cloud_db::control::ControlStoreError::Database(_) => {
+            RuntimeConfigurationServiceError::Unavailable
+        }
+        _ => RuntimeConfigurationServiceError::Conflict,
     }
 }
 

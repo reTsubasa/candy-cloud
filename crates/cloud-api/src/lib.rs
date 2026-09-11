@@ -92,6 +92,10 @@ fn health_routes() -> Router<Arc<ManagementState>> {
 fn management_routes() -> Router<Arc<ManagementState>> {
     Router::new()
         .route(
+            "/v1/tenants/{tenant_id}/nodes/{node_id}/upgrades",
+            get(management::node_upgrades).post(management::create_node_upgrade),
+        )
+        .route(
             "/v1/tenants/{tenant_id}/enrollment/activations",
             get(management::list_activations).post(management::create_activation),
         )

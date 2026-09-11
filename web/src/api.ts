@@ -286,6 +286,21 @@ export function listResources(
   });
 }
 
+export type NodeUpgradeTarget = { component: string; current_version: string; version: string; version_key: string; digest: string };
+export type NodeUpgradesResponse = { inventory: { targets: NodeUpgradeTarget[] } | null; jobs: Array<{ state: string; target: NodeUpgradeTarget }> };
+
+export function getNodeUpgrades(token: string, tenantId: string, nodeId: string): Promise<NodeUpgradesResponse> {
+  return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/nodes/${encodeURIComponent(nodeId)}/upgrades`, token);
+}
+
+export function createNodeUpgrade(token: string, tenantId: string, nodeId: string, target: NodeUpgradeTarget): Promise<unknown> {
+  return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/nodes/${encodeURIComponent(nodeId)}/upgrades`, token, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ request_id: crypto.randomUUID(), target }),
+  });
+}
+
 export async function listAllResources(
   token: string,
   tenantId: string,

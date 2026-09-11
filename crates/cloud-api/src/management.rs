@@ -36,6 +36,78 @@ pub struct ManagementState {
     pub authentication_ready: bool,
 }
 
+#[derive(Serialize)]
+pub struct NodeUpgradesResponse {
+    inventory: Option<cloud_db::control::upgrades::UpgradeInventory>,
+    reported_at: Option<chrono::DateTime<Utc>>,
+    jobs: Vec<cloud_db::control::upgrades::UpgradeJob>,
+}
+
+pub async fn node_upgrades(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path((tenant_id, node_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<NodeUpgradesResponse>, ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::ReadConfiguration)?;
+    let repository = state
+        .repository
+        .as_ref()
+        .ok_or_else(ApiError::authentication_unavailable)?;
+    let inventory = repository
+        .upgrade_inventory(tenant_id, node_id)
+        .await
+        .map_err(ApiError::from_store)?;
+    let jobs = repository
+        .node_upgrade_jobs(tenant_id, node_id)
+        .await
+        .map_err(ApiError::from_store)?;
+    Ok(Json(NodeUpgradesResponse {
+        reported_at: inventory.as_ref().map(|(_, at)| *at),
+        inventory: inventory.map(|(inventory, _)| inventory),
+        jobs,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeUpgradeRequest {
+    request_id: Uuid,
+    target: cloud_db::control::upgrades::UpgradeTarget,
+}
+
+pub async fn create_node_upgrade(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path((tenant_id, node_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<NodeUpgradeRequest>,
+) -> Result<(StatusCode, Json<cloud_db::control::upgrades::UpgradeJob>), ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::WriteConfiguration)?;
+    let repository = state
+        .repository
+        .as_ref()
+        .ok_or_else(ApiError::authentication_unavailable)?;
+    let job = repository
+        .create_node_upgrade(
+            tenant_id,
+            node_id,
+            &principal.actor_id,
+            body.request_id,
+            body.target,
+        )
+        .await
+        .map_err(|error| match error {
+            ControlStoreError::InvalidTransition => ApiError {
+                status: StatusCode::CONFLICT,
+                code: "UPGRADE_UNAVAILABLE",
+                message: "node inventory is stale or another upgrade is unfinished",
+            },
+            error => ApiError::from_store(error),
+        })?;
+    Ok((StatusCode::ACCEPTED, Json(job)))
+}
+
 #[derive(Debug, Serialize)]
 struct ErrorBody {
     schema_version: u16,
