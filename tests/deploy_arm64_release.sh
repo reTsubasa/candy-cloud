@@ -79,7 +79,10 @@ start_line=$(grep -n '^[[:space:]]*compose up -d$' "$script" | cut -d: -f1)
 for workflow in "$arm_workflow" "$x86_workflow"; do
 	grep -F 'CORE_MODULE_VERSION: 0.3.46' "$workflow" >/dev/null
 	grep -F 'CORE_MODULE_INPUT_TAG: core-v0.3.46' "$workflow" >/dev/null
-	grep -F 'RUNTIME_RELEASE_TAG: runtime-v0.4.0-r106' "$workflow" >/dev/null
+	grep -F 'RUNTIME_RELEASE_TAG: runtime-v0.4.0-r113' "$workflow" >/dev/null
+	grep -F 'RELEASE_REPOSITORY: reTsubasa/candy-release' "$workflow" >/dev/null
+	grep -F 'gh release create "$tag" --repo "$RELEASE_REPOSITORY"' "$workflow" >/dev/null
+	grep -F 'gh release upload "$tag" --repo "$RELEASE_REPOSITORY"' "$workflow" >/dev/null
 	grep -F 'runtime:{release_tag:$runtime_release_tag}' "$workflow" >/dev/null
 done
 
