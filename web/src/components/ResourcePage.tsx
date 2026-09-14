@@ -366,8 +366,19 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
               }
               const targets = status.inventory?.targets.filter((item) => item.version !== item.current_version) ?? [];
               if (targets.length === 0) { message.info?.('节点已是最新版本或尚未上报升级清单'); return; }
-              for (const target of targets) await createNodeUpgrade(session.token, tenantId, record.metadata.id, target);
-              message.success?.(`已创建 ${targets.length} 个升级任务`);
+              // The control plane intentionally permits only one pending/running
+              // upgrade per node. Submit the first candidate and let the next
+              // inventory poll expose the following component after completion.
+              // Avoid a second request here: it would be rejected after the
+              // first insert and make a successful partial rollout look failed.
+              const target = targets[0];
+              await createNodeUpgrade(session.token, tenantId, record.metadata.id, target);
+              const remaining = targets.length - 1;
+              message.success?.(
+                remaining > 0
+                  ? `已创建 ${target.component} 升级任务，完成后再次点击继续 ${remaining} 项`
+                  : `已创建 ${target.component} 升级任务`,
+              );
             } catch (error) { message.error?.(error instanceof Error ? error.message : '创建升级任务失败'); }
           })()} /></Tooltip>
           <Tooltip content="重新生成加入文件"><Button type="text" size="small" icon={<IconSync />} aria-label="重新加入" onClick={() => onReenrollNode?.(record)} /></Tooltip>
