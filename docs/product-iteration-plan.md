@@ -15,6 +15,8 @@
 
 ## 迭代总览
 
+截至 2026-09-14 的实现状态：I4 已完成；I1 已完成 Runtime/netd 双代 drain 的本地闭环，跨节点 barrier 与真实故障注入仍未完成；I3 已完成 Core 精确 failed-prefix 判定和 netd 撤销/恢复，普通 Proxy 的真实数据包回注仍未完成；I5 已完成 Runtime 错误阶段分类和 Cloud/Runtime phase 持久化，完整 E2E 仍未完成。
+
 | 迭代 | 目标 | 依赖 | 发布级别 |
 | --- | --- | --- | --- |
 | I0 | 冻结跨仓库协议、版本和验收基线 | 无 | 阻断后续开发 |
@@ -38,6 +40,8 @@
 退出条件：所有参与仓库引用同一份 schema/兼容矩阵；旧版本收到新事务时安全拒绝。
 
 ## I1：双节点 barrier 和双代 netd
+
+当前状态：进行中。双代 netd、有限 drain、journal 恢复已实现；跨节点 prepare/readiness/commit/fencing 和分区 chaos 尚未达到退出条件。
 
 交付：
 
@@ -65,6 +69,8 @@
 
 ## I3：按 prefix 降级与 Proxy 回注
 
+当前状态：进行中。Core 仅在全部 owner 不可用时报告 prefix 失败，Runtime/netd 按声明范围原子撤销并恢复；真实 Proxy 回注通道尚未实现。
+
 交付：
 
 - Core 输出 prefix-level owner/readiness 和失败原因。
@@ -78,6 +84,8 @@
 
 ## I4：发布链路一致性
 
+当前状态：已完成。Cloud 镜像通过中心仓库 draft staging + repository dispatch + finalize workflow 发布；x86/ARM64 产物已完成校验并生成 prerelease。
+
 交付：
 
 - 删除 workflow 中手工漂移的 Runtime/Core 版本，统一读取 Release metadata。
@@ -89,6 +97,8 @@
 验收：x86/ARM64 镜像均能从中心 Release 下载并校验，故意注入旧 tag 或错误仓库时 CI 必须失败。
 
 ## I5：升级错误码与 E2E
+
+当前状态：进行中。Runtime 已按阶段分类错误，Cloud 升级任务已持久化 phase；断电、回执丢失、重复任务和真实节点升级 E2E 尚未完成。
 
 交付：
 
