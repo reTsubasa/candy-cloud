@@ -18,7 +18,6 @@ CREATE TABLE runtime_upgrade_jobs (
     request_id BINARY(16) NOT NULL,
     target JSON NOT NULL,
     state ENUM('pending','running','succeeded','failed','expired') NOT NULL,
-    phase VARCHAR(32) NOT NULL DEFAULT 'pending',
     error_code VARCHAR(80) NULL,
     active_node_id BINARY(16) GENERATED ALWAYS AS
         (CASE WHEN state IN ('pending','running') THEN node_id ELSE NULL END) STORED,
