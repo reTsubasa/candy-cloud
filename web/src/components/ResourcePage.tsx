@@ -359,6 +359,11 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
             if (!tenantId) return;
             try {
               const status = await getNodeUpgrades(session.token, tenantId, record.metadata.id);
+              const activeJobs = status.jobs.filter((job) => job.state === 'pending' || job.state === 'running');
+              if (activeJobs.length > 0) {
+                message.info?.(`节点已有升级任务：${activeJobs.map((job) => `${job.target.component}/${job.phase}`).join('、')}`);
+                return;
+              }
               const targets = status.inventory?.targets.filter((item) => item.version !== item.current_version) ?? [];
               if (targets.length === 0) { message.info?.('节点已是最新版本或尚未上报升级清单'); return; }
               for (const target of targets) await createNodeUpgrade(session.token, tenantId, record.metadata.id, target);
