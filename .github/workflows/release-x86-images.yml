@@ -151,14 +151,21 @@ jobs:
             > "candy-cloud-x86-$revision.json"
       - name: Publish immutable prerelease assets
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.CANDY_RELEASE_TOKEN }}
         run: |
-          set -eu
+          set -euo pipefail
+          test -n "$GH_TOKEN"
           revision=${GITHUB_SHA::12}
           tag="cloud-x86-$revision"
-          gh release view "$tag" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1 || gh release create "$tag" --repo "$RELEASE_REPOSITORY" --target main --prerelease \
-            --title "Candy Cloud x86-64 $revision" --notes "Native x86-64 deployment images built from $GITHUB_SHA."
-          gh release upload "$tag" --repo "$RELEASE_REPOSITORY" \
+          staging_tag="incoming-$tag"
+          if gh release view "$staging_tag" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$staging_tag" --repo "$RELEASE_REPOSITORY" --yes
+          fi
+          gh release create "$staging_tag" --repo "$RELEASE_REPOSITORY" --draft \
+            --title "Incoming Candy Cloud x86-64 $revision" --notes "Native x86-64 deployment images built from $GITHUB_SHA."
+          gh release upload "$staging_tag" --repo "$RELEASE_REPOSITORY" \
             "candy-cloud-x86-$revision.tar.gz" \
             "candy-cloud-x86-$revision.tar.gz.sha256" \
             "candy-cloud-x86-$revision.json" --clobber
+          jq -n --arg tag "$staging_tag" '{event_type:"candy-artifact-ready",client_payload:{release_kind:"cloud",staging_tag:$tag}}' |
+            gh api --method POST "repos/$RELEASE_REPOSITORY/dispatches" --input -
