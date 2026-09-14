@@ -48,6 +48,10 @@ for required in \
 	}
 done
 
+grep -F 'release_repository=${CANDY_RELEASE_REPOSITORY:-reTsubasa/candy-release}' "$script" >/dev/null
+grep -F 'source_repository=${CANDY_CLOUD_SOURCE_REPOSITORY:-reTsubasa/candy-cloud}' "$script" >/dev/null
+grep -F '.source.repository == $source_repository' "$script" >/dev/null
+
 line_of() {
 	grep -nF -- "$1" "$script" | head -1 | cut -d: -f1
 }

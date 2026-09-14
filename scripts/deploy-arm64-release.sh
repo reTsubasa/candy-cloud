@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-repository=${CANDY_CLOUD_REPOSITORY:-reTsubasa/candy-cloud}
+release_repository=${CANDY_RELEASE_REPOSITORY:-reTsubasa/candy-release}
+source_repository=${CANDY_CLOUD_SOURCE_REPOSITORY:-reTsubasa/candy-cloud}
 release_tag=
 deployment_dir=
 transaction_started=0
@@ -21,7 +22,10 @@ starts and verifies the existing compose.arm64.yml deployment. A failed or
 interrupted transaction restores the complete previous deployment.
 
 Environment:
-  CANDY_CLOUD_REPOSITORY  GitHub owner/repository (default reTsubasa/candy-cloud)
+  CANDY_RELEASE_REPOSITORY      GitHub owner/repository holding signed releases
+                                (default reTsubasa/candy-release)
+  CANDY_CLOUD_SOURCE_REPOSITORY GitHub owner/repository expected in the signed
+                                manifest (default reTsubasa/candy-cloud)
 EOF
 }
 
@@ -58,7 +62,7 @@ archive="candy-cloud-arm64-$revision.tar.gz"
 checksum="$archive.sha256"
 manifest="candy-cloud-arm64-$revision.json"
 release_override=compose.arm64.release.yml
-base_url="https://github.com/$repository/releases/download/$release_tag"
+base_url="https://github.com/$release_repository/releases/download/$release_tag"
 backup_root=$deployment_dir/backups
 
 umask 077
@@ -71,10 +75,10 @@ curl --fail --location --proto '=https' --tlsv1.2 --retry 5 --retry-all-errors \
 	--connect-timeout 15 --max-time 120 --output "$manifest" "$base_url/$manifest"
 
 sha256sum -c "$checksum"
-jq -e --arg revision "$revision" --arg repository "$repository" '
+jq -e --arg revision "$revision" --arg source_repository "$source_repository" '
 	.schema_version == 1 and
 	.architecture == "arm64" and
-	.source.repository == $repository and
+	.source.repository == $source_repository and
 	(.source.commit | startswith($revision)) and
 	.images == ["migrate", "cloud-api", "cloud-identity", "cloud-auth", "cloud-worker", "cloud-web"]
 ' "$manifest" >/dev/null || fail "Release manifest is invalid"
