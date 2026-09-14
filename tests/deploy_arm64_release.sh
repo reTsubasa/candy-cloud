@@ -84,7 +84,7 @@ for workflow in "$arm_workflow" "$x86_workflow"; do
 	grep -F 'GH_TOKEN: ${{ secrets.CANDY_RELEASE_TOKEN }}' "$workflow" >/dev/null
 	grep -F 'gh release create "$staging_tag" --repo "$RELEASE_REPOSITORY" --draft' "$workflow" >/dev/null
 	grep -F 'gh release upload "$staging_tag" --repo "$RELEASE_REPOSITORY"' "$workflow" >/dev/null
-	grep -F 'event_type:"candy-artifact-ready"' "$workflow" >/dev/null
+	grep -F 'event_type:"candy-cloud-artifact-ready"' "$workflow" >/dev/null
 	grep -F 'runtime:{release_tag:$runtime_release_tag}' "$workflow" >/dev/null
 done
 

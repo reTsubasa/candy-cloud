@@ -169,5 +169,5 @@ jobs:
             "candy-cloud-arm64-$revision.tar.gz" \
             "candy-cloud-arm64-$revision.tar.gz.sha256" \
             "candy-cloud-arm64-$revision.json" --clobber
-          jq -n --arg tag "$staging_tag" '{event_type:"candy-artifact-ready",client_payload:{release_kind:"cloud",staging_tag:$tag}}' |
+          jq -n --arg tag "$staging_tag" '{event_type:"candy-cloud-artifact-ready",client_payload:{release_kind:"cloud",staging_tag:$tag}}' |
             gh api --method POST "repos/$RELEASE_REPOSITORY/dispatches" --input -
