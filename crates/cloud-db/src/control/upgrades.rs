@@ -104,7 +104,10 @@ async fn identity(
     tenant: Uuid,
     node: Uuid,
 ) -> Result<(Uuid, Uuid), ControlStoreError> {
-    let row = sqlx::query("SELECT JSON_UNQUOTE(JSON_EXTRACT(document_json, '$.resource.spec.device_id')) AS device, JSON_UNQUOTE(JSON_EXTRACT(document_json, '$.resource.spec.device_key_id')) AS device_key FROM sdwan_control_resources WHERE tenant_id=? AND resource_kind='NODE' AND id=? AND state='ACTIVE' FOR UPDATE")
+    // MySQL returns JSON scalar expressions as binary metadata to some
+    // sqlx versions. Cast explicitly so the identity lookup has a stable
+    // text contract instead of failing before the upgrade tables are read.
+    let row = sqlx::query("SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(document_json, '$.resource.spec.device_id')) AS CHAR(36)) AS device, CAST(JSON_UNQUOTE(JSON_EXTRACT(document_json, '$.resource.spec.device_key_id')) AS CHAR(36)) AS device_key FROM sdwan_control_resources WHERE tenant_id=? AND resource_kind='NODE' AND id=? AND state='ACTIVE' FOR UPDATE")
         .bind(tenant).bind(node).fetch_optional(&mut **tx).await?.ok_or(ControlStoreError::NotFound)?;
     let device: String = row.try_get("device")?;
     let key: String = row.try_get("device_key")?;

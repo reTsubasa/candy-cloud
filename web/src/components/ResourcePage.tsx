@@ -14,7 +14,7 @@ import {
   Typography,
 } from '@arco-design/web-react';
 import { IconDelete, IconEdit, IconPlus, IconRefresh, IconRight, IconSafe, IconSearch, IconSync } from '@arco-design/web-react/icon';
-import { CloudApiError, createNodeUpgrade, deleteResource, fetchRuntimeActivationReadiness, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, getNodeUpgrades, getResource, listAllResources, listResourceReferences, listResources } from '../api';
+import { CloudApiError, createNodeUpgrade, deleteResource, fetchRuntimeActivationReadiness, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, getNodeUpgrades, getResource, listAllResources, listResourceReferences, listResources, type NodeUpgradesResponse } from '../api';
 import { buildOperationalTopology, emptyOperationalResources, type OperationalResourceKey, type OperationalResources, type OperationalTopologySnapshot } from '../operational-topology';
 import type { OperationalStatus } from '../operational-status';
 import { pathDefinition, resourceDefinitions } from '../resource-definitions';
@@ -197,6 +197,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
   const [policyReferenceError, setPolicyReferenceError] = useState<string | null>(null);
   const [operationalSnapshot, setOperationalSnapshot] = useState<OperationalTopologySnapshot | null>(null);
   const [operationalStatusError, setOperationalStatusError] = useState<string | null>(null);
+  const [nodeUpgrades, setNodeUpgrades] = useState<Record<string, NodeUpgradesResponse | null>>({});
   const tenantId = session.claims.tenant_id;
 
   const load = useCallback(async () => {
@@ -220,6 +221,18 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
       setNextCursor(response.next_cursor);
       setOperationalSnapshot(operationalResult.snapshot);
       setOperationalStatusError(operationalResult.error);
+      if (definition.kind === 'NODE') {
+        const upgradeEntries = await Promise.all(response.items.map(async (item) => {
+          try {
+            return [item.metadata.id, await getNodeUpgrades(session.token, tenantId, item.metadata.id)] as const;
+          } catch {
+            return [item.metadata.id, null] as const;
+          }
+        }));
+        setNodeUpgrades(Object.fromEntries(upgradeEntries));
+      } else {
+        setNodeUpgrades({});
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '资源加载失败');
     } finally {
@@ -425,6 +438,18 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
       ),
     },
     { title: definition.kind === 'ATTACHMENT' ? '节点隧道 IP' : '范围 / 类型', render: (_: unknown, record: ControlResource) => <Typography.Text>{resourceScope(record)}</Typography.Text> },
+    ...(definition.kind === 'NODE' ? [{
+      title: 'Runtime / Core',
+      width: 190,
+      render: (_: unknown, record: ControlResource) => {
+        const status = nodeUpgrades[record.metadata.id];
+        if (!status) return <Typography.Text type="secondary">升级信息暂不可用</Typography.Text>;
+        if (!status.inventory) return <Typography.Text type="secondary">尚未上报升级清单</Typography.Text>;
+        const current = Object.fromEntries(status.inventory.targets.map((target) => [target.component, target.current_version]));
+        const targets = Object.fromEntries(status.inventory.targets.filter((target) => target.version !== target.current_version).map((target) => [target.component, target.version]));
+        return <div className="node-version-cell"><span>Runtime {current.runtime ?? '—'}{targets.runtime ? ` → ${targets.runtime}` : ''}</span><span>Core {current.core ?? '—'}{targets.core ? ` → ${targets.core}` : ''}</span><small>{status.reported_at ? `上报于 ${new Date(status.reported_at).toLocaleString()}` : '未记录上报时间'}</small></div>;
+      },
+    }] : []),
     {
       title: definition.kind === 'NODE' ? '注册状态' : '配置状态',
       width: 104,
