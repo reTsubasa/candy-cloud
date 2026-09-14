@@ -667,6 +667,7 @@ where
 pub struct UpgradeReceipt {
     pub id: Uuid,
     pub state: String,
+    pub phase: Option<String>,
     pub error_code: Option<String>,
 }
 
@@ -703,6 +704,10 @@ async fn upgrade_receipt<S: RuntimeConfigurationService>(
 ) -> Result<StatusCode, ApiError> {
     if receipt.id.is_nil()
         || !matches!(receipt.state.as_str(), "running" | "succeeded" | "failed")
+        || receipt
+            .phase
+            .as_deref()
+            .is_some_and(|p| !cloud_db::control::upgrades::identifier(p))
         || (receipt.state == "failed") != receipt.error_code.is_some()
         || receipt
             .error_code

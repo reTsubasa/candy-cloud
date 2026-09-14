@@ -71,6 +71,7 @@ pub struct UpgradeJob {
     pub device_key_id: Uuid,
     pub target: UpgradeTarget,
     pub state: String,
+    pub phase: String,
     pub error_code: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -85,6 +86,7 @@ fn job(row: sqlx::mysql::MySqlRow) -> Result<UpgradeJob, ControlStoreError> {
         target: serde_json::from_str(&row.try_get::<String, _>("target_json")?)
             .map_err(|_| ControlStoreError::InvalidTransition)?,
         state: row.try_get("state")?,
+        phase: row.try_get("phase")?,
         error_code: row.try_get("error_code")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
@@ -207,6 +209,7 @@ impl ControlRepository {
             device_key_id: key,
             target,
             state: "pending".into(),
+            phase: "pending".into(),
             error_code: None,
             created_at: now,
             updated_at: now,
@@ -256,12 +259,35 @@ impl ControlRepository {
         key: Uuid,
         id: Uuid,
         state: &str,
+        phase: Option<&str>,
         error: Option<&str>,
     ) -> Result<(), ControlStoreError> {
         if !matches!(state, "running" | "succeeded" | "failed")
             || (state == "failed") != error.is_some()
             || error.is_some_and(|e| !identifier(e))
         {
+            return Err(ControlStoreError::InvalidRequest);
+        }
+        let phase = phase.unwrap_or(match state {
+            "running" => "running",
+            "succeeded" => "succeeded",
+            "failed" => "failed",
+            _ => "pending",
+        });
+        if !matches!(
+            phase,
+            "pending"
+                | "prepared"
+                | "running"
+                | "executing"
+                | "verifying"
+                | "installing"
+                | "health_check"
+                | "succeeded"
+                | "failed"
+                | "rolled_back"
+                | "expired"
+        ) {
             return Err(ControlStoreError::InvalidRequest);
         }
         let mut tx = self.pool.begin().await?;
@@ -272,7 +298,10 @@ impl ControlRepository {
             return Err(ControlStoreError::NotFound);
         }
         let previous=job(sqlx::query("SELECT *,CAST(target AS CHAR) AS target_json FROM runtime_upgrade_jobs WHERE id=? FOR UPDATE").bind(id).fetch_one(&mut *tx).await?)?;
-        if previous.state == state && previous.error_code.as_deref() == error {
+        if previous.state == state
+            && previous.phase == phase
+            && previous.error_code.as_deref() == error
+        {
             tx.commit().await?;
             return Ok(());
         }
@@ -281,13 +310,16 @@ impl ControlRepository {
         {
             return Err(ControlStoreError::InvalidTransition);
         }
-        sqlx::query("UPDATE runtime_upgrade_jobs SET state=?,error_code=?,updated_at=? WHERE id=?")
-            .bind(state)
-            .bind(error)
-            .bind(Utc::now())
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE runtime_upgrade_jobs SET state=?,phase=?,error_code=?,updated_at=? WHERE id=?",
+        )
+        .bind(state)
+        .bind(phase)
+        .bind(error)
+        .bind(Utc::now())
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         audit(
             &mut tx,
             tenant,

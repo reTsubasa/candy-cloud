@@ -211,6 +211,7 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                     actor.device_key_id(),
                     receipt.id,
                     &receipt.state,
+                    receipt.phase.as_deref(),
                     receipt.error_code.as_deref(),
                 )
                 .await
