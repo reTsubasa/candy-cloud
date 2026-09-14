@@ -210,9 +210,11 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                     actor.device_id(),
                     actor.device_key_id(),
                     receipt.id,
-                    &receipt.state,
-                    receipt.phase.as_deref(),
-                    receipt.error_code.as_deref(),
+                    cloud_db::control::upgrades::UpgradeStatus {
+                        state: &receipt.state,
+                        phase: receipt.phase.as_deref(),
+                        error_code: receipt.error_code.as_deref(),
+                    },
                 )
                 .await
                 .map_err(upgrade_error)

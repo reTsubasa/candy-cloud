@@ -77,6 +77,12 @@ pub struct UpgradeJob {
     pub updated_at: DateTime<Utc>,
 }
 
+pub struct UpgradeStatus<'a> {
+    pub state: &'a str,
+    pub phase: Option<&'a str>,
+    pub error_code: Option<&'a str>,
+}
+
 fn job(row: sqlx::mysql::MySqlRow) -> Result<UpgradeJob, ControlStoreError> {
     Ok(UpgradeJob {
         id: row.try_get("id")?,
@@ -258,10 +264,13 @@ impl ControlRepository {
         device: Uuid,
         key: Uuid,
         id: Uuid,
-        state: &str,
-        phase: Option<&str>,
-        error: Option<&str>,
+        status: UpgradeStatus<'_>,
     ) -> Result<(), ControlStoreError> {
+        let UpgradeStatus {
+            state,
+            phase,
+            error_code: error,
+        } = status;
         if !matches!(state, "running" | "succeeded" | "failed")
             || (state == "failed") != error.is_some()
             || error.is_some_and(|e| !identifier(e))
