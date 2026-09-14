@@ -32,8 +32,8 @@ printf '%s\n' "$compose_config" | awk '
   worker && /CORE_MODULE_VERSION: 0.3.46/ { version = 1 }
   worker && /CORE_MODULE_TARGET: x86_64-unknown-linux-gnu/ { architecture = 1 }
   worker && /CORE_MODULE_BUNDLE_URL:/ { url = 1 }
-  worker && /CORE_MODULE_BUNDLE_SHA256: 788f5322eaa3e67afd1822d53c6476dbcc771ba786ad315910385cda17b35112/ { bundle = 1 }
-  worker && /CORE_MODULE_SHA256: 6e74c7f1ad61a9d3aedb7b47c2cdc652c1408c85c9615870714047c644f475c5/ { module = 1 }
+  worker && /CORE_MODULE_BUNDLE_SHA256: bd6a3c9ea3e73f7c82a1bcdfd2583c3763eac49313e057de1ee9f8addbdf468a/ { bundle = 1 }
+  worker && /CORE_MODULE_SHA256: 54d3d85e22cfe10df2c2dbd4422535b7d442d2fc5bde5879a6845ec8872cd89d/ { module = 1 }
   END { exit (target && version && architecture && !url && bundle && module) ? 0 : 1 }
 ' || {
   echo "cloud-worker verified Core module build contract is missing" >&2
@@ -149,11 +149,11 @@ worker_image=$(docker inspect --format '{{.Image}}' "$worker_id")
 test "$(docker image inspect --format '{{.Architecture}}' "$worker_image")" = amd64
 module_path=/opt/candy/cores/0.3.46/libcandy_core_cloud.so
 test "$(docker exec "$worker_id" sha256sum "$module_path" | awk '{print $1}')" = \
-  6e74c7f1ad61a9d3aedb7b47c2cdc652c1408c85c9615870714047c644f475c5
+  54d3d85e22cfe10df2c2dbd4422535b7d442d2fc5bde5879a6845ec8872cd89d
 manifest_path=/opt/candy/cores/0.3.46/manifest.json
 manifest=$(docker exec "$worker_id" sed -e ':a' -e 'N' -e '$!ba' -e 's/[[:space:]]//g' "$manifest_path")
 printf '%s\n' "$manifest" | grep -F '"release_kind":"candy-core"' >/dev/null
-printf '%s\n' "$manifest" | grep -F '"commit":"9e34b4c72d89f766ff6fe7100b6eb2f2d699acfe"' >/dev/null
+printf '%s\n' "$manifest" | grep -F '"commit":"dbfb4b8d1020b0335c5cf305a018eb4bf4b4c987"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"target":"x86_64-unknown-linux-gnu"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"target_arch":"x86_64"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"libc":"glibc"' >/dev/null
