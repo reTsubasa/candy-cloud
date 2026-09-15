@@ -152,7 +152,7 @@ fn issuer_rejects_an_invalid_ed25519_subject_key() {
 #[test]
 fn renewal_windows_match_the_product_policy() {
     assert_eq!(DEVICE_CERTIFICATE_TTL, Duration::days(7));
-    assert_eq!(NORMAL_RENEWAL_WINDOW, Duration::hours(48));
+    assert_eq!(NORMAL_RENEWAL_WINDOW, Duration::hours(72));
     assert_eq!(EMERGENCY_RENEWAL_WINDOW, Duration::hours(12));
 }
 

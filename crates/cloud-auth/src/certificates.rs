@@ -11,7 +11,7 @@ use uuid::Uuid;
 use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
 
 pub const DEVICE_CERTIFICATE_TTL: Duration = Duration::days(7);
-pub const NORMAL_RENEWAL_WINDOW: Duration = Duration::hours(48);
+pub const NORMAL_RENEWAL_WINDOW: Duration = Duration::hours(72);
 pub const EMERGENCY_RENEWAL_WINDOW: Duration = Duration::hours(12);
 
 const ED25519_SPKI_PREFIX: [u8; 12] = [
