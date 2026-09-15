@@ -63,6 +63,9 @@ impl ClientDeviceRegistration {
         if self.display_name.trim().is_empty() || self.display_name.len() > MAX_DISPLAY_NAME_LEN {
             return Err(ClientControlError::InvalidDisplayName);
         }
+        if self.actor_id != self.user_id {
+            return Err(ClientControlError::InvalidScope);
+        }
         if self.install_id.len() < 8
             || self.install_id.len() > MAX_INSTALL_ID_LEN
             || !self
@@ -180,8 +183,10 @@ impl ClientControlRepository {
             .begin()
             .await
             .map_err(|_| ClientControlError::InvalidRecord)?;
-        let organization: Uuid =
-            sqlx::query_scalar("SELECT organization_id FROM tenants WHERE id = ? FOR SHARE")
+        let organization: Uuid = sqlx::query_scalar(
+            "SELECT tenant.organization_id FROM tenants tenant JOIN organizations organization ON organization.id = tenant.organization_id AND organization.status = 'ACTIVE' JOIN human_users user ON user.id = ? AND user.status = 'ACTIVE' JOIN organization_memberships membership ON membership.organization_id = tenant.organization_id AND membership.user_id = user.id AND membership.status = 'ACTIVE' WHERE tenant.id = ? AND tenant.status = 'ACTIVE' FOR SHARE",
+        )
+                .bind(request.user_id)
                 .bind(request.tenant_id)
                 .fetch_optional(&mut *transaction)
                 .await
