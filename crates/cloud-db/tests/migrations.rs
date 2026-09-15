@@ -76,6 +76,16 @@ async fn migration_is_repeatable_and_creates_core_tables() {
 }
 
 #[test]
+fn terminal_client_registration_persists_request_idempotency() {
+    let migration = include_str!("../migrations/0039_terminal_client_registration_idempotency.sql");
+    assert!(migration.contains("ADD COLUMN request_id BINARY(16) NOT NULL"));
+    assert!(migration.contains("ADD COLUMN request_hash BINARY(32) NOT NULL"));
+    assert!(
+        migration.contains("UNIQUE KEY uq_client_devices_request (tenant_id, user_id, request_id)")
+    );
+}
+
+#[test]
 fn terminal_client_control_is_separate_from_node_enrollment_and_runtime() {
     let migration = include_str!("../migrations/0038_terminal_client_control.sql");
     for table in [
