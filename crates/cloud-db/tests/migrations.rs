@@ -57,6 +57,11 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "runtime_projection_transport_catalog",
         "runtime_projection_path_catalog",
         "runtime_transport_identity_requests",
+        "client_devices",
+        "client_device_keys",
+        "client_grants",
+        "client_projections",
+        "client_projection_receipts",
     ];
     for table in required {
         let count: i64 = sqlx::query_scalar(
@@ -68,6 +73,35 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+}
+
+#[test]
+fn terminal_client_control_is_separate_from_node_enrollment_and_runtime() {
+    let migration = include_str!("../migrations/0038_terminal_client_control.sql");
+    for table in [
+        "client_devices",
+        "client_device_keys",
+        "client_grants",
+        "client_projections",
+        "client_projection_receipts",
+    ] {
+        assert!(migration.contains(&format!("CREATE TABLE {table}")));
+    }
+    assert!(migration.contains("UNIQUE KEY uq_client_devices_tenant_device"));
+    assert!(migration.contains("UNIQUE KEY uq_client_grants_request"));
+    assert!(migration.contains("UNIQUE KEY uq_client_projections_generation"));
+    assert!(migration.contains("UNIQUE KEY uq_client_projection_receipt_request"));
+    assert!(migration.contains("UNIQUE KEY uq_client_device_keys_binding"));
+    assert!(migration.contains("UNIQUE KEY uq_client_grants_binding"));
+    assert!(migration.contains("UNIQUE KEY uq_client_projections_binding"));
+    assert!(migration.contains("UNIQUE KEY uq_client_projection_receipts_binding (id, organization_id, tenant_id, user_id, client_device_id, device_key_id)"));
+    assert!(migration.contains("FOREIGN KEY (client_device_id, organization_id, tenant_id, user_id) REFERENCES client_devices"));
+    assert!(migration.contains("FOREIGN KEY (client_device_id, device_key_id, organization_id, tenant_id, user_id) REFERENCES client_device_keys"));
+    assert!(migration.contains("FOREIGN KEY (grant_id, organization_id, tenant_id, user_id, client_device_id, device_key_id) REFERENCES client_grants"));
+    assert!(migration.contains("FOREIGN KEY (projection_id, organization_id, tenant_id, user_id, client_device_id, device_key_id) REFERENCES client_projections"));
+    assert!(migration.contains("RECEIVED','VERIFIED','STAGED','COMMITTED','REJECTED"));
+    assert!(!migration.contains("runtime_configuration"));
+    assert!(!migration.contains("activation_codes"));
 }
 
 #[test]
