@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
@@ -8,6 +8,7 @@ use crate::DbPool;
 const MAX_DISPLAY_NAME_LEN: usize = 200;
 const MAX_INSTALL_ID_LEN: usize = 128;
 const MAX_CLIENT_VERSION_LEN: usize = 64;
+const MAX_GRANT_ENVELOPE_LEN: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientPlatform {
@@ -106,6 +107,55 @@ pub enum ClientControlError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientDeviceRegistrationOutcome {
     Registered { device_id: Uuid, replayed: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientGrantWrite {
+    pub grant_id: Uuid,
+    pub organization_id: Uuid,
+    pub tenant_id: Uuid,
+    pub user_id: Uuid,
+    pub client_device_id: Uuid,
+    pub device_key_id: Uuid,
+    pub generation: u64,
+    pub request_id: Uuid,
+    pub request_hash: [u8; 32],
+    pub signing_key_id: String,
+    pub grant_envelope: Vec<u8>,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl ClientGrantWrite {
+    fn validate(&self) -> Result<(), ClientControlError> {
+        if [
+            self.grant_id,
+            self.organization_id,
+            self.tenant_id,
+            self.user_id,
+            self.client_device_id,
+            self.device_key_id,
+            self.request_id,
+        ]
+        .into_iter()
+        .any(|id| id.is_nil())
+            || self.generation == 0
+            || self.request_hash == [0; 32]
+            || self.grant_envelope.is_empty()
+            || self.grant_envelope.len() > MAX_GRANT_ENVELOPE_LEN
+            || self.signing_key_id.is_empty()
+            || self.signing_key_id.len() > 128
+            || self.expires_at <= self.issued_at
+        {
+            return Err(ClientControlError::InvalidRecord);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientGrantWriteOutcome {
+    Issued { grant_id: Uuid, replayed: bool },
 }
 
 #[derive(Clone)]
@@ -269,6 +319,113 @@ impl ClientControlRepository {
         .await
         .map_err(|_| ClientControlError::InvalidRecord)?;
         Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn write_grant(
+        &self,
+        grant: &ClientGrantWrite,
+    ) -> Result<ClientGrantWriteOutcome, ClientControlError> {
+        grant.validate()?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        let device_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM client_devices WHERE id = ? AND organization_id = ? AND tenant_id = ? AND user_id = ? AND status = 'ACTIVE')",
+        )
+        .bind(grant.client_device_id)
+        .bind(grant.organization_id)
+        .bind(grant.tenant_id)
+        .bind(grant.user_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        if !device_exists {
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| ClientControlError::InvalidRecord)?;
+            return Err(ClientControlError::BindingConflict);
+        }
+        let key_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM client_device_keys WHERE client_device_id = ? AND organization_id = ? AND tenant_id = ? AND user_id = ? AND device_key_id = ? AND status = 'ACTIVE')",
+        )
+        .bind(grant.client_device_id)
+        .bind(grant.organization_id)
+        .bind(grant.tenant_id)
+        .bind(grant.user_id)
+        .bind(grant.device_key_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        if !key_exists {
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| ClientControlError::InvalidRecord)?;
+            return Err(ClientControlError::BindingConflict);
+        }
+
+        let existing = sqlx::query(
+            "SELECT id, request_hash FROM client_grants WHERE tenant_id = ? AND client_device_id = ? AND request_id = ? FOR UPDATE",
+        )
+        .bind(grant.tenant_id)
+        .bind(grant.client_device_id)
+        .bind(grant.request_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        if let Some(row) = existing {
+            let stored_hash: Vec<u8> = row
+                .try_get("request_hash")
+                .map_err(|_| ClientControlError::InvalidRecord)?;
+            let stored_id: Uuid = row
+                .try_get("id")
+                .map_err(|_| ClientControlError::InvalidRecord)?;
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| ClientControlError::InvalidRecord)?;
+            return if stored_hash.as_slice() == grant.request_hash {
+                Ok(ClientGrantWriteOutcome::Issued {
+                    grant_id: stored_id,
+                    replayed: true,
+                })
+            } else {
+                Err(ClientControlError::BindingConflict)
+            };
+        }
+
+        let digest: [u8; 32] = Sha256::digest(&grant.grant_envelope).into();
+        sqlx::query(
+            "INSERT INTO client_grants (id, organization_id, tenant_id, user_id, client_device_id, device_key_id, generation, request_id, request_hash, signing_key_id, grant_digest, grant_envelope, issued_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')",
+        )
+        .bind(grant.grant_id)
+        .bind(grant.organization_id)
+        .bind(grant.tenant_id)
+        .bind(grant.user_id)
+        .bind(grant.client_device_id)
+        .bind(grant.device_key_id)
+        .bind(grant.generation)
+        .bind(grant.request_id)
+        .bind(grant.request_hash.as_slice())
+        .bind(&grant.signing_key_id)
+        .bind(digest.as_slice())
+        .bind(&grant.grant_envelope)
+        .bind(grant.issued_at)
+        .bind(grant.expires_at)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        Ok(ClientGrantWriteOutcome::Issued {
+            grant_id: grant.grant_id,
+            replayed: false,
+        })
     }
 }
 
