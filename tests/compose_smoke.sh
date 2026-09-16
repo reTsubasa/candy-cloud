@@ -32,7 +32,7 @@ printf '%s\n' "$compose_config" | awk '
   worker && /CORE_MODULE_VERSION: 0.3.47/ { version = 1 }
   worker && /CORE_MODULE_TARGET: x86_64-unknown-linux-gnu/ { architecture = 1 }
   worker && /CORE_MODULE_BUNDLE_URL:/ { url = 1 }
-  worker && /CORE_MODULE_BUNDLE_SHA256: 708040227e4df374905d1a7d4d1b2c4614b5d2d01a72a6ab838cabdd2501666c/ { bundle = 1 }
+  worker && /CORE_MODULE_BUNDLE_SHA256: 05546340b5cc652c09b2f1f3344c0d268daff6f748dc5739ba9369ef5cf0380d/ { bundle = 1 }
   worker && /CORE_MODULE_SHA256: ee19f002a3d0ece13e5facef8e2e6d2228f44482fd5e7414c55ca3aa82087fa4/ { module = 1 }
   END { exit (target && version && architecture && !url && bundle && module) ? 0 : 1 }
 ' || {
