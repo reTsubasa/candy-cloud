@@ -3,6 +3,7 @@ use sqlx::{mysql::MySqlPoolOptions, MySql, Pool};
 pub mod accounting;
 pub mod authorization;
 pub mod certificate_renewal;
+pub mod client_access;
 pub mod client_control;
 pub mod control;
 pub mod device_identity;

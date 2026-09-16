@@ -86,6 +86,23 @@ fn terminal_client_registration_persists_request_idempotency() {
 }
 
 #[test]
+fn terminal_client_access_policy_is_separate_and_generation_scoped() {
+    let migration = include_str!("../migrations/0040_terminal_client_access_policies.sql");
+    assert!(migration.contains("CREATE TABLE client_access_policies"));
+    assert!(
+        migration.contains("UNIQUE KEY uq_client_access_policy_generation (tenant_id, generation)")
+    );
+    assert!(migration.contains("CREATE TABLE client_access_policy_bindings"));
+    assert!(
+        migration.contains("REFERENCES client_devices(id, organization_id, tenant_id, user_id)")
+    );
+    assert!(migration.contains("REFERENCES client_access_policies(id, organization_id, tenant_id)"));
+    assert!(migration
+        .contains("UNIQUE KEY uq_client_access_policy_binding_request (tenant_id, request_id)"));
+    assert!(!migration.contains("sdwan_control_resources"));
+}
+
+#[test]
 fn terminal_client_control_is_separate_from_node_enrollment_and_runtime() {
     let migration = include_str!("../migrations/0038_terminal_client_control.sql");
     for table in [
