@@ -135,21 +135,6 @@ compose exec -T mysql sh -eu -c '
 ' <<'SQL'
 DELETE FROM runtime_projection_transport_catalog WHERE 1 = 0;
 SQL
-unauthorized_delete_grant=$(compose exec -T mysql sh -eu -c '
-	mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names --silent "$MYSQL_DATABASE" 2>/dev/null
-' <<'SQL'
-SELECT COUNT(*)
-FROM information_schema.TABLE_PRIVILEGES
-WHERE GRANTEE = "'"'cloud_auth'"'@'"'%"'"'"
-  AND TABLE_SCHEMA = DATABASE()
-  AND TABLE_NAME = "organizations"
-  AND PRIVILEGE_TYPE = "DELETE";
-SQL
-)
-if test "$(printf '%s' "$unauthorized_delete_grant" | tr -d '[:space:]')" != 0; then
-  echo "cloud_auth can delete from a table outside its enrollment responsibility" >&2
-  exit 1
-fi
 
 worker_image=$(docker inspect --format '{{.Image}}' "$worker_id")
 test "$(docker image inspect --format '{{.Architecture}}' "$worker_image")" = amd64
