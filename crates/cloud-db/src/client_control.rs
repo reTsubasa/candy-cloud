@@ -25,6 +25,15 @@ impl ClientPlatform {
             Self::Android => "ANDROID",
         }
     }
+
+    pub fn from_database_value(value: &str) -> Option<Self> {
+        match value {
+            "WINDOWS" => Some(Self::Windows),
+            "MACOS" => Some(Self::Macos),
+            "ANDROID" => Some(Self::Android),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

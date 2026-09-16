@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::client_control::ClientPlatform;
 use crate::DbPool;
 
 const MAX_RESOURCES: usize = 4096;
@@ -36,6 +37,50 @@ pub struct ClientAccessPolicy {
     pub mode_capabilities: Vec<ClientTrafficMode>,
     pub global_egress_enabled: bool,
     pub allowed_resources: Vec<ClientAllowedResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientAuthorizationSnapshot {
+    pub organization_id: Uuid,
+    pub tenant_id: Uuid,
+    pub user_id: Uuid,
+    pub client_device_id: Uuid,
+    pub device_key_id: Uuid,
+    pub platform: ClientPlatform,
+    pub device_generation: u64,
+    pub public_key: [u8; 32],
+    pub policy: ClientAccessPolicy,
+    pub policy_content_hash: [u8; 32],
+}
+
+impl ClientAuthorizationSnapshot {
+    pub fn validate(&self) -> Result<(), ClientAccessPolicyError> {
+        if [
+            self.organization_id,
+            self.tenant_id,
+            self.user_id,
+            self.client_device_id,
+            self.device_key_id,
+        ]
+        .into_iter()
+        .any(|id| id.is_nil())
+            || self.device_generation == 0
+            || self.public_key == [0; 32]
+            || self.policy.tenant_id != self.tenant_id
+            || self.policy.generation == 0
+            || self.policy_content_hash == [0; 32]
+        {
+            return Err(ClientAccessPolicyError::InvalidRecord);
+        }
+        let computed_hash = self
+            .policy
+            .content_hash()
+            .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
+        if computed_hash != self.policy_content_hash {
+            return Err(ClientAccessPolicyError::InvalidRecord);
+        }
+        Ok(())
+    }
 }
 
 impl ClientAccessPolicy {
@@ -402,14 +447,27 @@ impl ClientAccessPolicyRepository {
         user_id: Uuid,
         client_device_id: Uuid,
     ) -> Result<Option<ClientAccessPolicy>, ClientAccessPolicyError> {
+        Ok(self
+            .authorization_snapshot(organization_id, tenant_id, user_id, client_device_id)
+            .await?
+            .map(|snapshot| snapshot.policy))
+    }
+
+    pub async fn authorization_snapshot(
+        &self,
+        organization_id: Uuid,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        client_device_id: Uuid,
+    ) -> Result<Option<ClientAuthorizationSnapshot>, ClientAccessPolicyError> {
         if [organization_id, tenant_id, user_id, client_device_id]
             .into_iter()
             .any(|id| id.is_nil())
         {
             return Err(ClientAccessPolicyError::InvalidScope);
         }
-        let document: Option<String> = sqlx::query_scalar(
-            "SELECT CAST(policy.policy_json AS CHAR) FROM client_access_policy_bindings binding JOIN client_access_policies policy ON policy.id = binding.policy_id AND policy.organization_id = binding.organization_id AND policy.tenant_id = binding.tenant_id AND policy.status = 'ACTIVE' WHERE binding.organization_id = ? AND binding.tenant_id = ? AND binding.user_id = ? AND binding.client_device_id = ?",
+        let row = sqlx::query(
+            "SELECT device.organization_id AS organization_id, device.tenant_id AS tenant_id, device.user_id AS user_id, device.id AS client_device_id, device.generation AS device_generation, device.platform AS platform, device_key.device_key_id AS device_key_id, device_key.public_key AS public_key, policy.id AS policy_id, policy.generation AS policy_generation, policy.content_hash AS policy_content_hash, CAST(policy.policy_json AS CHAR) AS policy_json FROM client_devices device JOIN client_device_keys device_key ON device_key.client_device_id = device.id AND device_key.organization_id = device.organization_id AND device_key.tenant_id = device.tenant_id AND device_key.user_id = device.user_id AND device_key.status = 'ACTIVE' JOIN client_access_policy_bindings binding ON binding.client_device_id = device.id AND binding.organization_id = device.organization_id AND binding.tenant_id = device.tenant_id AND binding.user_id = device.user_id JOIN client_access_policies policy ON policy.id = binding.policy_id AND policy.organization_id = binding.organization_id AND policy.tenant_id = binding.tenant_id AND policy.status = 'ACTIVE' JOIN tenants tenant ON tenant.id = device.tenant_id AND tenant.organization_id = device.organization_id AND tenant.status = 'ACTIVE' JOIN organizations organization ON organization.id = device.organization_id AND organization.status = 'ACTIVE' JOIN human_users user ON user.id = device.user_id AND user.status = 'ACTIVE' JOIN organization_memberships membership ON membership.organization_id = device.organization_id AND membership.user_id = device.user_id AND membership.status = 'ACTIVE' WHERE device.organization_id = ? AND device.tenant_id = ? AND device.user_id = ? AND device.id = ? AND device.status = 'ACTIVE'",
         )
         .bind(organization_id)
         .bind(tenant_id)
@@ -418,17 +476,71 @@ impl ClientAccessPolicyRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
-        let Some(document) = document else {
+        let Some(row) = row else {
             return Ok(None);
         };
-        let policy: ClientAccessPolicy =
-            serde_json::from_str(&document).map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
-        if policy.tenant_id != tenant_id {
+
+        let platform: String = row
+            .try_get("platform")
+            .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
+        let platform = ClientPlatform::from_database_value(&platform)
+            .ok_or(ClientAccessPolicyError::InvalidRecord)?;
+        let public_key: Vec<u8> = row
+            .try_get("public_key")
+            .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
+        let public_key = fixed_hash::<32>(&public_key)?;
+        let policy_content_hash: Vec<u8> = row
+            .try_get("policy_content_hash")
+            .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
+        let policy_content_hash = fixed_hash::<32>(&policy_content_hash)?;
+        let policy_json: String = row
+            .try_get("policy_json")
+            .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
+        let policy: ClientAccessPolicy = serde_json::from_str(&policy_json)
+            .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
+        let snapshot = ClientAuthorizationSnapshot {
+            organization_id: row
+                .try_get("organization_id")
+                .map_err(|_| ClientAccessPolicyError::InvalidRecord)?,
+            tenant_id: row
+                .try_get("tenant_id")
+                .map_err(|_| ClientAccessPolicyError::InvalidRecord)?,
+            user_id: row
+                .try_get("user_id")
+                .map_err(|_| ClientAccessPolicyError::InvalidRecord)?,
+            client_device_id: row
+                .try_get("client_device_id")
+                .map_err(|_| ClientAccessPolicyError::InvalidRecord)?,
+            device_key_id: row
+                .try_get("device_key_id")
+                .map_err(|_| ClientAccessPolicyError::InvalidRecord)?,
+            platform,
+            device_generation: row
+                .try_get("device_generation")
+                .map_err(|_| ClientAccessPolicyError::InvalidRecord)?,
+            public_key,
+            policy,
+            policy_content_hash,
+        };
+        let policy_id: Uuid = row
+            .try_get("policy_id")
+            .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
+        let policy_generation: u64 = row
+            .try_get("policy_generation")
+            .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
+        if snapshot.policy.policy_id != policy_id || snapshot.policy.generation != policy_generation
+        {
             return Err(ClientAccessPolicyError::InvalidRecord);
         }
-        policy.validate()?;
-        Ok(Some(policy))
+        snapshot.validate()?;
+        Ok(Some(snapshot))
     }
+}
+
+fn fixed_hash<const N: usize>(value: &[u8]) -> Result<[u8; N], ClientAccessPolicyError> {
+    value
+        .try_into()
+        .map_err(|_| ClientAccessPolicyError::InvalidRecord)
 }
 
 fn request_fingerprint(

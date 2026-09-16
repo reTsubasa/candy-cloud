@@ -1,6 +1,8 @@
 use cloud_db::client_access::{
-    ClientAccessPolicy, ClientAccessPolicyError, ClientAllowedResource, ClientTrafficMode,
+    ClientAccessPolicy, ClientAccessPolicyError, ClientAllowedResource,
+    ClientAuthorizationSnapshot, ClientTrafficMode,
 };
+use cloud_db::client_control::ClientPlatform;
 use uuid::Uuid;
 
 fn policy() -> ClientAccessPolicy {
@@ -45,4 +47,46 @@ fn access_policy_content_hash_is_stable_for_same_document() {
     let value = policy();
     assert_eq!(value.content_hash().unwrap(), value.content_hash().unwrap());
     assert_ne!(value.content_hash().unwrap(), [0; 32]);
+}
+
+fn snapshot() -> ClientAuthorizationSnapshot {
+    let policy = policy();
+    ClientAuthorizationSnapshot {
+        organization_id: Uuid::new_v4(),
+        tenant_id: policy.tenant_id,
+        user_id: Uuid::new_v4(),
+        client_device_id: Uuid::new_v4(),
+        device_key_id: Uuid::new_v4(),
+        platform: ClientPlatform::Android,
+        device_generation: 1,
+        public_key: [7; 32],
+        policy_content_hash: policy.content_hash().unwrap(),
+        policy,
+    }
+}
+
+#[test]
+fn authorization_snapshot_validates_policy_integrity() {
+    let mut value = snapshot();
+    assert!(value.validate().is_ok());
+
+    value.policy.generation = 2;
+    assert_eq!(
+        value.validate(),
+        Err(ClientAccessPolicyError::InvalidRecord)
+    );
+}
+
+#[tokio::test]
+async fn authorization_snapshot_rejects_missing_scope_before_database_access() {
+    let pool = sqlx::mysql::MySqlPoolOptions::new()
+        .connect_lazy("mysql://unused:unused@127.0.0.1/unused")
+        .unwrap();
+    let repository = cloud_db::client_access::ClientAccessPolicyRepository::new(pool);
+    assert_eq!(
+        repository
+            .authorization_snapshot(Uuid::nil(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4())
+            .await,
+        Err(ClientAccessPolicyError::InvalidScope)
+    );
 }
