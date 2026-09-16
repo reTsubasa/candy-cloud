@@ -29,7 +29,7 @@ printf '%s\n' "$compose_config" | awk '
   /^  cloud-worker:$/ { worker = 1; next }
   worker && /^  [[:alnum:]_-]+:$/ { worker = 0 }
   worker && /target: runtime-core/ { target = 1 }
-  worker && /CORE_MODULE_VERSION: 0.3.47/ { version = 1 }
+  worker && /CORE_MODULE_VERSION: 0.3.49/ { version = 1 }
   worker && /CORE_MODULE_TARGET: x86_64-unknown-linux-gnu/ { architecture = 1 }
   worker && /CORE_MODULE_BUNDLE_URL:/ { url = 1 }
   worker && /CORE_MODULE_BUNDLE_SHA256: 05546340b5cc652c09b2f1f3344c0d268daff6f748dc5739ba9369ef5cf0380d/ { bundle = 1 }
@@ -138,10 +138,10 @@ SQL
 
 worker_image=$(docker inspect --format '{{.Image}}' "$worker_id")
 test "$(docker image inspect --format '{{.Architecture}}' "$worker_image")" = amd64
-module_path=/opt/candy/cores/0.3.47/libcandy_core_cloud.so
+module_path=/opt/candy/cores/0.3.49/libcandy_core_cloud.so
 test "$(docker exec "$worker_id" sha256sum "$module_path" | awk '{print $1}')" = \
   ee19f002a3d0ece13e5facef8e2e6d2228f44482fd5e7414c55ca3aa82087fa4
-manifest_path=/opt/candy/cores/0.3.47/manifest.json
+manifest_path=/opt/candy/cores/0.3.49/manifest.json
 manifest=$(docker exec "$worker_id" sed -e ':a' -e 'N' -e '$!ba' -e 's/[[:space:]]//g' "$manifest_path")
 printf '%s\n' "$manifest" | grep -F '"release_kind":"candy-core"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"commit":"436e0aa9652ff153059938e5a62a0743b87da7cd"' >/dev/null
@@ -150,5 +150,5 @@ printf '%s\n' "$manifest" | grep -F '"target_arch":"x86_64"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"libc":"glibc"' >/dev/null
 worker_logs=$(docker logs "$worker_id" 2>&1)
 printf '%s\n' "$worker_logs" | grep -F '"event":"core_module_ready"' >/dev/null
-printf '%s\n' "$worker_logs" | grep -F '"module_version":"0.3.47"' >/dev/null
+printf '%s\n' "$worker_logs" | grep -F '"module_version":"0.3.49"' >/dev/null
 docker volume inspect "${project_name}_candy-cloud-mysql-data" >/dev/null
