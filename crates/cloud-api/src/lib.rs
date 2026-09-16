@@ -139,6 +139,14 @@ fn management_routes() -> Router<Arc<ManagementState>> {
             axum::routing::post(management::create_client_access_policy),
         )
         .route(
+            "/v1/tenants/{tenant_id}/client-access-policy-bindings",
+            axum::routing::post(management::bind_client_access_policy),
+        )
+        .route(
+            "/v1/tenants/{tenant_id}/client-users/{user_id}/client-devices/{client_device_id}/access-policy",
+            get(management::get_client_access_policy),
+        )
+        .route(
             "/v1/tenants/{tenant_id}/audit-events",
             get(management::audit_events),
         )

@@ -272,7 +272,6 @@ impl ClientAccessPolicyRepository {
         ]
         .into_iter()
         .any(|id| id.is_nil())
-            || actor_id != user_id
         {
             return Err(ClientAccessPolicyError::InvalidScope);
         }
@@ -290,8 +289,9 @@ impl ClientAccessPolicyRepository {
             .await
             .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
         let scope: Option<Uuid> = sqlx::query_scalar(
-            "SELECT tenant.organization_id FROM tenants tenant JOIN organizations organization ON organization.id = tenant.organization_id AND organization.status = 'ACTIVE' JOIN human_users user ON user.id = ? AND user.status = 'ACTIVE' JOIN organization_memberships membership ON membership.organization_id = tenant.organization_id AND membership.user_id = user.id AND membership.status = 'ACTIVE' JOIN client_devices device ON device.tenant_id = tenant.id AND device.organization_id = tenant.organization_id AND device.user_id = user.id AND device.id = ? AND device.status = 'ACTIVE' WHERE tenant.id = ? FOR SHARE",
+            "SELECT tenant.organization_id FROM tenants tenant JOIN organizations organization ON organization.id = tenant.organization_id AND organization.status = 'ACTIVE' JOIN human_users actor ON actor.id = ? AND actor.status = 'ACTIVE' JOIN organization_memberships actor_membership ON actor_membership.organization_id = tenant.organization_id AND actor_membership.user_id = actor.id AND actor_membership.status = 'ACTIVE' JOIN human_users user ON user.id = ? AND user.status = 'ACTIVE' JOIN client_devices device ON device.tenant_id = tenant.id AND device.organization_id = tenant.organization_id AND device.user_id = user.id AND device.id = ? AND device.status = 'ACTIVE' WHERE tenant.id = ? FOR SHARE",
         )
+        .bind(actor_id)
         .bind(user_id)
         .bind(client_device_id)
         .bind(tenant_id)
@@ -393,6 +393,41 @@ impl ClientAccessPolicyRepository {
             binding_id,
             replayed: false,
         })
+    }
+
+    pub async fn bound_policy(
+        &self,
+        organization_id: Uuid,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        client_device_id: Uuid,
+    ) -> Result<Option<ClientAccessPolicy>, ClientAccessPolicyError> {
+        if [organization_id, tenant_id, user_id, client_device_id]
+            .into_iter()
+            .any(|id| id.is_nil())
+        {
+            return Err(ClientAccessPolicyError::InvalidScope);
+        }
+        let document: Option<String> = sqlx::query_scalar(
+            "SELECT CAST(policy.policy_json AS CHAR) FROM client_access_policy_bindings binding JOIN client_access_policies policy ON policy.id = binding.policy_id AND policy.organization_id = binding.organization_id AND policy.tenant_id = binding.tenant_id AND policy.status = 'ACTIVE' WHERE binding.organization_id = ? AND binding.tenant_id = ? AND binding.user_id = ? AND binding.client_device_id = ?",
+        )
+        .bind(organization_id)
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(client_device_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
+        let Some(document) = document else {
+            return Ok(None);
+        };
+        let policy: ClientAccessPolicy =
+            serde_json::from_str(&document).map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
+        if policy.tenant_id != tenant_id {
+            return Err(ClientAccessPolicyError::InvalidRecord);
+        }
+        policy.validate()?;
+        Ok(Some(policy))
     }
 }
 

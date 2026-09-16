@@ -97,6 +97,104 @@ pub struct ClientAccessPolicyResponse {
     pub replayed: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientAccessPolicyBindingRequest {
+    pub policy_id: Uuid,
+    pub user_id: Uuid,
+    pub client_device_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClientAccessPolicyBindingResponse {
+    pub binding_id: Uuid,
+    pub policy_id: Uuid,
+    pub user_id: Uuid,
+    pub client_device_id: Uuid,
+    pub replayed: bool,
+}
+
+pub async fn bind_client_access_policy(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path(tenant_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(body): Json<ClientAccessPolicyBindingRequest>,
+) -> Result<(StatusCode, Json<ClientAccessPolicyBindingResponse>), ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::WriteConfiguration)?;
+    let actor_id = Uuid::parse_str(&principal.actor_id).map_err(|_| ApiError::unauthorized())?;
+    let request_id = required_header(&headers, "Idempotency-Key")?
+        .parse::<Uuid>()
+        .map_err(|_| ApiError {
+            status: StatusCode::BAD_REQUEST,
+            code: "INVALID_IDEMPOTENCY_KEY",
+            message: "Idempotency-Key must be a UUID",
+        })?;
+    let repository = state
+        .client_access
+        .as_ref()
+        .ok_or_else(ApiError::authentication_unavailable)?;
+    let outcome = repository
+        .bind_to_device(
+            body.policy_id,
+            principal.context.organization_id,
+            tenant_id,
+            body.user_id,
+            body.client_device_id,
+            actor_id,
+            request_id,
+        )
+        .await
+        .map_err(ApiError::from_client_access)?;
+    let cloud_db::client_access::ClientAccessPolicyBindingOutcome::Bound {
+        binding_id,
+        replayed,
+    } = outcome;
+    Ok((
+        if replayed {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        Json(ClientAccessPolicyBindingResponse {
+            binding_id,
+            policy_id: body.policy_id,
+            user_id: body.user_id,
+            client_device_id: body.client_device_id,
+            replayed,
+        }),
+    ))
+}
+
+pub async fn get_client_access_policy(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path((tenant_id, user_id, client_device_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> Result<Json<cloud_db::client_access::ClientAccessPolicy>, ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::ReadConfiguration)?;
+    let repository = state
+        .client_access
+        .as_ref()
+        .ok_or_else(ApiError::authentication_unavailable)?;
+    repository
+        .bound_policy(
+            principal.context.organization_id,
+            tenant_id,
+            user_id,
+            client_device_id,
+        )
+        .await
+        .map_err(ApiError::from_client_access)?
+        .map(Json)
+        .ok_or(ApiError {
+            status: StatusCode::NOT_FOUND,
+            code: "CLIENT_ACCESS_POLICY_NOT_FOUND",
+            message: "no active client access policy is bound to the device",
+        })
+}
+
 #[derive(Serialize)]
 pub struct NodeUpgradesResponse {
     inventory: Option<cloud_db::control::upgrades::UpgradeInventory>,
