@@ -1952,6 +1952,7 @@ components:
         congestion_state: { oneOf: [{ type: string, enum: [normal, congested, recovering] }, { type: "null" }] }
         stream_count: { oneOf: [{ type: integer, minimum: 0, maximum: 8 }, { type: "null" }] }
         ready_streams: { oneOf: [{ type: integer, minimum: 0, maximum: 8 }, { type: "null" }] }
+        probe_misses: { oneOf: [{ type: integer, minimum: 0, maximum: 255 }, { type: "null" }] }
         queue_depth: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         queue_limit: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
         last_ack_seq: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }

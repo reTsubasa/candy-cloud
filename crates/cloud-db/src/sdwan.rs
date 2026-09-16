@@ -440,6 +440,8 @@ pub struct RuntimePathTelemetryWrite {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ready_streams: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_misses: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_depth: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_limit: Option<u64>,
@@ -711,6 +713,7 @@ mod runtime_stream_validation_tests {
             congestion_state: Some("normal".into()),
             stream_count: Some(1),
             ready_streams: Some(1),
+            probe_misses: Some(0),
             queue_depth: Some(1),
             queue_limit: Some(128),
             last_ack_seq: Some(41),

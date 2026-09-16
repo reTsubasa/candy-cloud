@@ -490,6 +490,7 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                             congestion_state: path.congestion_state,
                             stream_count: path.stream_count,
                             ready_streams: path.ready_streams,
+                            probe_misses: path.probe_misses,
                             queue_depth: path.queue_depth,
                             queue_limit: path.queue_limit,
                             last_ack_seq: path.last_ack_seq,

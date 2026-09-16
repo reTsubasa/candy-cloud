@@ -1090,6 +1090,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
             congestion_state: Some("normal".into()),
             stream_count: Some(1),
             ready_streams: Some(1),
+            probe_misses: Some(0),
             queue_depth: Some(0),
             queue_limit: Some(256),
             last_ack_seq: Some(1),

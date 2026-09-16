@@ -241,6 +241,7 @@ export type RuntimePathTelemetry = {
   congestion_state?: string | null;
   stream_count?: number | null;
   ready_streams?: number | null;
+  probe_misses?: number | null;
   queue_depth?: number | null;
   queue_limit?: number | null;
   last_ack_seq?: number | null;

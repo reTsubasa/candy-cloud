@@ -633,6 +633,8 @@ pub struct RuntimePathTelemetryItem {
     pub congestion_state: Option<String>,
     pub stream_count: Option<u32>,
     pub ready_streams: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_misses: Option<u8>,
     pub queue_depth: Option<u64>,
     pub queue_limit: Option<u64>,
     pub last_ack_seq: Option<u64>,
@@ -736,6 +738,7 @@ pub async fn runtime_telemetry(
                     congestion_state: path.congestion_state,
                     stream_count: path.stream_count,
                     ready_streams: path.ready_streams,
+                    probe_misses: path.probe_misses,
                     queue_depth: path.queue_depth,
                     queue_limit: path.queue_limit,
                     last_ack_seq: path.last_ack_seq,
