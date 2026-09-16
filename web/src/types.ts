@@ -174,6 +174,7 @@ export type RuntimeTelemetry = {
   active_peers: number;
   required_route_owners: number;
   ready_route_owners: number;
+  failed_route_prefixes?: string[];
   fail_open_required: boolean;
   last_error_code: string | null;
   last_error_detail?: string | null;

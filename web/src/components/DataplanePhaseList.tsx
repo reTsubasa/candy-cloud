@@ -17,8 +17,11 @@ export function DataplanePhaseList({ nodes }: { nodes: OperationalNode[] }) {
       : node.telemetryState === 'stale' ? '离线 · 遥测已过期'
       : node.telemetryState === 'unreported' ? '未上报遥测'
       : phase ? labels[phase] ?? '未知数据面阶段' : '未上报数据面阶段';
-    const detail = offline && node.telemetry
-      ? `最后上报：${node.telemetry.reported_at}；历史阶段：${phase ? labels[phase] ?? phase : '未上报'}。当前状态无法确认。`
+    const failed = node.telemetry?.failed_route_prefixes ?? [];
+    const routeDetail = failed.length ? `；回程路由故障：${failed.join(', ')}` : '';
+    const errorDetail = node.telemetry?.last_error_detail ? `；原因：${node.telemetry.last_error_detail}` : '';
+    const detail = node.telemetry
+      ? `${offline ? `最后上报：${node.telemetry.reported_at}；历史阶段：` : '阶段：'}${phase ? labels[phase] ?? phase : '未上报'}${routeDetail}${errorDetail}${offline ? '。当前状态无法确认。' : ''}`
       : undefined;
     return <div key={node.id}><span>{node.name}</span><strong title={detail}>{label}</strong></div>;
   })}</div>;
