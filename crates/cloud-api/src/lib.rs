@@ -13,6 +13,7 @@ use management::{AuthenticatedPrincipal, ManagementState};
 pub fn app() -> Router {
     app_with_state(Arc::new(ManagementState {
         repository: None,
+        client_access: None,
         enrollment: None,
         authentication_ready: false,
     }))
@@ -21,6 +22,7 @@ pub fn app() -> Router {
 pub fn app_with_repository(repository: ControlRepository) -> Router {
     app_with_state(Arc::new(ManagementState {
         repository: Some(repository),
+        client_access: None,
         enrollment: None,
         authentication_ready: false,
     }))
@@ -32,6 +34,7 @@ pub fn app_with_authentication(
 ) -> Router {
     let state = Arc::new(ManagementState {
         repository: Some(repository),
+        client_access: None,
         enrollment: None,
         authentication_ready: true,
     });
@@ -50,8 +53,23 @@ pub fn app_with_authentication_and_enrollment(
     enrollment: cloud_db::enrollment::EnrollmentRepository,
     authenticator: ManagementAuthenticator,
 ) -> Router {
+    app_with_authentication_and_enrollment_and_client_access(
+        repository,
+        enrollment,
+        None,
+        authenticator,
+    )
+}
+
+pub fn app_with_authentication_and_enrollment_and_client_access(
+    repository: ControlRepository,
+    enrollment: cloud_db::enrollment::EnrollmentRepository,
+    client_access: Option<cloud_db::client_access::ClientAccessPolicyRepository>,
+    authenticator: ManagementAuthenticator,
+) -> Router {
     let state = Arc::new(ManagementState {
         repository: Some(repository),
+        client_access,
         enrollment: Some(enrollment),
         authentication_ready: true,
     });
@@ -71,6 +89,7 @@ pub fn app_with_principal(
 ) -> Router {
     app_with_state(Arc::new(ManagementState {
         repository: Some(repository),
+        client_access: None,
         enrollment: None,
         authentication_ready: true,
     }))
@@ -114,6 +133,10 @@ fn management_routes() -> Router<Arc<ManagementState>> {
         .route(
             "/v1/tenants/{tenant_id}/runtime-telemetry",
             get(management::runtime_telemetry),
+        )
+        .route(
+            "/v1/tenants/{tenant_id}/client-access-policies",
+            axum::routing::post(management::create_client_access_policy),
         )
         .route(
             "/v1/tenants/{tenant_id}/audit-events",

@@ -14,9 +14,12 @@ async fn main() -> anyhow::Result<()> {
         &std::env::var("CLOUD_API_AUTH_AUDIENCE")?,
     )?
     .with_identity_repository(cloud_db::identity::IdentityRepository::new(pool.clone()));
-    let app = cloud_api::app_with_authentication_and_enrollment(
+    let app = cloud_api::app_with_authentication_and_enrollment_and_client_access(
         cloud_db::control::ControlRepository::new(pool.clone()),
-        cloud_db::enrollment::EnrollmentRepository::new(pool),
+        cloud_db::enrollment::EnrollmentRepository::new(pool.clone()),
+        Some(cloud_db::client_access::ClientAccessPolicyRepository::new(
+            pool.clone(),
+        )),
         authenticator,
     );
     let addr: SocketAddr = std::env::var("CLOUD_API_BIND")

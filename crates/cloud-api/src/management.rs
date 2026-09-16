@@ -32,8 +32,69 @@ pub struct AuthenticatedPrincipal {
 #[derive(Clone)]
 pub struct ManagementState {
     pub repository: Option<ControlRepository>,
+    pub client_access: Option<cloud_db::client_access::ClientAccessPolicyRepository>,
     pub enrollment: Option<cloud_db::enrollment::EnrollmentRepository>,
     pub authentication_ready: bool,
+}
+
+pub async fn create_client_access_policy(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path(tenant_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(policy): Json<cloud_db::client_access::ClientAccessPolicy>,
+) -> Result<(StatusCode, Json<ClientAccessPolicyResponse>), ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::WriteConfiguration)?;
+    if policy.tenant_id != tenant_id {
+        return Err(ApiError::forbidden());
+    }
+    let actor_id = Uuid::parse_str(&principal.actor_id).map_err(|_| ApiError::unauthorized())?;
+    let request_id = required_header(&headers, "Idempotency-Key")?
+        .parse::<Uuid>()
+        .map_err(|_| ApiError {
+            status: StatusCode::BAD_REQUEST,
+            code: "INVALID_IDEMPOTENCY_KEY",
+            message: "Idempotency-Key must be a UUID",
+        })?;
+    let repository = state
+        .client_access
+        .as_ref()
+        .ok_or_else(ApiError::authentication_unavailable)?;
+    let outcome = repository
+        .publish(
+            &policy,
+            principal.context.organization_id,
+            actor_id,
+            request_id,
+        )
+        .await
+        .map_err(ApiError::from_client_access)?;
+    let cloud_db::client_access::ClientAccessPolicyPublishOutcome::Published {
+        policy_id,
+        replayed,
+    } = outcome;
+    Ok((
+        if replayed {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        Json(ClientAccessPolicyResponse {
+            policy_id,
+            tenant_id,
+            generation: policy.generation,
+            replayed,
+        }),
+    ))
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClientAccessPolicyResponse {
+    pub policy_id: Uuid,
+    pub tenant_id: Uuid,
+    pub generation: u64,
+    pub replayed: bool,
 }
 
 #[derive(Serialize)]
@@ -144,6 +205,26 @@ impl ApiError {
             status: StatusCode::FORBIDDEN,
             code: "TENANT_ACCESS_DENIED",
             message: "tenant access is denied",
+        }
+    }
+
+    fn from_client_access(error: cloud_db::client_access::ClientAccessPolicyError) -> Self {
+        match error {
+            cloud_db::client_access::ClientAccessPolicyError::InvalidPolicy
+            | cloud_db::client_access::ClientAccessPolicyError::InvalidResource => Self {
+                status: StatusCode::BAD_REQUEST,
+                code: "INVALID_CLIENT_ACCESS_POLICY",
+                message: "client access policy does not satisfy the V1 contract",
+            },
+            cloud_db::client_access::ClientAccessPolicyError::InvalidScope => Self::forbidden(),
+            cloud_db::client_access::ClientAccessPolicyError::Conflict => Self {
+                status: StatusCode::CONFLICT,
+                code: "CLIENT_ACCESS_POLICY_CONFLICT",
+                message: "client access policy conflicts with current state",
+            },
+            cloud_db::client_access::ClientAccessPolicyError::InvalidRecord => {
+                Self::authentication_unavailable()
+            }
         }
     }
 
