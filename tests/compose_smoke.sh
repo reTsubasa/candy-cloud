@@ -136,7 +136,7 @@ compose exec -T mysql sh -eu -c '
 DELETE FROM runtime_projection_transport_catalog WHERE 1 = 0;
 SQL
 unauthorized_delete_grant=$(compose exec -T mysql sh -eu -c '
-	mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names "$MYSQL_DATABASE"
+	mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --batch --skip-column-names --silent "$MYSQL_DATABASE" 2>/dev/null
 ' <<'SQL'
 SELECT COUNT(*)
 FROM information_schema.TABLE_PRIVILEGES
