@@ -1,4 +1,4 @@
-use std::{collections::HashSet, net::SocketAddr};
+use std::collections::HashSet;
 
 use sqlx::Row;
 use uuid::Uuid;
@@ -15,7 +15,7 @@ pub struct ClientNodeCandidate {
     pub node_id: Uuid,
     pub node_key_id: Uuid,
     pub endpoint_id: Uuid,
-    pub endpoint: SocketAddr,
+    pub endpoint: String,
     pub region: String,
     pub server_name: String,
     pub server_cert_sha256: [u8; 32],
@@ -26,6 +26,9 @@ impl ClientNodeCandidate {
         if [self.node_id, self.node_key_id, self.endpoint_id]
             .into_iter()
             .any(|id| id.is_nil())
+            || self.endpoint.trim().is_empty()
+            || self.endpoint.len() > 255
+            || self.endpoint.bytes().any(|byte| byte.is_ascii_control())
             || self.region.is_empty()
             || self.region.len() > MAX_REGION_LEN
             || self.server_name.is_empty()
@@ -108,9 +111,7 @@ impl ClientNodeRepository {
                     endpoint_id: row
                         .try_get("endpoint_id")
                         .map_err(|_| ClientRoutingError::InvalidRecord)?,
-                    endpoint: endpoint
-                        .parse()
-                        .map_err(|_| ClientRoutingError::InvalidRecord)?,
+                    endpoint,
                     region: row
                         .try_get("region")
                         .map_err(|_| ClientRoutingError::InvalidRecord)?,

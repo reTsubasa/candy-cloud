@@ -1,5 +1,3 @@
-use std::net::SocketAddr;
-
 use cloud_db::client_routing::{
     select_nodes, ClientNodeCandidate, ClientRoutingError, MAX_CLIENT_NODE_BACKUPS,
 };
@@ -10,7 +8,7 @@ fn candidate(region: &str, node_id: u128, endpoint_id: u128) -> ClientNodeCandid
         node_id: Uuid::from_u128(node_id),
         node_key_id: Uuid::new_v4(),
         endpoint_id: Uuid::from_u128(endpoint_id),
-        endpoint: "198.51.100.10:443".parse::<SocketAddr>().unwrap(),
+        endpoint: "edge.example.test:443".into(),
         region: region.into(),
         server_name: "node.example.test".into(),
         server_cert_sha256: [9; 32],
