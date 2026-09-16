@@ -62,6 +62,7 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "client_grants",
         "client_projections",
         "client_projection_receipts",
+        "client_access_policy_binding_requests",
     ];
     for table in required {
         let count: i64 = sqlx::query_scalar(
@@ -100,6 +101,14 @@ fn terminal_client_access_policy_is_separate_and_generation_scoped() {
     assert!(migration
         .contains("UNIQUE KEY uq_client_access_policy_binding_request (tenant_id, request_id)"));
     assert!(!migration.contains("sdwan_control_resources"));
+}
+
+#[test]
+fn terminal_client_policy_binding_history_preserves_idempotency_across_rebinds() {
+    let migration = include_str!("../migrations/0041_terminal_client_policy_binding_history.sql");
+    assert!(migration.contains("CREATE TABLE client_access_policy_binding_requests"));
+    assert!(migration.contains("UNIQUE KEY uq_client_access_policy_binding_request_history"));
+    assert!(migration.contains("INSERT INTO client_access_policy_binding_requests"));
 }
 
 #[test]

@@ -367,7 +367,7 @@ impl ClientAccessPolicyRepository {
             return Err(ClientAccessPolicyError::Conflict);
         }
         let existing = sqlx::query(
-            "SELECT id, request_hash FROM client_access_policy_bindings WHERE tenant_id = ? AND request_id = ? FOR UPDATE",
+            "SELECT binding_id, request_hash FROM client_access_policy_binding_requests WHERE tenant_id = ? AND request_id = ? FOR UPDATE",
         )
         .bind(tenant_id)
         .bind(request_id)
@@ -379,7 +379,7 @@ impl ClientAccessPolicyRepository {
                 .try_get("request_hash")
                 .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
             let binding_id: Uuid = row
-                .try_get("id")
+                .try_get("binding_id")
                 .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
             transaction
                 .rollback()
@@ -394,29 +394,62 @@ impl ClientAccessPolicyRepository {
                 Err(ClientAccessPolicyError::Conflict)
             };
         }
+        let current_binding: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM client_access_policy_bindings WHERE organization_id = ? AND tenant_id = ? AND client_device_id = ? FOR UPDATE",
+        )
+        .bind(organization_id)
+        .bind(tenant_id)
+        .bind(client_device_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
+        let binding_id = current_binding.unwrap_or_else(Uuid::now_v7);
+        if current_binding.is_some() {
+            sqlx::query(
+                "UPDATE client_access_policy_bindings SET user_id = ?, policy_id = ?, request_id = ?, request_hash = ?, created_by = ? WHERE id = ? AND organization_id = ? AND tenant_id = ? AND client_device_id = ?",
+            )
+            .bind(user_id)
+            .bind(policy_id)
+            .bind(request_id)
+            .bind(request_hash.as_slice())
+            .bind(actor_id)
+            .bind(binding_id)
+            .bind(organization_id)
+            .bind(tenant_id)
+            .bind(client_device_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| ClientAccessPolicyError::Conflict)?;
+        } else {
+            sqlx::query(
+                "INSERT INTO client_access_policy_bindings (id, organization_id, tenant_id, user_id, client_device_id, policy_id, request_id, request_hash, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(binding_id)
+            .bind(organization_id)
+            .bind(tenant_id)
+            .bind(user_id)
+            .bind(client_device_id)
+            .bind(policy_id)
+            .bind(request_id)
+            .bind(request_hash.as_slice())
+            .bind(actor_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| ClientAccessPolicyError::Conflict)?;
+        }
         sqlx::query(
-            "INSERT INTO client_access_policy_bindings (id, organization_id, tenant_id, user_id, client_device_id, policy_id, request_id, request_hash, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO client_access_policy_binding_requests (id, organization_id, tenant_id, binding_id, request_id, request_hash, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::now_v7())
         .bind(organization_id)
         .bind(tenant_id)
-        .bind(user_id)
-        .bind(client_device_id)
-        .bind(policy_id)
+        .bind(binding_id)
         .bind(request_id)
         .bind(request_hash.as_slice())
         .bind(actor_id)
         .execute(&mut *transaction)
         .await
         .map_err(|_| ClientAccessPolicyError::Conflict)?;
-        let binding_id: Uuid = sqlx::query_scalar(
-            "SELECT id FROM client_access_policy_bindings WHERE tenant_id = ? AND request_id = ?",
-        )
-        .bind(tenant_id)
-        .bind(request_id)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(|_| ClientAccessPolicyError::InvalidRecord)?;
         sqlx::query(
             "INSERT INTO audit_events (id, organization_id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, ?, 'HUMAN', ?, 'CLIENT_ACCESS_POLICY_BOUND', 'CLIENT_ACCESS_POLICY', ?, JSON_OBJECT('client_device_id', ?, 'user_id', ?))",
         )
