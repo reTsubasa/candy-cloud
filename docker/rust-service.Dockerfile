@@ -47,12 +47,13 @@ ARG CORE_MODULE_TARGET
 ARG CORE_MODULE_URL
 ARG USIGN_COMMIT=c4c72b1b07945ee192361dc751291a7c98d6adcd
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential ca-certificates cmake curl git jq \
+    && apt-get install -y --no-install-recommends gcc make libc6-dev ca-certificates cmake curl jq \
     && rm -rf /var/lib/apt/lists/*
-RUN git init -q /tmp/usign \
-    && git -C /tmp/usign remote add origin https://github.com/openwrt/usign.git \
-    && git -C /tmp/usign fetch --depth 1 origin "${USIGN_COMMIT}" \
-    && git -C /tmp/usign checkout -q FETCH_HEAD \
+RUN mkdir -p /tmp/usign \
+    && curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-all-errors \
+      --connect-timeout 15 --max-time 120 \
+      "https://codeload.github.com/openwrt/usign/tar.gz/${USIGN_COMMIT}" \
+      | tar -xz --strip-components=1 -C /tmp/usign \
     && cmake -S /tmp/usign -B /tmp/usign/build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build /tmp/usign/build --parallel 2 \
     && install -m 0755 /tmp/usign/build/usign /usr/local/bin/usign
