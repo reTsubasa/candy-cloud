@@ -867,6 +867,27 @@ async fn runtime_telemetry_uses_authenticated_identity_and_rejects_impossible_co
         "tx_bps": null,
         "reconnects": null,
         "path_changes": null,
+        "route_diagnostics": {
+            "schema_version": 1,
+            "integrity": "consistent",
+            "expected_snapshot_sha256": "11".repeat(32),
+            "observed_snapshot_sha256": "11".repeat(32),
+            "expected_routes": 4,
+            "observed_routes": 4,
+            "orphaned_routes": 0,
+            "reconcile_attempts": 2,
+            "reconcile_successes": 2,
+            "last_checked_at_unix": 1_700_000_100_u64,
+            "last_reconciled_at_unix": 1_700_000_000_u64,
+            "last_recovered_at_unix": 1_700_000_001_u64,
+            "last_recovery_duration_ms": 18,
+            "last_error_code": null,
+            "probe_state": "succeeded",
+            "probe_targets": 2,
+            "probe_successes": 2,
+            "probe_rtt_ms": 9,
+            "probe_checked_at_unix": 1_700_000_100_u64
+        },
         "local_networks": [{
             "network_id": "30bfd718e3f4b79faf151e52915f15928bf9c63b57a7963b807c8c1f7f502ae5",
             "interface_name": "br-lan.10",
@@ -892,6 +913,14 @@ async fn runtime_telemetry_uses_authenticated_identity_and_rejects_impossible_co
     let command = service.telemetry.lock().unwrap().pop().unwrap();
     assert_eq!(command.actor, actor);
     assert_eq!(command.active_peers, 2);
+    assert_eq!(
+        command
+            .route_diagnostics
+            .as_ref()
+            .expect("route diagnostics")
+            .probe_successes,
+        2
+    );
     let local_networks = command.local_networks.expect("local network telemetry");
     assert_eq!(local_networks.len(), 1);
     assert_eq!(
@@ -1069,8 +1098,27 @@ async fn runtime_telemetry_uses_authenticated_identity_and_rejects_impossible_co
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(service.telemetry.lock().unwrap().is_empty());
 
-    let mut invalid_network = body;
+    let mut invalid_network = body.clone();
     invalid_network["local_networks"][0]["cidr"] = serde_json::json!("192.168.10.0/129");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/runtime/telemetry")
+                .header("content-type", "application/json")
+                .extension(actor.clone())
+                .body(Body::from(invalid_network.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(service.telemetry.lock().unwrap().is_empty());
+
+    let mut invalid_diagnostics = body.clone();
+    invalid_diagnostics["route_diagnostics"]["observed_snapshot_sha256"] =
+        serde_json::json!("not-a-sha256");
     let response = app
         .oneshot(
             Request::builder()
@@ -1078,7 +1126,7 @@ async fn runtime_telemetry_uses_authenticated_identity_and_rejects_impossible_co
                 .uri("/v1/runtime/telemetry")
                 .header("content-type", "application/json")
                 .extension(actor)
-                .body(Body::from(invalid_network.to_string()))
+                .body(Body::from(invalid_diagnostics.to_string()))
                 .unwrap(),
         )
         .await

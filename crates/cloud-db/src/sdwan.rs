@@ -364,6 +364,7 @@ pub struct RuntimeTelemetryWrite {
     pub required_route_owners: u32,
     pub ready_route_owners: u32,
     pub failed_route_prefixes: Vec<String>,
+    pub route_diagnostics: Option<RuntimeRouteDiagnosticsWrite>,
     pub fail_open_required: bool,
     pub last_error_code: Option<String>,
     pub last_error_detail: Option<String>,
@@ -378,6 +379,29 @@ pub struct RuntimeTelemetryWrite {
     pub runtime_generation: Option<u64>,
     pub paths: Vec<RuntimePathTelemetryWrite>,
     pub local_networks: Option<Vec<RuntimeLocalNetworkTelemetryWrite>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeRouteDiagnosticsWrite {
+    pub schema_version: u8,
+    pub integrity: String,
+    pub expected_snapshot_sha256: String,
+    pub observed_snapshot_sha256: String,
+    pub expected_routes: u32,
+    pub observed_routes: u32,
+    pub orphaned_routes: u32,
+    pub reconcile_attempts: u64,
+    pub reconcile_successes: u64,
+    pub last_checked_at_unix: u64,
+    pub last_reconciled_at_unix: Option<u64>,
+    pub last_recovered_at_unix: Option<u64>,
+    pub last_recovery_duration_ms: Option<u64>,
+    pub last_error_code: Option<String>,
+    pub probe_state: String,
+    pub probe_targets: u32,
+    pub probe_successes: u32,
+    pub probe_rtt_ms: Option<u32>,
+    pub probe_checked_at_unix: Option<u64>,
 }
 
 type PreviousRuntimeTelemetry = (Uuid, u64, String, Option<String>, bool, Option<String>);
@@ -524,6 +548,10 @@ impl RuntimeTelemetryWrite {
             || self.runtime_generation == Some(0)
             || self.paths.len() > MAX_RUNTIME_PATHS
             || self
+                .route_diagnostics
+                .as_ref()
+                .is_some_and(|diagnostics| !validate_runtime_route_diagnostics(diagnostics))
+            || self
                 .local_networks
                 .as_ref()
                 .is_some_and(|networks| networks.len() > MAX_RUNTIME_LOCAL_NETWORKS)
@@ -551,6 +579,54 @@ impl RuntimeTelemetryWrite {
         }
         Ok(())
     }
+}
+
+fn validate_runtime_route_diagnostics(value: &RuntimeRouteDiagnosticsWrite) -> bool {
+    let valid_hash = |hash: &str| {
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    let valid_error = value.last_error_code.as_deref().is_none_or(|error| {
+        !error.is_empty()
+            && error.len() <= 80
+            && error
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    });
+    value.schema_version == 1
+        && matches!(
+            value.integrity.as_str(),
+            "consistent" | "drifted" | "reconciling" | "failed"
+        )
+        && valid_hash(&value.expected_snapshot_sha256)
+        && valid_hash(&value.observed_snapshot_sha256)
+        && value.observed_routes <= 8192
+        && value.expected_routes <= 8192
+        && value.orphaned_routes <= value.observed_routes
+        && value.reconcile_successes <= value.reconcile_attempts
+        && value.last_checked_at_unix > 0
+        && value
+            .last_reconciled_at_unix
+            .is_none_or(|timestamp| timestamp > 0 && timestamp <= value.last_checked_at_unix)
+        && value
+            .last_recovered_at_unix
+            .is_none_or(|timestamp| timestamp > 0 && timestamp <= value.last_checked_at_unix)
+        && value
+            .last_recovery_duration_ms
+            .is_none_or(|millis| millis <= 300_000)
+        && valid_error
+        && matches!(
+            value.probe_state.as_str(),
+            "unreported" | "pending" | "succeeded" | "failed"
+        )
+        && value.probe_targets <= 4096
+        && value.probe_successes <= value.probe_targets
+        && value.probe_rtt_ms.is_none_or(|rtt| rtt <= 60_000)
+        && value
+            .probe_checked_at_unix
+            .is_none_or(|timestamp| timestamp > 0)
 }
 
 fn validate_runtime_stream_path(path: &RuntimePathTelemetryWrite) -> bool {
@@ -1665,7 +1741,7 @@ impl SdwanRepository {
             serde_json::to_string(telemetry.local_networks.as_deref().unwrap_or(&[]))
                 .map_err(|_| RuntimeConfigurationError::InvalidScope)?;
         sqlx::query(
-            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, dataplane_phase, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, paths_json, local_networks_json, failed_route_prefixes_json, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), IF(? = 1, CAST(? AS JSON), JSON_ARRAY()), CAST(? AS JSON), ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), dataplane_phase = VALUES(dataplane_phase), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), last_error_detail = VALUES(last_error_detail), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), transport_mode = VALUES(transport_mode), runtime_generation = VALUES(runtime_generation), paths_json = VALUES(paths_json), local_networks_json = IF(? = 1, VALUES(local_networks_json), local_networks_json), failed_route_prefixes_json = VALUES(failed_route_prefixes_json), reported_at = VALUES(reported_at)",
+            "INSERT INTO runtime_telemetry_latest (tenant_id, device_id, device_key_id, boot_id, sequence, lifecycle, dataplane_phase, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, paths_json, local_networks_json, failed_route_prefixes_json, route_diagnostics_json, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), IF(? = 1, CAST(? AS JSON), JSON_ARRAY()), CAST(? AS JSON), CAST(? AS JSON), ?) ON DUPLICATE KEY UPDATE boot_id = VALUES(boot_id), sequence = VALUES(sequence), lifecycle = VALUES(lifecycle), dataplane_phase = VALUES(dataplane_phase), configured_peers = VALUES(configured_peers), active_peers = VALUES(active_peers), required_route_owners = VALUES(required_route_owners), ready_route_owners = VALUES(ready_route_owners), fail_open_required = VALUES(fail_open_required), last_error_code = VALUES(last_error_code), last_error_detail = VALUES(last_error_detail), rtt_ms = VALUES(rtt_ms), jitter_ms = VALUES(jitter_ms), packet_loss_ppm = VALUES(packet_loss_ppm), rx_bps = VALUES(rx_bps), tx_bps = VALUES(tx_bps), reconnects = VALUES(reconnects), path_changes = VALUES(path_changes), transport_mode = VALUES(transport_mode), runtime_generation = VALUES(runtime_generation), paths_json = VALUES(paths_json), local_networks_json = IF(? = 1, VALUES(local_networks_json), local_networks_json), failed_route_prefixes_json = VALUES(failed_route_prefixes_json), route_diagnostics_json = VALUES(route_diagnostics_json), reported_at = VALUES(reported_at)",
         )
         .bind(telemetry.lookup.tenant_id)
         .bind(telemetry.lookup.device_id)
@@ -1694,6 +1770,7 @@ impl SdwanRepository {
         .bind(local_networks_present)
         .bind(local_networks_json)
         .bind(serde_json::to_string(&telemetry.failed_route_prefixes).map_err(|_| RuntimeConfigurationError::InvalidScope)?)
+        .bind(telemetry.route_diagnostics.as_ref().map(serde_json::to_string).transpose().map_err(|_| RuntimeConfigurationError::InvalidScope)?)
         .bind(now)
         .bind(local_networks_present)
         .execute(&mut *transaction)

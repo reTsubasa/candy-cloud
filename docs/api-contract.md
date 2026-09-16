@@ -244,6 +244,16 @@ preserves the last successful inventory; an explicit empty array means
 discovery succeeded and found no publishable networks. Older clients may omit
 the field.
 
+Runtime clients that implement kernel route reconciliation also send the
+optional versioned `route_diagnostics` object. It binds the signed expected
+route snapshot and the observed kernel snapshot to SHA-256 hashes, reports
+route counts and orphan counts, and retains bounded reconciliation attempt,
+success, error and recovery-duration evidence. The same object separately
+reports active packet-probe target/success counts and RTT. A negotiated or
+authenticated path is therefore not presented as data-plane healthy until the
+probe state is `succeeded`. Older Runtime versions may omit this object; the
+management UI labels the diagnostics unavailable instead of inferring health.
+
 ### Profile and fetch
 
 The Profile response gives Runtime and LuCI the authenticated organization,

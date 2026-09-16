@@ -333,6 +333,7 @@ pub struct RuntimeTelemetryCommand {
     pub required_route_owners: u32,
     pub ready_route_owners: u32,
     pub failed_route_prefixes: Vec<String>,
+    pub route_diagnostics: Option<RuntimeRouteDiagnosticsCommand>,
     pub fail_open_required: bool,
     pub last_error_code: Option<String>,
     pub last_error_detail: Option<String>,
@@ -347,6 +348,30 @@ pub struct RuntimeTelemetryCommand {
     pub runtime_generation: Option<u64>,
     pub paths: Vec<RuntimePathTelemetryCommand>,
     pub local_networks: Option<Vec<RuntimeLocalNetworkTelemetryCommand>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeRouteDiagnosticsCommand {
+    pub schema_version: u8,
+    pub integrity: String,
+    pub expected_snapshot_sha256: String,
+    pub observed_snapshot_sha256: String,
+    pub expected_routes: u32,
+    pub observed_routes: u32,
+    pub orphaned_routes: u32,
+    pub reconcile_attempts: u64,
+    pub reconcile_successes: u64,
+    pub last_checked_at_unix: u64,
+    pub last_reconciled_at_unix: Option<u64>,
+    pub last_recovered_at_unix: Option<u64>,
+    pub last_recovery_duration_ms: Option<u64>,
+    pub last_error_code: Option<String>,
+    pub probe_state: String,
+    pub probe_targets: u32,
+    pub probe_successes: u32,
+    pub probe_rtt_ms: Option<u32>,
+    pub probe_checked_at_unix: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1350,6 +1375,10 @@ where
             .iter()
             .any(|prefix| !valid_runtime_prefix(prefix))
         || request
+            .route_diagnostics
+            .as_ref()
+            .is_some_and(|diagnostics| !valid_route_diagnostics(diagnostics))
+        || request
             .local_networks
             .as_ref()
             .is_some_and(|networks| networks.len() > 64)
@@ -1397,6 +1426,7 @@ where
             required_route_owners: request.required_route_owners,
             ready_route_owners: request.ready_route_owners,
             failed_route_prefixes: request.failed_route_prefixes,
+            route_diagnostics: request.route_diagnostics,
             fail_open_required: request.fail_open_required,
             last_error_code: error_code,
             last_error_detail: request.last_error_detail,
@@ -1709,6 +1739,50 @@ fn valid_runtime_prefix(value: &str) -> bool {
     u32::from(address) & !mask == 0
 }
 
+fn valid_route_diagnostics(value: &RuntimeRouteDiagnosticsCommand) -> bool {
+    let valid_hash = |hash: &str| {
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    value.schema_version == 1
+        && matches!(
+            value.integrity.as_str(),
+            "consistent" | "drifted" | "reconciling" | "failed"
+        )
+        && valid_hash(&value.expected_snapshot_sha256)
+        && valid_hash(&value.observed_snapshot_sha256)
+        && value.expected_routes <= 8192
+        && value.observed_routes <= 8192
+        && value.orphaned_routes <= value.observed_routes
+        && value.reconcile_successes <= value.reconcile_attempts
+        && value.last_checked_at_unix > 0
+        && value
+            .last_reconciled_at_unix
+            .is_none_or(|timestamp| timestamp > 0 && timestamp <= value.last_checked_at_unix)
+        && value
+            .last_recovered_at_unix
+            .is_none_or(|timestamp| timestamp > 0 && timestamp <= value.last_checked_at_unix)
+        && value
+            .last_recovery_duration_ms
+            .is_none_or(|millis| millis <= 300_000)
+        && value
+            .last_error_code
+            .as_deref()
+            .is_none_or(valid_runtime_error_code)
+        && matches!(
+            value.probe_state.as_str(),
+            "unreported" | "pending" | "succeeded" | "failed"
+        )
+        && value.probe_targets <= 4096
+        && value.probe_successes <= value.probe_targets
+        && value.probe_rtt_ms.is_none_or(|rtt| rtt <= 60_000)
+        && value
+            .probe_checked_at_unix
+            .is_none_or(|timestamp| timestamp > 0)
+}
+
 fn valid_installation_instance_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 120
@@ -1955,6 +2029,8 @@ struct RuntimeTelemetryHttpRequest {
     ready_route_owners: u32,
     #[serde(default)]
     failed_route_prefixes: Vec<String>,
+    #[serde(default)]
+    route_diagnostics: Option<RuntimeRouteDiagnosticsCommand>,
     fail_open_required: bool,
     last_error_code: Option<String>,
     #[serde(default)]

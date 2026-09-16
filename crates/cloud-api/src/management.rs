@@ -16,6 +16,7 @@ use cloud_db::control::{
     ControlRepository, ControlStoreError, MutationContext, MutationOutcome, ResourceMutation,
     ResourcePageRequest,
 };
+use cloud_db::sdwan::RuntimeRouteDiagnosticsWrite;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -586,6 +587,7 @@ pub struct RuntimeTelemetryItem {
     pub required_route_owners: u32,
     pub ready_route_owners: u32,
     pub failed_route_prefixes: Vec<String>,
+    pub route_diagnostics: Option<RuntimeRouteDiagnosticsWrite>,
     pub fail_open_required: bool,
     pub last_error_code: Option<String>,
     pub last_error_detail: Option<String>,
@@ -697,6 +699,7 @@ pub async fn runtime_telemetry(
             required_route_owners: record.required_route_owners,
             ready_route_owners: record.ready_route_owners,
             failed_route_prefixes: record.failed_route_prefixes,
+            route_diagnostics: record.route_diagnostics,
             fail_open_required: record.fail_open_required,
             last_error_code: record.last_error_code,
             last_error_detail: record.last_error_detail,

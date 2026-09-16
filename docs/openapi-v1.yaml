@@ -1868,6 +1868,13 @@ components:
         active_peers: { type: integer, minimum: 0 }
         required_route_owners: { type: integer, minimum: 0 }
         ready_route_owners: { type: integer, minimum: 0 }
+        failed_route_prefixes:
+          type: array
+          maxItems: 4096
+          default: []
+          items: { type: string, minLength: 3, maxLength: 18 }
+        route_diagnostics:
+          oneOf: [{ $ref: "#/components/schemas/RuntimeRouteDiagnostics" }, { type: "null" }]
         fail_open_required: { type: boolean }
         last_error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }, { type: "null" }] }
         last_error_detail: { oneOf: [{ type: string, minLength: 1, maxLength: 1024 }, { type: "null" }] }
@@ -1899,6 +1906,30 @@ components:
         cidr: { type: string, minLength: 9, maxLength: 18, description: Canonical directly connected IPv4 CIDR. }
         address: { type: string, format: ipv4, minLength: 7, maxLength: 15, description: Interface IPv4 address within cidr. }
         kind: { type: string, const: direct_ipv4 }
+    RuntimeRouteDiagnostics:
+      type: object
+      additionalProperties: false
+      required: [schema_version, integrity, expected_snapshot_sha256, observed_snapshot_sha256, expected_routes, observed_routes, orphaned_routes, reconcile_attempts, reconcile_successes, last_checked_at_unix, last_reconciled_at_unix, last_recovered_at_unix, last_recovery_duration_ms, last_error_code, probe_state, probe_targets, probe_successes, probe_rtt_ms, probe_checked_at_unix]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        integrity: { type: string, enum: [consistent, drifted, reconciling, failed] }
+        expected_snapshot_sha256: { type: string, minLength: 64, maxLength: 64, pattern: '^[0-9a-f]{64}$' }
+        observed_snapshot_sha256: { type: string, minLength: 64, maxLength: 64, pattern: '^[0-9a-f]{64}$' }
+        expected_routes: { type: integer, minimum: 0, maximum: 8192 }
+        observed_routes: { type: integer, minimum: 0, maximum: 8192 }
+        orphaned_routes: { type: integer, minimum: 0, maximum: 8192 }
+        reconcile_attempts: { type: integer, minimum: 0 }
+        reconcile_successes: { type: integer, minimum: 0 }
+        last_checked_at_unix: { type: integer, minimum: 1 }
+        last_reconciled_at_unix: { oneOf: [{ type: integer, minimum: 1 }, { type: "null" }] }
+        last_recovered_at_unix: { oneOf: [{ type: integer, minimum: 1 }, { type: "null" }] }
+        last_recovery_duration_ms: { oneOf: [{ type: integer, minimum: 0, maximum: 300000 }, { type: "null" }] }
+        last_error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }, { type: "null" }] }
+        probe_state: { type: string, enum: [unreported, pending, succeeded, failed] }
+        probe_targets: { type: integer, minimum: 0, maximum: 4096 }
+        probe_successes: { type: integer, minimum: 0, maximum: 4096 }
+        probe_rtt_ms: { oneOf: [{ type: integer, minimum: 0, maximum: 60000 }, { type: "null" }] }
+        probe_checked_at_unix: { oneOf: [{ type: integer, minimum: 1 }, { type: "null" }] }
     RuntimePathTelemetry:
       type: object
       additionalProperties: false
@@ -1975,7 +2006,7 @@ components:
     RuntimeTelemetryItem:
       type: object
       additionalProperties: false
-      required: [device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, paths, local_networks, reported_at]
+      required: [device_id, device_key_id, boot_id, sequence, lifecycle, configured_peers, active_peers, required_route_owners, ready_route_owners, failed_route_prefixes, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, paths, local_networks, reported_at]
       properties:
         device_id: { $ref: "#/components/schemas/Uuid" }
         device_key_id: { $ref: "#/components/schemas/Uuid" }
@@ -1987,6 +2018,12 @@ components:
         active_peers: { type: integer, minimum: 0 }
         required_route_owners: { type: integer, minimum: 0 }
         ready_route_owners: { type: integer, minimum: 0 }
+        failed_route_prefixes:
+          type: array
+          maxItems: 4096
+          items: { type: string, minLength: 3, maxLength: 18 }
+        route_diagnostics:
+          oneOf: [{ $ref: "#/components/schemas/RuntimeRouteDiagnostics" }, { type: "null" }]
         fail_open_required: { type: boolean }
         last_error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }, { type: "null" }] }
         last_error_detail: { oneOf: [{ type: string, minLength: 1, maxLength: 1024 }, { type: "null" }] }

@@ -176,6 +176,7 @@ export type RuntimeTelemetry = {
   ready_route_owners: number;
   failed_route_prefixes?: string[];
   fail_open_required: boolean;
+  route_diagnostics?: RuntimeRouteDiagnostics | null;
   last_error_code: string | null;
   last_error_detail?: string | null;
   rtt_ms: number | null;
@@ -190,6 +191,28 @@ export type RuntimeTelemetry = {
   paths: RuntimePathTelemetry[];
   local_networks: RuntimeLocalNetworkTelemetry[];
   reported_at: string;
+};
+
+export type RuntimeRouteDiagnostics = {
+  schema_version: 1;
+  integrity: 'consistent' | 'drifted' | 'reconciling' | 'failed';
+  expected_snapshot_sha256: string;
+  observed_snapshot_sha256: string;
+  expected_routes: number;
+  observed_routes: number;
+  orphaned_routes: number;
+  reconcile_attempts: number;
+  reconcile_successes: number;
+  last_checked_at_unix: number;
+  last_reconciled_at_unix: number | null;
+  last_recovered_at_unix: number | null;
+  last_recovery_duration_ms: number | null;
+  last_error_code: string | null;
+  probe_state: 'unreported' | 'pending' | 'succeeded' | 'failed';
+  probe_targets: number;
+  probe_successes: number;
+  probe_rtt_ms: number | null;
+  probe_checked_at_unix: number | null;
 };
 
 export type RuntimeLocalNetworkTelemetry = {

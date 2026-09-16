@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
+  Descriptions,
   Empty,
   Input,
   Message,
@@ -13,9 +14,9 @@ import {
   Tooltip,
   Typography,
 } from '@arco-design/web-react';
-import { IconDelete, IconEdit, IconPlus, IconRefresh, IconRight, IconSafe, IconSearch, IconSync } from '@arco-design/web-react/icon';
+import { IconDelete, IconEdit, IconInfoCircle, IconPlus, IconRefresh, IconRight, IconSafe, IconSearch, IconSync } from '@arco-design/web-react/icon';
 import { CloudApiError, createNodeUpgrade, deleteResource, fetchRuntimeActivationReadiness, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, getNodeUpgrades, getResource, listAllResources, listResourceReferences, listResources, type NodeUpgradesResponse } from '../api';
-import { buildOperationalTopology, emptyOperationalResources, type OperationalResourceKey, type OperationalResources, type OperationalTopologySnapshot } from '../operational-topology';
+import { buildOperationalTopology, emptyOperationalResources, type OperationalNode, type OperationalResourceKey, type OperationalResources, type OperationalTopologySnapshot } from '../operational-topology';
 import type { OperationalStatus } from '../operational-status';
 import { pathDefinition, resourceDefinitions } from '../resource-definitions';
 import type { ControlResource, ResourceDefinition, ResourceReference, RuntimeActivationReadiness, Session } from '../types';
@@ -198,6 +199,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
   const [operationalSnapshot, setOperationalSnapshot] = useState<OperationalTopologySnapshot | null>(null);
   const [operationalStatusError, setOperationalStatusError] = useState<string | null>(null);
   const [nodeUpgrades, setNodeUpgrades] = useState<Record<string, NodeUpgradesResponse | null>>({});
+  const [diagnosticNode, setDiagnosticNode] = useState<OperationalNode | null>(null);
   const tenantId = session.claims.tenant_id;
 
   const load = useCallback(async () => {
@@ -360,7 +362,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
 
   const actionColumn = {
     title: '操作',
-    width: 124,
+    width: definition.kind === 'NODE' ? 164 : 124,
     className: 'resource-actions',
     headerCellStyle: { paddingRight: 12 },
     bodyCellStyle: { paddingRight: 12 },
@@ -368,6 +370,10 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
     render: (_: unknown, record: ControlResource) => (
       <Space size={4}>
         {definition.kind === 'NODE' && <>
+          <Tooltip content="路由诊断"><Button type="text" size="small" icon={<IconInfoCircle />} aria-label="路由诊断" onClick={() => {
+            const node = operationalSnapshot?.nodes.find((item) => item.id === record.metadata.id) ?? null;
+            setDiagnosticNode(node);
+          }} /></Tooltip>
           <Tooltip content="升级 Runtime/Core"><Button type="text" size="small" icon={<IconRefresh />} aria-label="升级节点" onClick={() => void (async () => {
             if (!tenantId) return;
             try {
@@ -532,6 +538,43 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
           void load();
         }}
       />
+      <Modal
+        visible={diagnosticNode !== null}
+        title={diagnosticNode ? `${diagnosticNode.name} · 路由诊断` : '路由诊断'}
+        footer={<Button onClick={() => setDiagnosticNode(null)}>关闭</Button>}
+        onCancel={() => setDiagnosticNode(null)}
+        unmountOnExit
+      >
+        {diagnosticNode && (() => {
+          const telemetry = diagnosticNode.telemetry;
+          const diagnostics = telemetry?.route_diagnostics;
+          if (!telemetry) return <Alert type="warning" showIcon content="节点尚未上报 Runtime 遥测，无法确认现场路由状态。" />;
+          if (!diagnostics) return <Alert type="warning" showIcon content="当前 Runtime 未上报路由完整性诊断；请先升级节点 Runtime。" />;
+          const timestamp = (value: number | null) => value ? new Date(value * 1000).toLocaleString() : '—';
+          const integrity = diagnostics.integrity === 'consistent' ? '一致'
+            : diagnostics.integrity === 'reconciling' ? '自愈中'
+            : diagnostics.integrity === 'drifted' ? '发现漂移' : '自愈失败';
+          const probe = diagnostics.probe_state === 'succeeded' ? '通过'
+            : diagnostics.probe_state === 'failed' ? '失败'
+            : diagnostics.probe_state === 'pending' ? '等待探测' : '未上报';
+          return <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            {(diagnostics.integrity !== 'consistent' || diagnostics.probe_state === 'failed') && <Alert type="error" showIcon content={`路由完整性：${integrity}；真实数据包探测：${probe}${diagnostics.last_error_code ? `；错误码：${diagnostics.last_error_code}` : ''}`} />}
+            <Descriptions column={1} data={[
+              { label: '路由完整性', value: <Tag color={diagnostics.integrity === 'consistent' ? 'green' : diagnostics.integrity === 'reconciling' ? 'orange' : 'red'}>{integrity}</Tag> },
+              { label: '声明 / 实测路由', value: `${diagnostics.expected_routes} / ${diagnostics.observed_routes}（孤儿 ${diagnostics.orphaned_routes}）` },
+              { label: '声明快照', value: <code title={diagnostics.expected_snapshot_sha256}>{diagnostics.expected_snapshot_sha256.slice(0, 16)}…</code> },
+              { label: '实测快照', value: <code title={diagnostics.observed_snapshot_sha256}>{diagnostics.observed_snapshot_sha256.slice(0, 16)}…</code> },
+              { label: '自愈次数', value: `${diagnostics.reconcile_successes} / ${diagnostics.reconcile_attempts} 成功` },
+              { label: '最后核对', value: timestamp(diagnostics.last_checked_at_unix) },
+              { label: '最后自愈', value: `${timestamp(diagnostics.last_recovered_at_unix)}${diagnostics.last_recovery_duration_ms !== null ? `（${diagnostics.last_recovery_duration_ms} ms）` : ''}` },
+              { label: '真实包探测', value: `${probe} · ${diagnostics.probe_successes}/${diagnostics.probe_targets}${diagnostics.probe_rtt_ms !== null ? ` · ${diagnostics.probe_rtt_ms} ms` : ''}` },
+              { label: '探测时间', value: timestamp(diagnostics.probe_checked_at_unix) },
+              { label: '故障前缀', value: telemetry.failed_route_prefixes?.length ? telemetry.failed_route_prefixes.join('、') : '无' },
+              { label: '最后错误', value: diagnostics.last_error_code ?? '无' },
+            ]} />
+          </Space>;
+        })()}
+      </Modal>
       <Modal
         visible={deleteTarget !== null}
         title={deleteTarget ? `删除“${resourceName(deleteTarget, relatedNames)}”？` : '删除资源'}
