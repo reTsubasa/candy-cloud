@@ -136,15 +136,15 @@ pub async fn bind_client_access_policy(
         .as_ref()
         .ok_or_else(ApiError::authentication_unavailable)?;
     let outcome = repository
-        .bind_to_device(
-            body.policy_id,
-            principal.context.organization_id,
+        .bind_to_device(cloud_db::client_access::ClientAccessPolicyBindingRequest {
+            policy_id: body.policy_id,
+            organization_id: principal.context.organization_id,
             tenant_id,
-            body.user_id,
-            body.client_device_id,
+            user_id: body.user_id,
+            client_device_id: body.client_device_id,
             actor_id,
             request_id,
-        )
+        })
         .await
         .map_err(ApiError::from_client_access)?;
     let cloud_db::client_access::ClientAccessPolicyBindingOutcome::Bound {

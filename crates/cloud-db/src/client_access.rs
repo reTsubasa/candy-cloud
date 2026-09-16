@@ -53,6 +53,20 @@ pub struct ClientAuthorizationSnapshot {
     pub policy_content_hash: [u8; 32],
 }
 
+/// Immutable scope used when binding a published policy to a client device.
+/// Keeping the request as one value prevents argument-order mistakes at the
+/// API boundary and keeps the repository method auditable as the scope grows.
+#[derive(Debug, Clone, Copy)]
+pub struct ClientAccessPolicyBindingRequest {
+    pub policy_id: Uuid,
+    pub organization_id: Uuid,
+    pub tenant_id: Uuid,
+    pub user_id: Uuid,
+    pub client_device_id: Uuid,
+    pub actor_id: Uuid,
+    pub request_id: Uuid,
+}
+
 impl ClientAuthorizationSnapshot {
     pub fn validate(&self) -> Result<(), ClientAccessPolicyError> {
         if [
@@ -298,14 +312,17 @@ impl ClientAccessPolicyRepository {
 
     pub async fn bind_to_device(
         &self,
-        policy_id: Uuid,
-        organization_id: Uuid,
-        tenant_id: Uuid,
-        user_id: Uuid,
-        client_device_id: Uuid,
-        actor_id: Uuid,
-        request_id: Uuid,
+        request: ClientAccessPolicyBindingRequest,
     ) -> Result<ClientAccessPolicyBindingOutcome, ClientAccessPolicyError> {
+        let ClientAccessPolicyBindingRequest {
+            policy_id,
+            organization_id,
+            tenant_id,
+            user_id,
+            client_device_id,
+            actor_id,
+            request_id,
+        } = request;
         if [
             policy_id,
             organization_id,
