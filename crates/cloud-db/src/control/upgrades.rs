@@ -22,6 +22,14 @@ pub fn identifier(value: &str) -> bool {
             .all(|v| v.is_ascii_alphanumeric() || b"._+-".contains(&v))
 }
 
+pub const MAX_UPGRADE_ERROR_DETAIL_CHARS: usize = 512;
+
+pub fn error_detail(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.chars().count() <= MAX_UPGRADE_ERROR_DETAIL_CHARS
+        && value.chars().all(|character| !character.is_control())
+}
+
 impl UpgradeTarget {
     pub fn validate(&self) -> bool {
         matches!(self.component.as_str(), "core" | "runtime")
@@ -73,6 +81,7 @@ pub struct UpgradeJob {
     pub state: String,
     pub phase: String,
     pub error_code: Option<String>,
+    pub error_detail: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -81,6 +90,7 @@ pub struct UpgradeStatus<'a> {
     pub state: &'a str,
     pub phase: Option<&'a str>,
     pub error_code: Option<&'a str>,
+    pub error_detail: Option<&'a str>,
 }
 
 fn job(row: sqlx::mysql::MySqlRow) -> Result<UpgradeJob, ControlStoreError> {
@@ -94,6 +104,7 @@ fn job(row: sqlx::mysql::MySqlRow) -> Result<UpgradeJob, ControlStoreError> {
         state: row.try_get("state")?,
         phase: row.try_get("phase")?,
         error_code: row.try_get("error_code")?,
+        error_detail: row.try_get("error_detail")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })
@@ -220,6 +231,7 @@ impl ControlRepository {
             state: "pending".into(),
             phase: "pending".into(),
             error_code: None,
+            error_detail: None,
             created_at: now,
             updated_at: now,
         })
@@ -273,10 +285,13 @@ impl ControlRepository {
             state,
             phase,
             error_code: error,
+            error_detail: detail,
         } = status;
         if !matches!(state, "running" | "succeeded" | "failed")
             || (state == "failed") != error.is_some()
             || error.is_some_and(|e| !identifier(e))
+            || (state != "failed" && detail.is_some())
+            || detail.is_some_and(|value| !error_detail(value))
         {
             return Err(ControlStoreError::InvalidRequest);
         }
@@ -313,6 +328,7 @@ impl ControlRepository {
         if previous.state == state
             && previous.phase == phase
             && previous.error_code.as_deref() == error
+            && previous.error_detail.as_deref() == detail
         {
             tx.commit().await?;
             return Ok(());
@@ -323,11 +339,12 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidTransition);
         }
         sqlx::query(
-            "UPDATE runtime_upgrade_jobs SET state=?,phase=?,error_code=?,updated_at=? WHERE id=?",
+            "UPDATE runtime_upgrade_jobs SET state=?,phase=?,error_code=?,error_detail=?,updated_at=? WHERE id=?",
         )
         .bind(state)
         .bind(phase)
         .bind(error)
+        .bind(detail)
         .bind(Utc::now())
         .bind(id)
         .execute(&mut *tx)
@@ -373,5 +390,23 @@ mod tests {
         inventory.targets.pop();
         inventory.targets[0].version = "$(id)".into();
         assert!(!inventory.validate());
+    }
+
+    #[test]
+    fn upgrade_error_detail_is_bounded_and_plain_text() {
+        assert!(error_detail("core manager exited with status 3"));
+        assert!(error_detail(&"界".repeat(MAX_UPGRADE_ERROR_DETAIL_CHARS)));
+        for invalid in [
+            "",
+            "   ",
+            "line one\nline two",
+            "terminal\u{1b}[31mred",
+            &"x".repeat(MAX_UPGRADE_ERROR_DETAIL_CHARS + 1),
+        ] {
+            assert!(
+                !error_detail(invalid),
+                "accepted invalid detail: {invalid:?}"
+            );
+        }
     }
 }

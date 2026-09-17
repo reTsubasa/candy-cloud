@@ -287,7 +287,17 @@ export function listResources(
 }
 
 export type NodeUpgradeTarget = { component: string; current_version: string; version: string; version_key: string; digest: string };
-export type NodeUpgradesResponse = { inventory: { platform: string; architecture: string; targets: NodeUpgradeTarget[] } | null; reported_at: string | null; jobs: Array<{ state: string; phase: string; error_code?: string | null; target: NodeUpgradeTarget }> };
+export type NodeUpgradeJob = {
+  id: string;
+  state: string;
+  phase: string;
+  error_code: string | null;
+  error_detail: string | null;
+  target: NodeUpgradeTarget;
+  created_at: string;
+  updated_at: string;
+};
+export type NodeUpgradesResponse = { inventory: { platform: string; architecture: string; targets: NodeUpgradeTarget[] } | null; reported_at: string | null; jobs: NodeUpgradeJob[] };
 
 export function getNodeUpgrades(token: string, tenantId: string, nodeId: string): Promise<NodeUpgradesResponse> {
   return requestJson(`/v1/tenants/${encodeURIComponent(tenantId)}/nodes/${encodeURIComponent(nodeId)}/upgrades`, token);

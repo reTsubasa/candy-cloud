@@ -215,6 +215,7 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                         state: &receipt.state,
                         phase: receipt.phase.as_deref(),
                         error_code: receipt.error_code.as_deref(),
+                        error_detail: receipt.error_detail.as_deref(),
                     },
                 )
                 .await

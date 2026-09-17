@@ -387,6 +387,23 @@ only when identity and all version fields match the exact current projection.
 Status replacement is idempotent for identical state; a report for an older or
 different projection returns `409`.
 
+### Runtime and Core upgrades
+
+Runtime reports its architecture-specific Runtime/Core inventory through
+`PUT /auth/v1/runtime/upgrade-inventory` and polls one serialized job from
+`GET /auth/v1/runtime/upgrades`. A receipt sent to
+`PUT /auth/v1/runtime/upgrades` binds the exact job id to the authenticated
+device identity and preserves `state`, the exact execution `phase`, and a
+stable `error_code`.
+
+Failed receipts may additionally carry `error_detail`: non-empty plain text of
+at most 512 Unicode characters with all control characters removed. Cloud
+rejects detail on non-failed states, persists it only on the upgrade job, does
+not copy it into audit metadata, and returns it only through the tenant-scoped
+management API. The console renders the value as text rather than markup or
+executable content. Runtime must sanitize and bound the value before sending;
+Cloud validates the same boundary again before storage.
+
 Operators read the latest persisted result per device from
 `GET /api/v1/tenants/{tenant_id}/runtime-configuration-status`. The management
 response is tenant-scoped and contains no signed configuration or Grant bytes.

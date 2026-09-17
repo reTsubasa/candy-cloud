@@ -18,7 +18,7 @@ use cloud_auth::{
         RuntimeConfigurationServiceError, RuntimeConfigurationStatusCommand,
         RuntimePeerSiteDelivery, RuntimeProfileDelivery, RuntimeTelemetryCommand,
         RuntimeTransportEndpointDelivery, RuntimeTransportIdentityCommand,
-        RuntimeTransportIdentityDelivery, ServiceFuture, TenantAuthService,
+        RuntimeTransportIdentityDelivery, ServiceFuture, TenantAuthService, UpgradeReceipt,
     },
 };
 use http_body_util::BodyExt;
@@ -91,6 +91,7 @@ struct RecordingRuntimeConfigurationService {
     telemetry: Mutex<Vec<RuntimeTelemetryCommand>>,
     transport_publications: Mutex<Vec<RuntimeTransportIdentityCommand>>,
     transport_withdrawals: Mutex<Vec<AuthenticatedDevice>>,
+    upgrade_receipts: Mutex<Vec<UpgradeReceipt>>,
     status_result: Mutex<Result<(), RuntimeConfigurationServiceError>>,
 }
 
@@ -102,12 +103,24 @@ impl RecordingRuntimeConfigurationService {
             telemetry: Mutex::new(Vec::new()),
             transport_publications: Mutex::new(Vec::new()),
             transport_withdrawals: Mutex::new(Vec::new()),
+            upgrade_receipts: Mutex::new(Vec::new()),
             status_result: Mutex::new(Ok(())),
         }
     }
 }
 
 impl RuntimeConfigurationService for RecordingRuntimeConfigurationService {
+    fn upgrade_receipt(
+        &self,
+        _actor: AuthenticatedDevice,
+        receipt: UpgradeReceipt,
+    ) -> ServiceFuture<'_, Result<(), RuntimeConfigurationServiceError>> {
+        Box::pin(async move {
+            self.upgrade_receipts.lock().unwrap().push(receipt);
+            Ok(())
+        })
+    }
+
     fn current(
         &self,
         _actor: AuthenticatedDevice,
@@ -197,6 +210,87 @@ impl RuntimeConfigurationService for RecordingRuntimeConfigurationService {
             Ok(())
         })
     }
+}
+
+#[tokio::test]
+async fn upgrade_receipt_preserves_safe_failure_evidence_and_rejects_unsafe_detail() {
+    let service = Arc::new(RecordingRuntimeConfigurationService::with_delivery(None));
+    let actor = device_actor(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+    let id = Uuid::new_v4();
+    let valid = serde_json::json!({
+        "id": id,
+        "state": "failed",
+        "phase": "health_check",
+        "error_code": "upgrade_health_check_failed",
+        "error_detail": "service remained unhealthy after rollback"
+    });
+    let response = runtime_configuration_app(service.clone())
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/runtime/upgrades")
+                .header("content-type", "application/json")
+                .extension(actor.clone())
+                .body(Body::from(valid.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        service.upgrade_receipts.lock().unwrap().as_slice(),
+        &[UpgradeReceipt {
+            id,
+            state: "failed".into(),
+            phase: Some("health_check".into()),
+            error_code: Some("upgrade_health_check_failed".into()),
+            error_detail: Some("service remained unhealthy after rollback".into()),
+        }]
+    );
+
+    for invalid in [
+        serde_json::json!({
+            "id": id,
+            "state": "running",
+            "phase": "installing",
+            "error_code": null,
+            "error_detail": "must not be present"
+        }),
+        serde_json::json!({
+            "id": id,
+            "state": "failed",
+            "phase": "installing",
+            "error_code": "upgrade_install_failed",
+            "error_detail": "unsafe\nsecond line"
+        }),
+        serde_json::json!({
+            "id": id,
+            "state": "failed",
+            "phase": "installing",
+            "error_code": "upgrade_install_failed",
+            "error_detail": "x".repeat(513)
+        }),
+    ] {
+        let response = runtime_configuration_app(service.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/v1/runtime/upgrades")
+                    .header("content-type", "application/json")
+                    .extension(actor.clone())
+                    .body(Body::from(invalid.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(service.upgrade_receipts.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

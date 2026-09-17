@@ -705,13 +705,14 @@ where
         .with_state(service)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct UpgradeReceipt {
     pub id: Uuid,
     pub state: String,
     pub phase: Option<String>,
     pub error_code: Option<String>,
+    pub error_detail: Option<String>,
 }
 
 async fn upgrade_inventory<S: RuntimeConfigurationService>(
@@ -756,6 +757,11 @@ async fn upgrade_receipt<S: RuntimeConfigurationService>(
             .error_code
             .as_deref()
             .is_some_and(|e| !cloud_db::control::upgrades::identifier(e))
+        || (receipt.state != "failed" && receipt.error_detail.is_some())
+        || receipt
+            .error_detail
+            .as_deref()
+            .is_some_and(|detail| !cloud_db::control::upgrades::error_detail(detail))
     {
         return Err(ApiError::InvalidUpgrade);
     }

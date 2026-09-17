@@ -210,6 +210,15 @@ button, input, textarea { font: inherit; }
 .structured-item .arco-form-item:last-child { margin-bottom: 0; }
 .record-constraint { margin-bottom: 0; }
 .record-constraint .arco-form-item { margin: 10px 0 0; }
+.node-version-cell { min-width: 0; display: grid; gap: 5px; }
+.node-version-line { min-width: 0; display: grid; gap: 2px; }
+.node-version-line > span { font-size: 12px; font-weight: 500; }
+.node-version-cell small { color: #86909c; font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.node-upgrade-state.running { color: #0e5cad !important; }
+.node-upgrade-state.succeeded { color: #00875a !important; }
+.node-upgrade-state.failed { color: #c42b1c !important; }
+.node-upgrade-state.pending, .node-upgrade-state.expired { color: #b25e09 !important; }
+.node-upgrade-detail { display: -webkit-box; overflow: hidden; color: #c42b1c !important; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 
 .operational-header { min-height: 36px; justify-content: flex-end; margin-bottom: 12px; }
 .live-refresh-control { display: inline-flex; align-items: center; gap: 8px; color: #4e5969; font-size: 12px; white-space: nowrap; }

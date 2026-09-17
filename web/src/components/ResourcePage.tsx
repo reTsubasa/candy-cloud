@@ -22,6 +22,7 @@ import { pathDefinition, resourceDefinitions } from '../resource-definitions';
 import type { ControlResource, ResourceDefinition, ResourceReference, RuntimeActivationReadiness, Session } from '../types';
 import { attachmentTableValues } from '../resource-table';
 import { compactPolicyValues, summarizePolicy, type PolicyReferences } from '../policy-summary';
+import { latestNodeUpgradeJobs, nodeUpgradePresentation } from '../node-upgrade';
 import { ResourceEditor } from './ResourceEditor';
 import { ActivationStatusBar } from './ActivationStatusBar';
 
@@ -183,6 +184,20 @@ async function loadOperationalSnapshot(token: string, tenantId: string): Promise
 function statusTag(status: OperationalStatus | undefined, fallback: string) {
   if (!status) return <Tag color="gray">{fallback}</Tag>;
   return <Tooltip content={status.detail}><Tag color={status.tone}>{status.label}</Tag></Tooltip>;
+}
+
+function NodeVersionLine({ label, current, target, job }: {
+  label: string;
+  current: string;
+  target?: string;
+  job: NodeUpgradesResponse['jobs'][number] | undefined;
+}) {
+  const presentation = nodeUpgradePresentation(job);
+  return <div className="node-version-line">
+    <span>{label} {current}{target ? ` → ${target}` : ''}</span>
+    {presentation && <small className={`node-upgrade-state ${presentation.tone}`}>{presentation.summary}</small>}
+    {presentation?.detail && <small className="node-upgrade-detail" title={presentation.detail}>{presentation.detail}</small>}
+  </div>;
 }
 
 const emptyPolicyReferences: PolicyReferences = { segments: {}, sites: {}, egresses: {} };
@@ -406,6 +421,8 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
               // first insert and make a successful partial rollout look failed.
               const target = targets[0];
               await createNodeUpgrade(session.token, tenantId, record.metadata.id, target);
+              const refreshed = await getNodeUpgrades(session.token, tenantId, record.metadata.id);
+              setNodeUpgrades((current) => ({ ...current, [record.metadata.id]: refreshed }));
               const remaining = targets.length - 1;
               message.success?.(
                 remaining > 0
@@ -464,10 +481,15 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
       render: (_: unknown, record: ControlResource) => {
         const status = nodeUpgrades[record.metadata.id];
         if (!status) return <Typography.Text type="secondary">升级信息暂不可用</Typography.Text>;
-        if (!status.inventory) return <Typography.Text type="secondary">尚未上报升级清单</Typography.Text>;
-        const current = Object.fromEntries(status.inventory.targets.map((target) => [target.component, target.current_version]));
-        const targets = Object.fromEntries(status.inventory.targets.filter((target) => target.version !== target.current_version).map((target) => [target.component, target.version]));
-        return <div className="node-version-cell"><span>Runtime {current.runtime ?? '—'}{targets.runtime ? ` → ${targets.runtime}` : ''}</span><span>Core {current.core ?? '—'}{targets.core ? ` → ${targets.core}` : ''}</span><small>{status.reported_at ? `上报于 ${new Date(status.reported_at).toLocaleString()}` : '未记录上报时间'}</small></div>;
+        const jobs = latestNodeUpgradeJobs(status.jobs);
+        const inventoryTargets = status.inventory?.targets ?? [];
+        const current = Object.fromEntries(inventoryTargets.map((target) => [target.component, target.current_version]));
+        const targets = Object.fromEntries(inventoryTargets.filter((target) => target.version !== target.current_version).map((target) => [target.component, target.version]));
+        return <div className="node-version-cell">
+          <NodeVersionLine label="Runtime" current={current.runtime ?? jobs.runtime?.target.current_version ?? '—'} target={targets.runtime} job={jobs.runtime} />
+          <NodeVersionLine label="Core" current={current.core ?? jobs.core?.target.current_version ?? '—'} target={targets.core} job={jobs.core} />
+          <small>{status.reported_at ? `清单上报于 ${new Date(status.reported_at).toLocaleString()}` : '尚未上报升级清单'}</small>
+        </div>;
       },
     }] : []),
     {

@@ -524,6 +524,40 @@ paths:
         "401": { $ref: "#/components/responses/ManagementUnauthorized" }
         "403": { $ref: "#/components/responses/ManagementForbidden" }
         "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/tenants/{tenant_id}/nodes/{node_id}/upgrades:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+      - $ref: "#/components/parameters/NodeId"
+    get:
+      tags: [Management]
+      operationId: getNodeUpgrades
+      summary: Read current upgrade inventory and the latest bounded job history for a node
+      security: [{ managementBearer: [] }]
+      responses:
+        "200":
+          description: Node inventory and up to twenty newest upgrade jobs, including bounded failure evidence.
+          content: { application/json: { schema: { $ref: "#/components/schemas/NodeUpgradesResponse" } } }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "404": { $ref: "#/components/responses/ManagementNotFound" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+    post:
+      tags: [Management]
+      operationId: createNodeUpgrade
+      summary: Schedule one inventory-bound Runtime or Core upgrade
+      security: [{ managementBearer: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/NodeUpgradeRequest" } } }
+      responses:
+        "202":
+          description: Upgrade job created or idempotently replayed.
+          content: { application/json: { schema: { $ref: "#/components/schemas/RuntimeUpgradeJob" } } }
+        "400": { $ref: "#/components/responses/ManagementBadRequest" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "409": { $ref: "#/components/responses/ManagementConflict" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
   /v1/tenants/{tenant_id}/{collection}/{id}:
     parameters:
       - $ref: "#/components/parameters/TenantId"
@@ -845,6 +879,50 @@ paths:
         "401": { $ref: "#/components/responses/DeviceUnauthorized" }
         "409": { $ref: "#/components/responses/DeviceConflict" }
         "503": { $ref: "#/components/responses/DeviceUnavailable" }
+  /v1/runtime/upgrade-inventory:
+    put:
+      tags: [Runtime synchronization]
+      operationId: reportRuntimeUpgradeInventory
+      summary: Replace the authenticated node's bounded upgrade inventory
+      security: [{ deviceMtls: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/RuntimeUpgradeInventory" } } }
+      responses:
+        "204": { description: Inventory accepted. }
+        "400": { $ref: "#/components/responses/DeviceBadRequest" }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "422": { $ref: "#/components/responses/UnprocessableJson" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
+  /v1/runtime/upgrades:
+    get:
+      tags: [Runtime synchronization]
+      operationId: getPendingRuntimeUpgrade
+      summary: Poll the authenticated node's pending or running upgrade
+      security: [{ deviceMtls: [] }]
+      responses:
+        "200":
+          description: Pending job, or null when no work is available.
+          content:
+            application/json:
+              schema: { oneOf: [{ $ref: "#/components/schemas/RuntimeUpgradeJob" }, { type: "null" }] }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
+    put:
+      tags: [Runtime synchronization]
+      operationId: reportRuntimeUpgradeReceipt
+      summary: Persist an exact upgrade phase, result code, and bounded safe failure detail
+      security: [{ deviceMtls: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/RuntimeUpgradeReceipt" } } }
+      responses:
+        "204": { description: Receipt accepted or idempotently replayed. }
+        "400": { $ref: "#/components/responses/DeviceBadRequest" }
+        "401": { $ref: "#/components/responses/DeviceUnauthorized" }
+        "409": { $ref: "#/components/responses/DeviceConflict" }
+        "422": { $ref: "#/components/responses/UnprocessableJson" }
+        "503": { $ref: "#/components/responses/DeviceUnavailable" }
   /v1/runtime/configuration:
     get:
       tags: [Runtime synchronization]
@@ -988,6 +1066,11 @@ components:
   parameters:
     TenantId:
       name: tenant_id
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/Uuid" }
+    NodeId:
+      name: node_id
       in: path
       required: true
       schema: { $ref: "#/components/schemas/Uuid" }
@@ -1708,6 +1791,81 @@ components:
             properties:
               site_id: { $ref: "#/components/schemas/Uuid" }
               site_name: { type: string, minLength: 1, maxLength: 200 }
+    RuntimeUpgradeTarget:
+      type: object
+      additionalProperties: false
+      required: [component, current_version, version, version_key, digest]
+      properties:
+        component: { type: string, enum: [runtime, core] }
+        current_version: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9._+-]+$' }
+        version: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9._+-]+$' }
+        version_key: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9._+-]+$' }
+        digest: { $ref: "#/components/schemas/Sha256Hex" }
+    RuntimeUpgradeInventory:
+      type: object
+      additionalProperties: false
+      required: [schema_version, platform, architecture, targets]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        platform: { type: string, enum: [linux, openwrt] }
+        architecture: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9._+-]+$' }
+        targets:
+          type: array
+          maxItems: 2
+          items: { $ref: "#/components/schemas/RuntimeUpgradeTarget" }
+    RuntimeUpgradeJob:
+      type: object
+      additionalProperties: false
+      required: [id, node_id, device_id, device_key_id, target, state, phase, error_code, error_detail, created_at, updated_at]
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        node_id: { $ref: "#/components/schemas/Uuid" }
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        device_key_id: { $ref: "#/components/schemas/Uuid" }
+        target: { $ref: "#/components/schemas/RuntimeUpgradeTarget" }
+        state: { type: string, enum: [pending, running, succeeded, failed, expired] }
+        phase: { type: string, enum: [pending, prepared, running, executing, verifying, installing, health_check, succeeded, failed, rolled_back, expired] }
+        error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9._+-]+$' }, { type: "null" }] }
+        error_detail:
+          description: Present only for failed jobs. Plain text with no control characters; Cloud renders it only as text.
+          oneOf:
+            - { type: string, minLength: 1, maxLength: 512, pattern: '^[^\x00-\x1F\x7F]+$' }
+            - { type: "null" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    RuntimeUpgradeReceipt:
+      type: object
+      additionalProperties: false
+      required: [id, state]
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        state: { type: string, enum: [running, succeeded, failed] }
+        phase: { type: string, enum: [pending, prepared, running, executing, verifying, installing, health_check, succeeded, failed, rolled_back, expired] }
+        error_code: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9._+-]+$' }
+        error_detail:
+          type: string
+          minLength: 1
+          maxLength: 512
+          pattern: '^[^\x00-\x1F\x7F]+$'
+          description: Allowed only when state is failed; contains Runtime-sanitized diagnostic text.
+    NodeUpgradeRequest:
+      type: object
+      additionalProperties: false
+      required: [request_id, target]
+      properties:
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        target: { $ref: "#/components/schemas/RuntimeUpgradeTarget" }
+    NodeUpgradesResponse:
+      type: object
+      additionalProperties: false
+      required: [inventory, reported_at, jobs]
+      properties:
+        inventory: { oneOf: [{ $ref: "#/components/schemas/RuntimeUpgradeInventory" }, { type: "null" }] }
+        reported_at: { oneOf: [{ type: string, format: date-time }, { type: "null" }] }
+        jobs:
+          type: array
+          maxItems: 20
+          items: { $ref: "#/components/schemas/RuntimeUpgradeJob" }
     RuntimeConfiguration:
       type: object
       additionalProperties: false

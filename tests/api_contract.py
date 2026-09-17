@@ -111,6 +111,7 @@ def main() -> None:
         "/v1/tenants/{tenant_id}/runtime-activation-readiness": {"get:"},
         "/v1/tenants/{tenant_id}/runtime-configuration-status": {"get:"},
         "/v1/tenants/{tenant_id}/runtime-telemetry": {"get:"},
+        "/v1/tenants/{tenant_id}/nodes/{node_id}/upgrades": {"get:", "post:"},
         "/v1/enrollment/challenges": {"post:"},
         "/v1/enrollment/complete": {"post:"},
         "/v1/device-certificates/renew": {"post:"},
@@ -121,6 +122,8 @@ def main() -> None:
         "/v1/runtime/configuration": {"get:"},
         "/v1/runtime/configuration/status": {"put:"},
         "/v1/runtime/telemetry": {"put:"},
+        "/v1/runtime/upgrade-inventory": {"put:"},
+        "/v1/runtime/upgrades": {"get:", "put:"},
     }
     blocks = path_blocks(openapi)
     for path, methods in expected_paths.items():
@@ -144,6 +147,7 @@ def main() -> None:
         "/v1/tenants/{tenant_id}/runtime-activation-readiness",
         "/v1/tenants/{tenant_id}/runtime-configuration-status",
         "/v1/tenants/{tenant_id}/runtime-telemetry",
+        "/v1/tenants/{tenant_id}/nodes/{node_id}/upgrades",
     ]:
         require(blocks[path], "managementBearer", f"activation path {path}")
     require(blocks["/v1/tenants/{tenant_id}/enrollment/activations"], "ActivationCreateResponse", "activation create contract")
@@ -163,6 +167,12 @@ def main() -> None:
         "RuntimeTelemetryInventory",
         "runtime telemetry inventory contract",
     )
+    for boundary in ["NodeUpgradesResponse", "RuntimeUpgradeJob", "error_detail", "maxLength: 512"]:
+        require(
+            blocks["/v1/tenants/{tenant_id}/nodes/{node_id}/upgrades"] + openapi,
+            boundary,
+            "node upgrade management contract",
+        )
     require(openapi, "RuntimeLocalNetworkTelemetry", "runtime local network telemetry contract")
 
     for path in ["/v1/auth/login", "/v1/auth/refresh"]:
@@ -191,6 +201,8 @@ def main() -> None:
         "/v1/runtime/configuration",
         "/v1/runtime/configuration/status",
         "/v1/runtime/telemetry",
+        "/v1/runtime/upgrade-inventory",
+        "/v1/runtime/upgrades",
     ]:
         require(blocks[path], "deviceMtls", f"device path {path}")
     runtime_fetch = blocks["/v1/runtime/configuration"]
@@ -250,6 +262,9 @@ def main() -> None:
         require(runtime_status, boundary, "Runtime status contract")
     for status in ['"204"', '"409"']:
         require(runtime_status, status, "Runtime status response contract")
+    runtime_upgrade = blocks["/v1/runtime/upgrades"] + openapi
+    for boundary in ["RuntimeUpgradeReceipt", "error_detail", '"204"', '"409"']:
+        require(runtime_upgrade, boundary, "Runtime upgrade receipt contract")
 
     source_collections = collection_values(control)
     documented_collections = openapi_collection_values(openapi)

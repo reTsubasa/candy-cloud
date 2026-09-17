@@ -57,6 +57,8 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "runtime_projection_transport_catalog",
         "runtime_projection_path_catalog",
         "runtime_transport_identity_requests",
+        "runtime_upgrade_inventory",
+        "runtime_upgrade_jobs",
         "client_devices",
         "client_device_keys",
         "client_grants",
@@ -117,6 +119,14 @@ fn runtime_generations_distinguish_tunnel_from_policy_updates() {
     assert!(migration.contains("ADD COLUMN tunnel_generation"));
     assert!(migration.contains("ADD COLUMN policy_generation"));
     assert!(migration.contains("policy_generation = runtime_generation"));
+}
+
+#[test]
+fn upgrade_failure_detail_is_bounded_and_failed_only() {
+    let migration = include_str!("../migrations/0044_upgrade_error_detail.sql");
+    assert!(migration.contains("ADD COLUMN error_detail VARCHAR(512) NULL"));
+    assert!(migration.contains("state = 'failed'"));
+    assert!(migration.contains("CHAR_LENGTH(error_detail) BETWEEN 1 AND 512"));
 }
 
 #[test]
