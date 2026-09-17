@@ -1072,6 +1072,8 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         path_changes: Some(0),
         transport_mode: Some("stream_primary".into()),
         runtime_generation: Some(1),
+        tunnel_generation: Some(1),
+        policy_generation: Some(1),
         paths: vec![RuntimePathTelemetryWrite {
             peer_attachment_id,
             candidate_id: Some(active_candidate),

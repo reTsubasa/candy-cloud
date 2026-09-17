@@ -154,6 +154,8 @@ pub struct RuntimeTelemetryRecord {
     pub path_changes: Option<u64>,
     pub transport_mode: Option<String>,
     pub runtime_generation: Option<u64>,
+    pub tunnel_generation: Option<u64>,
+    pub policy_generation: Option<u64>,
     pub paths: Vec<RuntimePathTelemetryWrite>,
     pub local_networks: Vec<RuntimeLocalNetworkTelemetryWrite>,
     pub reported_at: DateTime<Utc>,
@@ -532,7 +534,7 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, dataplane_phase, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, CAST(paths_json AS CHAR) AS paths_json, CAST(local_networks_json AS CHAR) AS local_networks_json, CAST(failed_route_prefixes_json AS CHAR) AS failed_route_prefixes_json, CAST(route_diagnostics_json AS CHAR) AS route_diagnostics_json, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
+            "SELECT device_id, device_key_id, boot_id, sequence, lifecycle, dataplane_phase, configured_peers, active_peers, required_route_owners, ready_route_owners, fail_open_required, last_error_code, last_error_detail, rtt_ms, jitter_ms, packet_loss_ppm, rx_bps, tx_bps, reconnects, path_changes, transport_mode, runtime_generation, tunnel_generation, policy_generation, CAST(paths_json AS CHAR) AS paths_json, CAST(local_networks_json AS CHAR) AS local_networks_json, CAST(failed_route_prefixes_json AS CHAR) AS failed_route_prefixes_json, CAST(route_diagnostics_json AS CHAR) AS route_diagnostics_json, reported_at FROM runtime_telemetry_latest WHERE tenant_id = ? ORDER BY reported_at DESC, device_id LIMIT 4096",
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -588,6 +590,8 @@ impl ControlRepository {
                     path_changes: row.try_get("path_changes")?,
                     transport_mode: row.try_get("transport_mode")?,
                     runtime_generation: row.try_get("runtime_generation")?,
+                    tunnel_generation: row.try_get("tunnel_generation")?,
+                    policy_generation: row.try_get("policy_generation")?,
                     paths,
                     local_networks,
                     reported_at: row.try_get("reported_at")?,

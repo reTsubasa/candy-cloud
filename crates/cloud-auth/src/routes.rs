@@ -346,6 +346,8 @@ pub struct RuntimeTelemetryCommand {
     pub path_changes: Option<u64>,
     pub transport_mode: Option<String>,
     pub runtime_generation: Option<u64>,
+    pub tunnel_generation: Option<u64>,
+    pub policy_generation: Option<u64>,
     pub paths: Vec<RuntimePathTelemetryCommand>,
     pub local_networks: Option<Vec<RuntimeLocalNetworkTelemetryCommand>>,
 }
@@ -1369,6 +1371,12 @@ where
             .as_deref()
             .is_some_and(|mode| mode != "stream_primary")
         || request.runtime_generation == Some(0)
+        || request.tunnel_generation == Some(0)
+        || request.policy_generation == Some(0)
+        || request
+            .runtime_generation
+            .zip(request.policy_generation)
+            .is_some_and(|(runtime, policy)| runtime != policy)
         || request.paths.len() > 256
         || request.failed_route_prefixes.len() > 4096
         || request
@@ -1440,6 +1448,8 @@ where
             path_changes: request.path_changes,
             transport_mode: request.transport_mode,
             runtime_generation: request.runtime_generation,
+            tunnel_generation: request.tunnel_generation,
+            policy_generation: request.policy_generation,
             paths: request
                 .paths
                 .into_iter()
@@ -2048,6 +2058,10 @@ struct RuntimeTelemetryHttpRequest {
     transport_mode: Option<String>,
     #[serde(default)]
     runtime_generation: Option<u64>,
+    #[serde(default)]
+    tunnel_generation: Option<u64>,
+    #[serde(default)]
+    policy_generation: Option<u64>,
     #[serde(default)]
     paths: Vec<RuntimePathTelemetryHttpRequest>,
     #[serde(default)]

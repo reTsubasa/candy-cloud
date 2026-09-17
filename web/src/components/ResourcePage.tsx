@@ -561,6 +561,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
             {(diagnostics.integrity !== 'consistent' || diagnostics.probe_state === 'failed') && <Alert type="error" showIcon content={`路由完整性：${integrity}；真实数据包探测：${probe}${diagnostics.last_error_code ? `；错误码：${diagnostics.last_error_code}` : ''}`} />}
             <Descriptions column={1} data={[
               { label: '路由完整性', value: <Tag color={diagnostics.integrity === 'consistent' ? 'green' : diagnostics.integrity === 'reconciling' ? 'orange' : 'red'}>{integrity}</Tag> },
+              { label: '隧道 / 策略代际', value: `${telemetry.tunnel_generation ?? '未上报'} / ${telemetry.policy_generation ?? telemetry.runtime_generation ?? '未上报'}` },
               { label: '声明 / 实测路由', value: `${diagnostics.expected_routes} / ${diagnostics.observed_routes}（孤儿 ${diagnostics.orphaned_routes}）` },
               { label: '声明快照', value: <code title={diagnostics.expected_snapshot_sha256}>{diagnostics.expected_snapshot_sha256.slice(0, 16)}…</code> },
               { label: '实测快照', value: <code title={diagnostics.observed_snapshot_sha256}>{diagnostics.observed_snapshot_sha256.slice(0, 16)}…</code> },

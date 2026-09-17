@@ -188,6 +188,8 @@ export type RuntimeTelemetry = {
   path_changes: number | null;
   transport_mode?: 'stream_primary' | string | null;
   runtime_generation?: number | null;
+  tunnel_generation?: number | null;
+  policy_generation?: number | null;
   paths: RuntimePathTelemetry[];
   local_networks: RuntimeLocalNetworkTelemetry[];
   reported_at: string;

@@ -600,6 +600,8 @@ pub struct RuntimeTelemetryItem {
     pub path_changes: Option<u64>,
     pub transport_mode: Option<String>,
     pub runtime_generation: Option<u64>,
+    pub tunnel_generation: Option<u64>,
+    pub policy_generation: Option<u64>,
     pub paths: Vec<RuntimePathTelemetryItem>,
     pub local_networks: Vec<RuntimeLocalNetworkTelemetryItem>,
     pub reported_at: chrono::DateTime<Utc>,
@@ -714,6 +716,8 @@ pub async fn runtime_telemetry(
             path_changes: record.path_changes,
             transport_mode: record.transport_mode,
             runtime_generation: record.runtime_generation,
+            tunnel_generation: record.tunnel_generation,
+            policy_generation: record.policy_generation,
             paths: record
                 .paths
                 .into_iter()

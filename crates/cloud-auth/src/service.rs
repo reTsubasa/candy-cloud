@@ -466,6 +466,8 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                     path_changes: command.path_changes,
                     transport_mode: command.transport_mode,
                     runtime_generation: command.runtime_generation,
+                    tunnel_generation: command.tunnel_generation,
+                    policy_generation: command.policy_generation,
                     paths: command
                         .paths
                         .into_iter()

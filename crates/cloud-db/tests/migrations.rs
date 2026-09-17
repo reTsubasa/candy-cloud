@@ -112,6 +112,14 @@ fn terminal_client_policy_binding_history_preserves_idempotency_across_rebinds()
 }
 
 #[test]
+fn runtime_generations_distinguish_tunnel_from_policy_updates() {
+    let migration = include_str!("../migrations/0043_runtime_tunnel_policy_generations.sql");
+    assert!(migration.contains("ADD COLUMN tunnel_generation"));
+    assert!(migration.contains("ADD COLUMN policy_generation"));
+    assert!(migration.contains("policy_generation = runtime_generation"));
+}
+
+#[test]
 fn terminal_client_control_is_separate_from_node_enrollment_and_runtime() {
     let migration = include_str!("../migrations/0038_terminal_client_control.sql");
     for table in [
