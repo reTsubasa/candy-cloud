@@ -30,6 +30,24 @@ pub fn error_detail(value: &str) -> bool {
         && value.chars().all(|character| !character.is_control())
 }
 
+fn upgrade_phase(value: &str) -> bool {
+    matches!(
+        value,
+        "pending"
+            | "prepared"
+            | "running"
+            | "executing"
+            | "verifying"
+            | "installing"
+            | "health_check"
+            | "runtime_handoff"
+            | "succeeded"
+            | "failed"
+            | "rolled_back"
+            | "expired"
+    )
+}
+
 impl UpgradeTarget {
     pub fn validate(&self) -> bool {
         matches!(self.component.as_str(), "core" | "runtime")
@@ -301,20 +319,7 @@ impl ControlRepository {
             "failed" => "failed",
             _ => "pending",
         });
-        if !matches!(
-            phase,
-            "pending"
-                | "prepared"
-                | "running"
-                | "executing"
-                | "verifying"
-                | "installing"
-                | "health_check"
-                | "succeeded"
-                | "failed"
-                | "rolled_back"
-                | "expired"
-        ) {
+        if !upgrade_phase(phase) {
             return Err(ControlStoreError::InvalidRequest);
         }
         let mut tx = self.pool.begin().await?;
@@ -408,5 +413,12 @@ mod tests {
                 "accepted invalid detail: {invalid:?}"
             );
         }
+    }
+
+    #[test]
+    fn upgrade_phases_include_runtime_service_handoff() {
+        assert!(upgrade_phase("runtime_handoff"));
+        assert!(upgrade_phase("health_check"));
+        assert!(!upgrade_phase("restart_everything"));
     }
 }
