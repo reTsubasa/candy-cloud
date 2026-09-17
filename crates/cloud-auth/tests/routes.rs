@@ -928,6 +928,44 @@ async fn runtime_telemetry_uses_authenticated_identity_and_rejects_impossible_co
         "30bfd718e3f4b79faf151e52915f15928bf9c63b57a7963b807c8c1f7f502ae5"
     );
 
+    let mut diagnostics_v2 = body.clone();
+    diagnostics_v2["sequence"] = serde_json::json!(1201);
+    diagnostics_v2["route_diagnostics"]["schema_version"] = serde_json::json!(2);
+    diagnostics_v2["route_diagnostics"]["integrity"] = serde_json::json!("drifted");
+    diagnostics_v2["route_diagnostics"]["observed_snapshot_sha256"] =
+        serde_json::json!("22".repeat(32));
+    diagnostics_v2["route_diagnostics"]["orphaned_routes"] = serde_json::json!(1);
+    diagnostics_v2["route_diagnostics"]["last_error_code"] =
+        serde_json::json!("route_snapshot_mismatch");
+    diagnostics_v2["route_diagnostics"]["active_issues"] = serde_json::json!([{
+        "prefix": "192.168.10.0/24",
+        "table_id": 20475,
+        "expected_kind": "link",
+        "observed_kind": "throw",
+        "reason": "stale_failed_prefix_throw",
+        "action": "restore_signed_route"
+    }]);
+    diagnostics_v2["route_diagnostics"]["last_recovered_issues"] = serde_json::json!([]);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/runtime/telemetry")
+                .header("content-type", "application/json")
+                .extension(actor.clone())
+                .body(Body::from(diagnostics_v2.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let command = service.telemetry.lock().unwrap().pop().unwrap();
+    assert_eq!(
+        command.route_diagnostics.unwrap().active_issues[0].reason,
+        "stale_failed_prefix_throw"
+    );
+
     let legacy = serde_json::json!({
         "schema_version": 1,
         "boot_id": Uuid::new_v4(),

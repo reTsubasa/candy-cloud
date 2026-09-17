@@ -404,9 +404,31 @@ pub struct RuntimeRouteDiagnosticsWrite {
     pub probe_successes: u32,
     pub probe_rtt_ms: Option<u32>,
     pub probe_checked_at_unix: Option<u64>,
+    #[serde(default)]
+    pub active_issues: Vec<RuntimeRouteIssueWrite>,
+    #[serde(default)]
+    pub last_recovered_issues: Vec<RuntimeRouteIssueWrite>,
 }
 
-type PreviousRuntimeTelemetry = (Uuid, u64, String, Option<String>, bool, Option<String>);
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeRouteIssueWrite {
+    pub prefix: String,
+    pub table_id: u32,
+    pub expected_kind: String,
+    pub observed_kind: String,
+    pub reason: String,
+    pub action: String,
+}
+
+type PreviousRuntimeTelemetry = (
+    Uuid,
+    u64,
+    String,
+    Option<String>,
+    bool,
+    Option<String>,
+    Option<String>,
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeLocalNetworkTelemetryWrite {
@@ -605,7 +627,85 @@ fn validate_runtime_route_diagnostics(value: &RuntimeRouteDiagnosticsWrite) -> b
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
     });
-    value.schema_version == 1
+    let valid_issue = |issue: &RuntimeRouteIssueWrite| {
+        let canonical_prefix = issue
+            .prefix
+            .split_once('/')
+            .and_then(|(address, length)| {
+                Some((
+                    address.parse::<Ipv4Addr>().ok()?,
+                    length.parse::<u8>().ok()?,
+                ))
+            })
+            .is_some_and(|(address, length)| {
+                if length > 32 {
+                    return false;
+                }
+                let mask = if length == 0 {
+                    0
+                } else {
+                    u32::MAX << (32 - length)
+                };
+                u32::from(address) == (u32::from(address) & mask)
+            });
+        canonical_prefix
+            && (20_000..=20_999).contains(&issue.table_id)
+            && matches!(issue.expected_kind.as_str(), "absent" | "link" | "throw")
+            && matches!(
+                issue.observed_kind.as_str(),
+                "missing" | "link" | "throw" | "unrecognized"
+            )
+            && matches!(
+                issue.reason.as_str(),
+                "missing_route"
+                    | "stale_failed_prefix_throw"
+                    | "stale_active_route"
+                    | "route_metrics_mismatch"
+                    | "route_attributes_mismatch"
+                    | "undeclared_route"
+            )
+            && matches!(
+                issue.action.as_str(),
+                "restore_signed_route" | "suspend_steering_and_require_review"
+            )
+    };
+    let issues_are_valid = value.active_issues.len() <= 64
+        && value.last_recovered_issues.len() <= 64
+        && value.active_issues.iter().all(valid_issue)
+        && value.last_recovered_issues.iter().all(valid_issue)
+        && (value.schema_version != 1
+            || (value.active_issues.is_empty() && value.last_recovered_issues.is_empty()))
+        && (value.active_issues.is_empty() || value.integrity != "consistent")
+        && (value.last_recovered_issues.is_empty() || value.last_recovered_at_unix.is_some());
+    let route_state_is_truthful = value.integrity != "consistent"
+        || (value.expected_snapshot_sha256 == value.observed_snapshot_sha256
+            && value.expected_routes == value.observed_routes
+            && value.orphaned_routes == 0
+            && value.active_issues.is_empty()
+            && value.last_error_code.is_none());
+    let probe_state_is_truthful = match value.probe_state.as_str() {
+        "unreported" => {
+            value.probe_targets == 0
+                && value.probe_successes == 0
+                && value.probe_rtt_ms.is_none()
+                && value.probe_checked_at_unix.is_none()
+        }
+        "pending" => {
+            value.probe_successes <= value.probe_targets && value.probe_checked_at_unix.is_none()
+        }
+        "succeeded" => {
+            value.probe_targets > 0
+                && value.probe_successes == value.probe_targets
+                && value.probe_checked_at_unix.is_some()
+        }
+        "failed" => {
+            value.probe_targets > 0
+                && value.probe_successes < value.probe_targets
+                && value.probe_checked_at_unix.is_some()
+        }
+        _ => false,
+    };
+    matches!(value.schema_version, 1 | 2)
         && matches!(
             value.integrity.as_str(),
             "consistent" | "drifted" | "reconciling" | "failed"
@@ -637,6 +737,53 @@ fn validate_runtime_route_diagnostics(value: &RuntimeRouteDiagnosticsWrite) -> b
         && value
             .probe_checked_at_unix
             .is_none_or(|timestamp| timestamp > 0)
+        && route_state_is_truthful
+        && probe_state_is_truthful
+        && issues_are_valid
+}
+
+fn runtime_diagnostic_audit_actions(
+    previous: Option<&RuntimeRouteDiagnosticsWrite>,
+    current: &RuntimeRouteDiagnosticsWrite,
+    boot_changed: bool,
+) -> Vec<&'static str> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum RouteHealth {
+        Pending,
+        Healthy,
+        Unhealthy,
+    }
+    let route_health = |value: &RuntimeRouteDiagnosticsWrite| match value.integrity.as_str() {
+        "consistent" => RouteHealth::Healthy,
+        "reconciling" => RouteHealth::Pending,
+        _ => RouteHealth::Unhealthy,
+    };
+    let previous_route_health = previous.map(route_health);
+    let current_route_health = route_health(current);
+    let mut actions = Vec::with_capacity(3);
+    if current_route_health == RouteHealth::Unhealthy
+        && (previous_route_health != Some(RouteHealth::Unhealthy) || boot_changed)
+    {
+        actions.push("RUNTIME_ROUTE_DRIFT_DETECTED");
+    } else if current_route_health == RouteHealth::Healthy
+        && previous_route_health == Some(RouteHealth::Unhealthy)
+    {
+        actions.push("RUNTIME_ROUTE_RECONCILIATION_RECOVERED");
+    }
+    if !boot_changed
+        && current_route_health == RouteHealth::Unhealthy
+        && previous_route_health == Some(RouteHealth::Unhealthy)
+        && previous.is_some_and(|value| current.reconcile_attempts > value.reconcile_attempts)
+    {
+        actions.push("RUNTIME_ROUTE_RECONCILIATION_ATTEMPTED");
+    }
+    let previous_probe = previous.map(|value| value.probe_state.as_str());
+    if current.probe_state == "failed" && previous_probe != Some("failed") {
+        actions.push("RUNTIME_PACKET_PROBE_FAILED");
+    } else if current.probe_state == "succeeded" && previous_probe == Some("failed") {
+        actions.push("RUNTIME_PACKET_PROBE_RECOVERED");
+    }
+    actions
 }
 
 fn validate_runtime_stream_path(path: &RuntimePathTelemetryWrite) -> bool {
@@ -701,6 +848,42 @@ fn validate_runtime_stream_path(path: &RuntimePathTelemetryWrite) -> bool {
 #[cfg(test)]
 mod runtime_stream_validation_tests {
     use super::*;
+
+    fn route_diagnostics(integrity: &str, probe_state: &str) -> RuntimeRouteDiagnosticsWrite {
+        let route_healthy = integrity == "consistent";
+        let probe_finished = matches!(probe_state, "succeeded" | "failed");
+        RuntimeRouteDiagnosticsWrite {
+            schema_version: 1,
+            integrity: integrity.into(),
+            expected_snapshot_sha256: "11".repeat(32),
+            observed_snapshot_sha256: if route_healthy {
+                "11".repeat(32)
+            } else {
+                "22".repeat(32)
+            },
+            expected_routes: 2,
+            observed_routes: 2,
+            orphaned_routes: u32::from(!route_healthy),
+            reconcile_attempts: 1,
+            reconcile_successes: u64::from(route_healthy),
+            last_checked_at_unix: 1_000,
+            last_reconciled_at_unix: Some(1_000),
+            last_recovered_at_unix: route_healthy.then_some(1_000),
+            last_recovery_duration_ms: Some(20),
+            last_error_code: (!route_healthy).then(|| "route_snapshot_mismatch".into()),
+            probe_state: probe_state.into(),
+            probe_targets: u32::from(probe_state != "unreported") * 2,
+            probe_successes: match probe_state {
+                "succeeded" => 2,
+                "failed" => 1,
+                _ => 0,
+            },
+            probe_rtt_ms: (probe_state == "succeeded").then_some(8),
+            probe_checked_at_unix: probe_finished.then_some(1_000),
+            active_issues: Vec::new(),
+            last_recovered_issues: Vec::new(),
+        }
+    }
 
     fn stream_path() -> RuntimePathTelemetryWrite {
         RuntimePathTelemetryWrite {
@@ -777,6 +960,78 @@ mod runtime_stream_validation_tests {
             .push(duplicate_slot.streams[0].clone());
         duplicate_slot.streams[1].stream_id = 12;
         assert!(!validate_runtime_stream_path(&duplicate_slot));
+    }
+
+    #[test]
+    fn route_diagnostics_require_truthful_route_and_probe_states() {
+        assert!(validate_runtime_route_diagnostics(&route_diagnostics(
+            "consistent",
+            "succeeded"
+        )));
+        assert!(validate_runtime_route_diagnostics(&route_diagnostics(
+            "drifted", "failed"
+        )));
+
+        let mut false_healthy = route_diagnostics("consistent", "succeeded");
+        false_healthy.orphaned_routes = 1;
+        assert!(!validate_runtime_route_diagnostics(&false_healthy));
+
+        let mut false_probe = route_diagnostics("consistent", "succeeded");
+        false_probe.probe_successes = 1;
+        assert!(!validate_runtime_route_diagnostics(&false_probe));
+
+        let mut detailed_drift = route_diagnostics("drifted", "failed");
+        detailed_drift.schema_version = 2;
+        detailed_drift.active_issues.push(RuntimeRouteIssueWrite {
+            prefix: "10.0.0.0/24".into(),
+            table_id: 20_475,
+            expected_kind: "link".into(),
+            observed_kind: "throw".into(),
+            reason: "stale_failed_prefix_throw".into(),
+            action: "restore_signed_route".into(),
+        });
+        assert!(validate_runtime_route_diagnostics(&detailed_drift));
+        detailed_drift.active_issues[0].table_id = 254;
+        assert!(!validate_runtime_route_diagnostics(&detailed_drift));
+    }
+
+    #[test]
+    fn diagnostic_audit_actions_capture_drift_attempt_recovery_and_probe_history() {
+        let healthy = route_diagnostics("consistent", "succeeded");
+        let mut failed = route_diagnostics("drifted", "failed");
+        failed.reconcile_attempts = healthy.reconcile_attempts + 1;
+        assert_eq!(
+            runtime_diagnostic_audit_actions(Some(&healthy), &failed, false),
+            vec![
+                "RUNTIME_ROUTE_DRIFT_DETECTED",
+                "RUNTIME_PACKET_PROBE_FAILED",
+            ]
+        );
+
+        let mut recovered = route_diagnostics("consistent", "succeeded");
+        recovered.reconcile_attempts = failed.reconcile_attempts + 1;
+        recovered.reconcile_successes = failed.reconcile_successes + 1;
+        assert_eq!(
+            runtime_diagnostic_audit_actions(Some(&failed), &recovered, false),
+            vec![
+                "RUNTIME_ROUTE_RECONCILIATION_RECOVERED",
+                "RUNTIME_PACKET_PROBE_RECOVERED",
+            ]
+        );
+
+        let mut retry = failed.clone();
+        retry.reconcile_attempts += 1;
+        assert_eq!(
+            runtime_diagnostic_audit_actions(Some(&failed), &retry, false),
+            vec!["RUNTIME_ROUTE_RECONCILIATION_ATTEMPTED"]
+        );
+
+        assert_eq!(
+            runtime_diagnostic_audit_actions(Some(&failed), &failed, true),
+            vec!["RUNTIME_ROUTE_DRIFT_DETECTED"]
+        );
+        let pending = route_diagnostics("reconciling", "unreported");
+        assert!(runtime_diagnostic_audit_actions(None, &pending, false).is_empty());
     }
 }
 
@@ -1728,7 +1983,7 @@ impl SdwanRepository {
             }
         }
         let current: Option<PreviousRuntimeTelemetry> = sqlx::query_as(
-            "SELECT boot_id, sequence, lifecycle, dataplane_phase, fail_open_required, last_error_code FROM runtime_telemetry_latest WHERE tenant_id = ? AND device_id = ? AND device_key_id = ? FOR UPDATE",
+            "SELECT boot_id, sequence, lifecycle, dataplane_phase, fail_open_required, last_error_code, CAST(route_diagnostics_json AS CHAR) FROM runtime_telemetry_latest WHERE tenant_id = ? AND device_id = ? AND device_key_id = ? FOR UPDATE",
         )
         .bind(telemetry.lookup.tenant_id)
         .bind(telemetry.lookup.device_id)
@@ -1737,7 +1992,7 @@ impl SdwanRepository {
         .await?;
         if current
             .as_ref()
-            .is_some_and(|(boot_id, sequence, _, _, _, _)| {
+            .is_some_and(|(boot_id, sequence, _, _, _, _, _)| {
                 *boot_id == telemetry.boot_id && *sequence >= telemetry.sequence
             })
         {
@@ -1789,11 +2044,12 @@ impl SdwanRepository {
         .execute(&mut *transaction)
         .await?;
         let lifecycle = telemetry.lifecycle.database_value();
-        let phase_transition = current
-            .as_ref()
-            .is_some_and(|(_, _, _, previous_phase, _, _)| {
-                previous_phase.as_deref() != telemetry.dataplane_phase.as_deref()
-            });
+        let phase_transition =
+            current
+                .as_ref()
+                .is_some_and(|(_, _, _, previous_phase, _, _, _)| {
+                    previous_phase.as_deref() != telemetry.dataplane_phase.as_deref()
+                });
         if phase_transition {
             sqlx::query(
                 "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'DEVICE', ?, 'RUNTIME_DATAPLANE_PHASE_CHANGED', 'DEVICE', ?, JSON_OBJECT('device_name', ?, 'previous_dataplane_phase', ?, 'dataplane_phase', ?, 'runtime_generation', ?, 'error_code', ?, 'error_detail', ?, 'configured_peers', ?, 'active_peers', ?, 'required_route_owners', ?, 'ready_route_owners', ?, 'boot_id', ?, 'sequence', ?))",
@@ -1803,7 +2059,7 @@ impl SdwanRepository {
             .bind(telemetry.lookup.device_id.to_string())
             .bind(telemetry.lookup.device_id.to_string())
             .bind(&device_name)
-            .bind(current.as_ref().and_then(|(_, _, _, phase, _, _)| phase.as_deref()))
+            .bind(current.as_ref().and_then(|(_, _, _, phase, _, _, _)| phase.as_deref()))
             .bind(telemetry.dataplane_phase.as_deref())
             .bind(telemetry.runtime_generation)
             .bind(telemetry.last_error_code.as_deref())
@@ -1818,7 +2074,7 @@ impl SdwanRepository {
             .await?;
         }
         let transition = current.as_ref().and_then(
-            |(_, _, previous_lifecycle, _, previous_fail_open, previous_error)| {
+            |(_, _, previous_lifecycle, _, previous_fail_open, previous_error, _)| {
                 if *previous_fail_open != telemetry.fail_open_required {
                     Some(if telemetry.fail_open_required {
                         "RUNTIME_FAIL_OPEN_ENTERED"
@@ -1862,12 +2118,12 @@ impl SdwanRepository {
             .bind(action)
             .bind(telemetry.lookup.device_id.to_string())
             .bind(&device_name)
-            .bind(current.as_ref().map(|(_, _, lifecycle, _, _, _)| lifecycle.as_str()))
+            .bind(current.as_ref().map(|(_, _, lifecycle, _, _, _, _)| lifecycle.as_str()))
             .bind(lifecycle)
-            .bind(current.as_ref().and_then(|(_, _, _, phase, _, _)| phase.as_deref()))
+            .bind(current.as_ref().and_then(|(_, _, _, phase, _, _, _)| phase.as_deref()))
             .bind(telemetry.dataplane_phase.as_deref())
             .bind(telemetry.fail_open_required)
-            .bind(current.as_ref().and_then(|(_, _, _, _, _, error)| error.as_deref()))
+            .bind(current.as_ref().and_then(|(_, _, _, _, _, error, _)| error.as_deref()))
             .bind(telemetry.last_error_code.as_deref())
             .bind(telemetry.last_error_detail.as_deref())
             .bind(telemetry.configured_peers)
@@ -1879,6 +2135,62 @@ impl SdwanRepository {
             .bind(telemetry.runtime_generation)
             .execute(&mut *transaction)
             .await?;
+        }
+        if let Some(diagnostics) = telemetry.route_diagnostics.as_ref() {
+            let previous_diagnostics = current
+                .as_ref()
+                .and_then(|(_, _, _, _, _, _, value)| value.as_deref())
+                .and_then(|value| serde_json::from_str::<RuntimeRouteDiagnosticsWrite>(value).ok());
+            let boot_changed = current
+                .as_ref()
+                .is_some_and(|(boot_id, _, _, _, _, _, _)| *boot_id != telemetry.boot_id);
+            let metadata = serde_json::json!({
+                "device_name": device_name,
+                "boot_id": telemetry.boot_id,
+                "sequence": telemetry.sequence,
+                "runtime_generation": telemetry.runtime_generation,
+                "tunnel_generation": telemetry.tunnel_generation,
+                "policy_generation": telemetry.policy_generation,
+                "integrity": diagnostics.integrity,
+                "expected_snapshot_sha256": diagnostics.expected_snapshot_sha256,
+                "observed_snapshot_sha256": diagnostics.observed_snapshot_sha256,
+                "expected_routes": diagnostics.expected_routes,
+                "observed_routes": diagnostics.observed_routes,
+                "orphaned_routes": diagnostics.orphaned_routes,
+                "reconcile_attempts": diagnostics.reconcile_attempts,
+                "reconcile_successes": diagnostics.reconcile_successes,
+                "last_checked_at_unix": diagnostics.last_checked_at_unix,
+                "last_reconciled_at_unix": diagnostics.last_reconciled_at_unix,
+                "last_recovered_at_unix": diagnostics.last_recovered_at_unix,
+                "last_recovery_duration_ms": diagnostics.last_recovery_duration_ms,
+                "error_code": diagnostics.last_error_code,
+                "probe_state": diagnostics.probe_state,
+                "probe_targets": diagnostics.probe_targets,
+                "probe_successes": diagnostics.probe_successes,
+                "probe_rtt_ms": diagnostics.probe_rtt_ms,
+                "probe_checked_at_unix": diagnostics.probe_checked_at_unix,
+                "active_issues": diagnostics.active_issues,
+                "last_recovered_issues": diagnostics.last_recovered_issues,
+            });
+            let metadata_json = serde_json::to_string(&metadata)
+                .map_err(|_| RuntimeConfigurationError::InvalidScope)?;
+            for action in runtime_diagnostic_audit_actions(
+                previous_diagnostics.as_ref(),
+                diagnostics,
+                boot_changed,
+            ) {
+                sqlx::query(
+                    "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'DEVICE', ?, ?, 'DEVICE', ?, CAST(? AS JSON))",
+                )
+                .bind(Uuid::now_v7())
+                .bind(telemetry.lookup.tenant_id)
+                .bind(telemetry.lookup.device_id.to_string())
+                .bind(action)
+                .bind(telemetry.lookup.device_id.to_string())
+                .bind(&metadata_json)
+                .execute(&mut *transaction)
+                .await?;
+            }
         }
         sqlx::query(
             "UPDATE devices SET last_seen_at = ? WHERE tenant_id = ? AND id = ? AND status = 'ACTIVE'",

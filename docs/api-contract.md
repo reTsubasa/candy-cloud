@@ -253,6 +253,13 @@ reports active packet-probe target/success counts and RTT. A negotiated or
 authenticated path is therefore not presented as data-plane healthy until the
 probe state is `succeeded`. Older Runtime versions may omit this object; the
 management UI labels the diagnostics unavailable instead of inferring health.
+Schema version 2 additionally carries at most 64 current and 64 most recently
+recovered route issues. Each issue identifies the canonical prefix, Candy route
+table, expected and observed route kind, a bounded reason code, and the action
+taken or required. Cloud rejects inconsistent `consistent`/probe-success claims
+and records drift, reconciliation attempts, recovery, and packet-probe
+transitions as durable audit events. Stale Runtime telemetry is always shown as
+a historical snapshot, never as current route or packet-delivery health.
 
 ### Profile and fetch
 

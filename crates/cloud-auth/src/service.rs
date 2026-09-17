@@ -11,8 +11,8 @@ use cloud_db::{
         RuntimeConfigurationError, RuntimeConfigurationLookup, RuntimeConfigurationState,
         RuntimeConfigurationStatusWrite, RuntimeLifecycle as DbRuntimeLifecycle,
         RuntimeLocalNetworkTelemetryWrite, RuntimePathKind as DbRuntimePathKind,
-        RuntimePathTelemetryWrite, RuntimeRouteDiagnosticsWrite, RuntimeTelemetryWrite,
-        SdwanRepository,
+        RuntimePathTelemetryWrite, RuntimeRouteDiagnosticsWrite, RuntimeRouteIssueWrite,
+        RuntimeTelemetryWrite, SdwanRepository,
     },
 };
 use sha2::{Digest, Sha256};
@@ -452,6 +452,30 @@ impl RuntimeConfigurationService for DatabaseRuntimeConfigurationService {
                             probe_successes: value.probe_successes,
                             probe_rtt_ms: value.probe_rtt_ms,
                             probe_checked_at_unix: value.probe_checked_at_unix,
+                            active_issues: value
+                                .active_issues
+                                .into_iter()
+                                .map(|issue| RuntimeRouteIssueWrite {
+                                    prefix: issue.prefix,
+                                    table_id: issue.table_id,
+                                    expected_kind: issue.expected_kind,
+                                    observed_kind: issue.observed_kind,
+                                    reason: issue.reason,
+                                    action: issue.action,
+                                })
+                                .collect(),
+                            last_recovered_issues: value
+                                .last_recovered_issues
+                                .into_iter()
+                                .map(|issue| RuntimeRouteIssueWrite {
+                                    prefix: issue.prefix,
+                                    table_id: issue.table_id,
+                                    expected_kind: issue.expected_kind,
+                                    observed_kind: issue.observed_kind,
+                                    reason: issue.reason,
+                                    action: issue.action,
+                                })
+                                .collect(),
                         }
                     }),
                     fail_open_required: command.fail_open_required,

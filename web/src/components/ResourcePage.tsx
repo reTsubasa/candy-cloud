@@ -72,6 +72,20 @@ const kindLabels: Record<string, string> = {
   DNS_INTENT: 'DNS', RELAY: '中继',
 };
 
+const routeIssueReasons: Record<string, string> = {
+  missing_route: '声明路由缺失',
+  stale_failed_prefix_throw: '故障前缀的 throw 路由未恢复',
+  stale_active_route: '已恢复前缀仍保留活动路由',
+  route_metrics_mismatch: '路由 MTU 或 TCP MSS 与声明不一致',
+  route_attributes_mismatch: '路由类型、作用域或接口与声明不一致',
+  undeclared_route: '存在当前声明之外的残留路由',
+};
+
+const routeIssueActions: Record<string, string> = {
+  restore_signed_route: '恢复签名声明路由',
+  suspend_steering_and_require_review: '暂停引流并要求人工核对',
+};
+
 type ResourceGuideContent = { title: string; description: string; relation: [string, string, string]; relationLabel: string };
 
 const resourceGuides: Record<string, ResourceGuideContent> = {
@@ -550,6 +564,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
           const diagnostics = telemetry?.route_diagnostics;
           if (!telemetry) return <Alert type="warning" showIcon content="节点尚未上报 Runtime 遥测，无法确认现场路由状态。" />;
           if (!diagnostics) return <Alert type="warning" showIcon content="当前 Runtime 未上报路由完整性诊断；请先升级节点 Runtime。" />;
+          const snapshotIsCurrent = diagnosticNode.telemetryState === 'online';
           const timestamp = (value: number | null) => value ? new Date(value * 1000).toLocaleString() : '—';
           const integrity = diagnostics.integrity === 'consistent' ? '一致'
             : diagnostics.integrity === 'reconciling' ? '自愈中'
@@ -557,9 +572,21 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
           const probe = diagnostics.probe_state === 'succeeded' ? '通过'
             : diagnostics.probe_state === 'failed' ? '失败'
             : diagnostics.probe_state === 'pending' ? '等待探测' : '未上报';
+          const issues = diagnostics.active_issues ?? [];
+          const recoveredIssues = diagnostics.last_recovered_issues ?? [];
+          const issueList = (items: typeof issues) => items.length > 0
+            ? <div className="route-issue-list">{items.map((issue, index) => <div key={`${issue.prefix}:${issue.table_id}:${issue.reason}:${index}`}>
+              <strong>{issue.prefix}</strong>
+              <span>表 {issue.table_id} · {routeIssueReasons[issue.reason] ?? issue.reason}</span>
+              <small>期望 {issue.expected_kind}，实测 {issue.observed_kind}；处置：{routeIssueActions[issue.action] ?? issue.action}</small>
+            </div>)}</div>
+            : '无';
           return <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            {!snapshotIsCurrent && <Alert type="warning" showIcon content={`节点当前${diagnosticNode.telemetryState === 'stale' ? '遥测已过期' : '未在线上报'}；以下内容仅是 ${new Date(telemetry.reported_at).toLocaleString()} 的历史快照，不能代表当前路由或链路健康。`} />}
             {(diagnostics.integrity !== 'consistent' || diagnostics.probe_state === 'failed') && <Alert type="error" showIcon content={`路由完整性：${integrity}；真实数据包探测：${probe}${diagnostics.last_error_code ? `；错误码：${diagnostics.last_error_code}` : ''}`} />}
             <Descriptions column={1} data={[
+              { label: '快照时效', value: snapshotIsCurrent ? <Tag color="green">当前在线样本</Tag> : <Tag color="orange">历史样本</Tag> },
+              { label: 'Runtime 上报时间', value: new Date(telemetry.reported_at).toLocaleString() },
               { label: '路由完整性', value: <Tag color={diagnostics.integrity === 'consistent' ? 'green' : diagnostics.integrity === 'reconciling' ? 'orange' : 'red'}>{integrity}</Tag> },
               { label: '隧道 / 策略代际', value: `${telemetry.tunnel_generation ?? '未上报'} / ${telemetry.policy_generation ?? telemetry.runtime_generation ?? '未上报'}` },
               { label: '声明 / 实测路由', value: `${diagnostics.expected_routes} / ${diagnostics.observed_routes}（孤儿 ${diagnostics.orphaned_routes}）` },
@@ -571,6 +598,8 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
               { label: '真实包探测', value: `${probe} · ${diagnostics.probe_successes}/${diagnostics.probe_targets}${diagnostics.probe_rtt_ms !== null ? ` · ${diagnostics.probe_rtt_ms} ms` : ''}` },
               { label: '探测时间', value: timestamp(diagnostics.probe_checked_at_unix) },
               { label: '故障前缀', value: telemetry.failed_route_prefixes?.length ? telemetry.failed_route_prefixes.join('、') : '无' },
+              { label: '当前路由异常', value: issueList(issues) },
+              { label: '最近已恢复异常', value: issueList(recoveredIssues) },
               { label: '最后错误', value: diagnostics.last_error_code ?? '无' },
             ]} />
           </Space>;

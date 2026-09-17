@@ -374,6 +374,21 @@ pub struct RuntimeRouteDiagnosticsCommand {
     pub probe_successes: u32,
     pub probe_rtt_ms: Option<u32>,
     pub probe_checked_at_unix: Option<u64>,
+    #[serde(default)]
+    pub active_issues: Vec<RuntimeRouteIssueCommand>,
+    #[serde(default)]
+    pub last_recovered_issues: Vec<RuntimeRouteIssueCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeRouteIssueCommand {
+    pub prefix: String,
+    pub table_id: u32,
+    pub expected_kind: String,
+    pub observed_kind: String,
+    pub reason: String,
+    pub action: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1758,7 +1773,65 @@ fn valid_route_diagnostics(value: &RuntimeRouteDiagnosticsCommand) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     };
-    value.schema_version == 1
+    let valid_issue = |issue: &RuntimeRouteIssueCommand| {
+        valid_runtime_prefix(&issue.prefix)
+            && (20_000..=20_999).contains(&issue.table_id)
+            && matches!(issue.expected_kind.as_str(), "absent" | "link" | "throw")
+            && matches!(
+                issue.observed_kind.as_str(),
+                "missing" | "link" | "throw" | "unrecognized"
+            )
+            && matches!(
+                issue.reason.as_str(),
+                "missing_route"
+                    | "stale_failed_prefix_throw"
+                    | "stale_active_route"
+                    | "route_metrics_mismatch"
+                    | "route_attributes_mismatch"
+                    | "undeclared_route"
+            )
+            && matches!(
+                issue.action.as_str(),
+                "restore_signed_route" | "suspend_steering_and_require_review"
+            )
+    };
+    let issues_valid = value.active_issues.len() <= 64
+        && value.last_recovered_issues.len() <= 64
+        && value.active_issues.iter().all(valid_issue)
+        && value.last_recovered_issues.iter().all(valid_issue)
+        && (value.schema_version != 1
+            || (value.active_issues.is_empty() && value.last_recovered_issues.is_empty()))
+        && (value.active_issues.is_empty() || value.integrity != "consistent")
+        && (value.last_recovered_issues.is_empty() || value.last_recovered_at_unix.is_some());
+    let consistent = value.integrity != "consistent"
+        || (value.expected_snapshot_sha256 == value.observed_snapshot_sha256
+            && value.expected_routes == value.observed_routes
+            && value.orphaned_routes == 0
+            && value.active_issues.is_empty()
+            && value.last_error_code.is_none());
+    let probe_valid = match value.probe_state.as_str() {
+        "unreported" => {
+            value.probe_targets == 0
+                && value.probe_successes == 0
+                && value.probe_rtt_ms.is_none()
+                && value.probe_checked_at_unix.is_none()
+        }
+        "pending" => {
+            value.probe_successes <= value.probe_targets && value.probe_checked_at_unix.is_none()
+        }
+        "succeeded" => {
+            value.probe_targets > 0
+                && value.probe_successes == value.probe_targets
+                && value.probe_checked_at_unix.is_some()
+        }
+        "failed" => {
+            value.probe_targets > 0
+                && value.probe_successes < value.probe_targets
+                && value.probe_checked_at_unix.is_some()
+        }
+        _ => false,
+    };
+    matches!(value.schema_version, 1 | 2)
         && matches!(
             value.integrity.as_str(),
             "consistent" | "drifted" | "reconciling" | "failed"
@@ -1783,16 +1856,15 @@ fn valid_route_diagnostics(value: &RuntimeRouteDiagnosticsCommand) -> bool {
             .last_error_code
             .as_deref()
             .is_none_or(valid_runtime_error_code)
-        && matches!(
-            value.probe_state.as_str(),
-            "unreported" | "pending" | "succeeded" | "failed"
-        )
         && value.probe_targets <= 4096
         && value.probe_successes <= value.probe_targets
         && value.probe_rtt_ms.is_none_or(|rtt| rtt <= 60_000)
         && value
             .probe_checked_at_unix
             .is_none_or(|timestamp| timestamp > 0)
+        && issues_valid
+        && consistent
+        && probe_valid
 }
 
 fn valid_installation_instance_id(value: &str) -> bool {

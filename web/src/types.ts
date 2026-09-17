@@ -196,7 +196,7 @@ export type RuntimeTelemetry = {
 };
 
 export type RuntimeRouteDiagnostics = {
-  schema_version: 1;
+  schema_version: 1 | 2;
   integrity: 'consistent' | 'drifted' | 'reconciling' | 'failed';
   expected_snapshot_sha256: string;
   observed_snapshot_sha256: string;
@@ -215,6 +215,17 @@ export type RuntimeRouteDiagnostics = {
   probe_successes: number;
   probe_rtt_ms: number | null;
   probe_checked_at_unix: number | null;
+  active_issues: RuntimeRouteIssue[];
+  last_recovered_issues: RuntimeRouteIssue[];
+};
+
+export type RuntimeRouteIssue = {
+  prefix: string;
+  table_id: number;
+  expected_kind: 'absent' | 'link' | 'throw';
+  observed_kind: 'missing' | 'link' | 'throw' | 'unrecognized';
+  reason: 'missing_route' | 'stale_failed_prefix_throw' | 'stale_active_route' | 'route_metrics_mismatch' | 'route_attributes_mismatch' | 'undeclared_route';
+  action: 'restore_signed_route' | 'suspend_steering_and_require_review';
 };
 
 export type RuntimeLocalNetworkTelemetry = {

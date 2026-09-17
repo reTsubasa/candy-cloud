@@ -23,7 +23,8 @@ type LogCategory = 'operations' | 'runtime' | 'security' | 'all';
 
 function eventLevel(action: string): LogLevel {
   const normalized = action.toUpperCase();
-  if (normalized === 'RUNTIME_FAIL_OPEN_ENTERED') return 'error';
+  if (normalized === 'RUNTIME_FAIL_OPEN_ENTERED' || normalized === 'RUNTIME_ROUTE_DRIFT_DETECTED') return 'error';
+  if (normalized === 'RUNTIME_ROUTE_RECONCILIATION_ATTEMPTED') return 'warning';
   if (/(FAILED|FAILURE|REJECTED|ERROR|DENIED)/.test(normalized)) return 'error';
   if (/(REVOKED|EXPIRED|DEGRADED|DISABLED)/.test(normalized)) return 'warning';
   return 'info';
@@ -78,6 +79,11 @@ const eventLabels: Record<string, { title: string; detail: string }> = {
   RUNTIME_LIFECYCLE_DEGRADED: { title: '节点运行状态异常', detail: 'Runtime 上报了停止、启动中或降级状态。' },
   RUNTIME_LIFECYCLE_RECOVERED: { title: '节点运行状态恢复', detail: 'Runtime 已恢复为活跃状态。' },
   RUNTIME_DATAPLANE_PHASE_CHANGED: { title: '数据面阶段变化', detail: '节点数据面进入了新的处理阶段。' },
+  RUNTIME_ROUTE_DRIFT_DETECTED: { title: '节点路由出现漂移', detail: '节点内核路由与当前签名声明不一致。' },
+  RUNTIME_ROUTE_RECONCILIATION_ATTEMPTED: { title: '节点执行路由自愈', detail: '节点已执行一次声明路由与内核路由对账。' },
+  RUNTIME_ROUTE_RECONCILIATION_RECOVERED: { title: '节点路由已恢复', detail: '节点内核路由已重新与当前签名声明一致。' },
+  RUNTIME_PACKET_PROBE_FAILED: { title: '真实数据包探测失败', detail: '隧道协商完成，但端到端真实数据包未全部通过。' },
+  RUNTIME_PACKET_PROBE_RECOVERED: { title: '真实数据包探测恢复', detail: '端到端真实数据包已重新通过。' },
 };
 
 const objectLabels: Record<string, string> = {
