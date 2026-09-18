@@ -18,6 +18,9 @@ for required in \
 	'core_version=$(jq -r' \
 	'CANDY_CLOUD_REVISION: $revision' \
 	'CANDY_CORE_VERSION: $core_version' \
+	'CORE_MODULE_VERSION: $core_version' \
+	'CORE_MODULE_BUNDLE_SHA256: $core_bundle_sha' \
+	'CORE_MODULE_SHA256: $core_module_sha' \
 	'chown 65532:65532' \
 	'chmod 0400' \
 	'trap '\''on_exit $?'\'' EXIT' \

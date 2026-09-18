@@ -83,6 +83,12 @@ jq -e --arg revision "$revision" --arg source_repository "$source_repository" '
 	.images == ["migrate", "cloud-api", "cloud-identity", "cloud-auth", "cloud-worker", "cloud-web"]
 ' "$manifest" >/dev/null || fail "Release manifest is invalid"
 core_version=$(jq -r '.core.version' "$manifest")
+core_bundle_sha=$(jq -r '.core.bundle_sha256' "$manifest")
+core_module_sha=$(jq -r '.core.module_sha256' "$manifest")
+case "$core_bundle_sha" in ''|*[!0-9a-f]*) fail "Release manifest has invalid Core bundle binding" ;; esac
+case "$core_module_sha" in ''|*[!0-9a-f]*) fail "Release manifest has invalid Core module binding" ;; esac
+[ "${#core_bundle_sha}" -eq 64 ] || fail "Release manifest has invalid Core bundle binding"
+[ "${#core_module_sha}" -eq 64 ] || fail "Release manifest has invalid Core module binding"
 
 docker load -i "$archive"
 for image in migrate cloud-api cloud-identity cloud-auth cloud-worker cloud-web; do
@@ -247,12 +253,20 @@ services:
     environment:
       CANDY_CLOUD_REVISION: $revision
       CANDY_CORE_VERSION: $core_version
+      CORE_MODULE_VERSION: $core_version
+      CORE_MODULE_BUNDLE_SHA256: $core_bundle_sha
+      CORE_MODULE_SHA256: $core_module_sha
   cloud-identity:
     image: candy-cloud-cloud-identity:arm64-$revision
   cloud-auth:
     image: candy-cloud-cloud-auth:arm64-$revision
   cloud-worker:
     image: candy-cloud-cloud-worker:arm64-$revision
+    environment:
+      CANDY_CORE_VERSION: $core_version
+      CORE_MODULE_VERSION: $core_version
+      CORE_MODULE_BUNDLE_SHA256: $core_bundle_sha
+      CORE_MODULE_SHA256: $core_module_sha
   cloud-web:
     image: candy-cloud-cloud-web:arm64-$revision
 EOF
