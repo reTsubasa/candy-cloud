@@ -32,7 +32,7 @@ printf '%s\n' "$compose_config" | awk '
   worker && /CORE_MODULE_VERSION: 0.3.54/ { version = 1 }
   worker && /CORE_MODULE_TARGET: x86_64-unknown-linux-gnu/ { architecture = 1 }
   worker && /CORE_MODULE_BUNDLE_URL:/ { url = 1 }
-  worker && /CORE_MODULE_BUNDLE_SHA256: b6850114e741c0ade623b33042b349757490b5d1c7d8344e871fb16be6b3393d/ { bundle = 1 }
+  worker && /CORE_MODULE_BUNDLE_SHA256: 27d580471b8f7e5a6e4cdc153d5c0e297e5263039c2bd4b2b9f6c4dde6144757/ { bundle = 1 }
   worker && /CORE_MODULE_SHA256: 09d73e1cfa97817fb356b5a058d3c618471dc9bf7204737e8756b2a9cb4d30be/ { module = 1 }
   END { exit (target && version && architecture && !url && bundle && module) ? 0 : 1 }
 ' || {
@@ -144,7 +144,7 @@ test "$(docker exec "$worker_id" sha256sum "$module_path" | awk '{print $1}')" =
 manifest_path=/opt/candy/cores/0.3.54/manifest.json
 manifest=$(docker exec "$worker_id" sed -e ':a' -e 'N' -e '$!ba' -e 's/[[:space:]]//g' "$manifest_path")
 printf '%s\n' "$manifest" | grep -F '"release_kind":"candy-core"' >/dev/null
-printf '%s\n' "$manifest" | grep -F '"commit":"553b8385d556e6b449fd96d9ff6f3b5b3f68ecef"' >/dev/null
+printf '%s\n' "$manifest" | grep -F '"commit":"079e6d61c336a7a9c44a60606c8fb2d866c4cef4"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"target":"x86_64-unknown-linux-gnu"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"target_arch":"x86_64"' >/dev/null
 printf '%s\n' "$manifest" | grep -F '"libc":"glibc"' >/dev/null
