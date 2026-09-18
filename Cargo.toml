@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/cloud-client-grant",
     "crates/cloud-control",
     "crates/cloud-core-module",
     "crates/cloud-db",
@@ -33,6 +34,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rcgen = { version = "0.14.8", features = ["x509-parser"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_json_canonicalizer = "0.3"
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "mysql", "uuid", "chrono", "migrate", "macros"] }
 thiserror = "2"

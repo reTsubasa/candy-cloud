@@ -1,0 +1,17 @@
+[package]
+name = "cloud-client-grant"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+base64.workspace = true
+ed25519-dalek.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+base64.workspace = true

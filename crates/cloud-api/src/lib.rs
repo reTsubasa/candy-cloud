@@ -1,4 +1,6 @@
 pub mod auth;
+pub mod client_api;
+pub mod client_issuance;
 pub mod domain;
 pub mod health;
 pub mod management;
@@ -14,6 +16,9 @@ pub fn app() -> Router {
     app_with_state(Arc::new(ManagementState {
         repository: None,
         client_access: None,
+        client_control: None,
+        client_routing: None,
+        client_grant: None,
         enrollment: None,
         authentication_ready: false,
     }))
@@ -23,6 +28,9 @@ pub fn app_with_repository(repository: ControlRepository) -> Router {
     app_with_state(Arc::new(ManagementState {
         repository: Some(repository),
         client_access: None,
+        client_control: None,
+        client_routing: None,
+        client_grant: None,
         enrollment: None,
         authentication_ready: false,
     }))
@@ -35,6 +43,9 @@ pub fn app_with_authentication(
     let state = Arc::new(ManagementState {
         repository: Some(repository),
         client_access: None,
+        client_control: None,
+        client_routing: None,
+        client_grant: None,
         enrollment: None,
         authentication_ready: true,
     });
@@ -67,9 +78,36 @@ pub fn app_with_authentication_and_enrollment_and_client_access(
     client_access: Option<cloud_db::client_access::ClientAccessPolicyRepository>,
     authenticator: ManagementAuthenticator,
 ) -> Router {
+    app_with_authentication_and_terminal_client_plane(
+        repository,
+        enrollment,
+        client_access,
+        None,
+        None,
+        None,
+        authenticator,
+    )
+}
+
+/// Full terminal client plane. The client control, routing, and signing
+/// capabilities are all optional so a deployment can run the management API
+/// without terminal Grant issuance; when any of them is absent the terminal
+/// routes answer `503` instead of failing open.
+pub fn app_with_authentication_and_terminal_client_plane(
+    repository: ControlRepository,
+    enrollment: cloud_db::enrollment::EnrollmentRepository,
+    client_access: Option<cloud_db::client_access::ClientAccessPolicyRepository>,
+    client_control: Option<cloud_db::client_control::ClientControlRepository>,
+    client_routing: Option<cloud_db::client_routing::ClientNodeRepository>,
+    client_grant: Option<cloud_client_grant::ClientGrantSigner>,
+    authenticator: ManagementAuthenticator,
+) -> Router {
     let state = Arc::new(ManagementState {
         repository: Some(repository),
         client_access,
+        client_control,
+        client_routing,
+        client_grant,
         enrollment: Some(enrollment),
         authentication_ready: true,
     });
@@ -90,6 +128,35 @@ pub fn app_with_principal(
     app_with_state(Arc::new(ManagementState {
         repository: Some(repository),
         client_access: None,
+        client_control: None,
+        client_routing: None,
+        client_grant: None,
+        enrollment: None,
+        authentication_ready: true,
+    }))
+    .layer(Extension(principal))
+}
+
+/// Injects an already-authenticated principal into the *full* terminal client
+/// plane, so route tests can exercise registration and Grant issuance without a
+/// live identity service. Production code always reaches these handlers through
+/// `require_management_principal`, which is what builds the principal from a
+/// verified session; this constructor exists only so tests can prove the handler
+/// logic (including which failures happen before storage is touched) in isolation.
+pub fn app_with_terminal_client_plane_and_principal(
+    repository: ControlRepository,
+    client_access: Option<cloud_db::client_access::ClientAccessPolicyRepository>,
+    client_control: Option<cloud_db::client_control::ClientControlRepository>,
+    client_routing: Option<cloud_db::client_routing::ClientNodeRepository>,
+    client_grant: Option<cloud_client_grant::ClientGrantSigner>,
+    principal: AuthenticatedPrincipal,
+) -> Router {
+    app_with_state(Arc::new(ManagementState {
+        repository: Some(repository),
+        client_access,
+        client_control,
+        client_routing,
+        client_grant,
         enrollment: None,
         authentication_ready: true,
     }))
@@ -110,6 +177,17 @@ fn health_routes() -> Router<Arc<ManagementState>> {
 
 fn management_routes() -> Router<Arc<ManagementState>> {
     Router::new()
+        // Terminal client routes are session-scoped and carry no tenant in the
+        // path. They must be registered before the `/v1/tenants/{tenant_id}/...`
+        // catch-alls, otherwise `client` would be parsed as a tenant id.
+        .route(
+            "/v1/client/devices",
+            axum::routing::post(client_api::register_client_device),
+        )
+        .route(
+            "/v1/client/devices/{device_id}/grant",
+            axum::routing::post(client_api::issue_client_grant),
+        )
         .route(
             "/v1/tenants/{tenant_id}/nodes/{node_id}/upgrades",
             get(management::node_upgrades).post(management::create_node_upgrade),

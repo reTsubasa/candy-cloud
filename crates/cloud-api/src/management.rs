@@ -34,6 +34,9 @@ pub struct AuthenticatedPrincipal {
 pub struct ManagementState {
     pub repository: Option<ControlRepository>,
     pub client_access: Option<cloud_db::client_access::ClientAccessPolicyRepository>,
+    pub client_control: Option<cloud_db::client_control::ClientControlRepository>,
+    pub client_routing: Option<cloud_db::client_routing::ClientNodeRepository>,
+    pub client_grant: Option<cloud_client_grant::ClientGrantSigner>,
     pub enrollment: Option<cloud_db::enrollment::EnrollmentRepository>,
     pub authentication_ready: bool,
 }
@@ -277,9 +280,9 @@ struct ErrorBody {
 
 #[derive(Debug)]
 pub struct ApiError {
-    status: StatusCode,
-    code: &'static str,
-    message: &'static str,
+    pub(crate) status: StatusCode,
+    pub(crate) code: &'static str,
+    pub(crate) message: &'static str,
 }
 
 impl ApiError {
@@ -291,6 +294,86 @@ impl ApiError {
         }
     }
 
+    /// Any signing or persistence failure on the terminal client plane. Cloud must
+    /// never answer a Grant request with a plausible-looking partial result, so
+    /// every "cannot safely sign" path funnels here.
+    pub(crate) fn control_plane_unavailable() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "CONTROL_PLANE_UNAVAILABLE",
+            message: "control plane storage or signing is unavailable",
+        }
+    }
+
+    pub(crate) fn conflict(code: &'static str, message: &'static str) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code,
+            message,
+        }
+    }
+
+    pub(crate) fn gone(code: &'static str, message: &'static str) -> Self {
+        Self {
+            status: StatusCode::GONE,
+            code,
+            message,
+        }
+    }
+
+    pub(crate) fn not_found(code: &'static str, message: &'static str) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            code,
+            message,
+        }
+    }
+
+    pub(crate) fn bad_request(code: &'static str, message: &'static str) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code,
+            message,
+        }
+    }
+
+    /// Terminal client registration/reporting failures. The contract distinguishes
+    /// "the caller sent something wrong" (400/409) from "Cloud cannot answer"
+    /// (503), so a storage fault must not be reported as a client error.
+    pub(crate) fn from_client_control(error: cloud_db::client_control::ClientControlError) -> Self {
+        use cloud_db::client_control::ClientControlError;
+        match error {
+            ClientControlError::InvalidDisplayName => {
+                Self::bad_request("INVALID_DISPLAY_NAME", "display_name is not acceptable")
+            }
+            ClientControlError::InvalidInstallId => {
+                Self::bad_request("INVALID_INSTALL_ID", "install_id is not acceptable")
+            }
+            ClientControlError::InvalidClientVersion => {
+                Self::bad_request("INVALID_CLIENT_VERSION", "client_version is not acceptable")
+            }
+            ClientControlError::InvalidPublicKey => {
+                Self::bad_request("INVALID_PUBLIC_KEY", "public_key is not acceptable")
+            }
+            ClientControlError::InvalidScope => Self::forbidden(),
+            ClientControlError::BindingConflict => Self::conflict(
+                "CLIENT_DEVICE_CONFLICT",
+                "the device or install identity conflicts with current state",
+            ),
+            ClientControlError::GenerationConflict => Self::conflict(
+                "CLIENT_GRANT_CONFLICT",
+                "client grant generation changed concurrently",
+            ),
+            ClientControlError::InvalidRecord => Self::control_plane_unavailable(),
+        }
+    }
+
+    /// Signing and envelope construction are Cloud-internal; a failure here means
+    /// Cloud cannot safely produce the signed result the client asked for.
+    pub(crate) fn from_client_grant(_: cloud_client_grant::ClientGrantError) -> Self {
+        Self::control_plane_unavailable()
+    }
+
     pub(crate) fn authentication_unavailable() -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
@@ -299,7 +382,7 @@ impl ApiError {
         }
     }
 
-    fn forbidden() -> Self {
+    pub(crate) fn forbidden() -> Self {
         Self {
             status: StatusCode::FORBIDDEN,
             code: "TENANT_ACCESS_DENIED",
