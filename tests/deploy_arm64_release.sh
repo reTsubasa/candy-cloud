@@ -86,7 +86,7 @@ start_line=$(grep -n '^[[:space:]]*compose up -d$' "$script" | cut -d: -f1)
 for workflow in "$arm_workflow" "$x86_workflow"; do
 	grep -F 'CORE_MODULE_VERSION: 0.3.54' "$workflow" >/dev/null
 	grep -F 'CORE_MODULE_INPUT_TAG: core-v0.3.54' "$workflow" >/dev/null
-	grep -F 'RUNTIME_RELEASE_TAG: runtime-v0.4.0-r142' "$workflow" >/dev/null
+	grep -F 'RUNTIME_RELEASE_TAG: runtime-v0.4.0-r143' "$workflow" >/dev/null
 	grep -F 'for attempt in $(seq 1 180); do' "$workflow" >/dev/null
 	grep -F 'Runtime release $RUNTIME_RELEASE_TAG was not finalized within 15 minutes' "$workflow" >/dev/null
 	grep -F 'RELEASE_REPOSITORY: reTsubasa/candy-release' "$workflow" >/dev/null
