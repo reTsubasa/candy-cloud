@@ -82,6 +82,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if gh release view "$RUNTIME_RELEASE_TAG" --repo reTsubasa/candy-release >/dev/null 2>&1; then
+              break
+            fi
+            [ "$attempt" -lt 30 ] || { echo "Runtime release $RUNTIME_RELEASE_TAG was not finalized within 150 seconds" >&2; exit 1; }
+            sleep 5
+          done
           rm -rf web/public/install/manifests
           mkdir -p web/public/install/manifests
           gh release download "$RUNTIME_RELEASE_TAG" --repo reTsubasa/candy-release \
