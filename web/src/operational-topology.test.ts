@@ -185,7 +185,7 @@ describe('operational topology', () => {
     expect(snapshot.readinessLabel).toBe('等待 Cloud 生成配置');
   });
 
-  it('keeps an online OpenWrt node green while its Lane failure stays on the link', () => {
+  it('shows OpenWrt fail-open as a node fault while its Lane failure stays on the link', () => {
     const { resources, telemetry: runtimeTelemetry } = threeSiteFixture();
     const failedTelemetry = runtimeTelemetry.map((item) => item.device_id === 'device-wrt' ? {
       ...item,
@@ -209,8 +209,8 @@ describe('operational topology', () => {
     const wrtNode = snapshot.nodes.find((node) => node.id === threeSiteIds.nodes.wrt);
     const wrtHkLink = snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk);
 
-    expect(wrtSite).toMatchObject({ registeredNodeCount: 1, onlineNodeCount: 1, status: { code: 'healthy', tone: 'green' } });
-    expect(wrtNode?.status).toMatchObject({ code: 'healthy', tone: 'green' });
+    expect(wrtSite).toMatchObject({ registeredNodeCount: 1, onlineNodeCount: 1, status: { code: 'fault', tone: 'red' } });
+    expect(wrtNode?.status).toMatchObject({ code: 'runtime_fault', tone: 'red' });
     expect(wrtHkLink?.status).toMatchObject({ code: 'endpoint_failed', tone: 'red' });
   });
 
