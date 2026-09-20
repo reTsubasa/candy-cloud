@@ -93,7 +93,7 @@ export function nodeOperationalStatus(input: NodeOperationalInput): OperationalS
     readyRouteOwners: input.readyRouteOwners,
   };
   if (input.applyState === 'rejected') return { code: 'policy_rejected', label: '策略应用失败', detail: runtimeUserFailureDetail(input.errorCode, counters, '节点拒绝了当前策略，但未上报错误码'), tone: 'red' };
-  if (input.telemetryState === 'online' && !input.failOpenRequired && (input.lifecycle === 'degraded' || input.lifecycle === 'stopped')) {
+  if (input.telemetryState === 'online' && (input.failOpenRequired || input.lifecycle === 'fail_open' || input.lifecycle === 'degraded' || input.lifecycle === 'stopped')) {
     return { code: 'runtime_fault', label: runtimeErrorStatusLabel(input.runtimeErrorCode) ?? '运行异常', detail: input.runtimeErrorDetail || runtimeUserFailureDetail(input.runtimeErrorCode, counters, `Runtime 状态：${input.lifecycle}`), tone: 'red' };
   }
   if (input.applyState === 'pending') return { code: 'policy_updating', label: '策略更新中', detail: '等待 Cloud 发布或节点确认当前策略', tone: 'orange' };

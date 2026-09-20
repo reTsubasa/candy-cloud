@@ -525,28 +525,10 @@ impl RuntimePathKind {
 impl RuntimeTelemetryWrite {
     fn validate(&self) -> Result<(), RuntimeConfigurationError> {
         self.lookup.validate()?;
-        let phase_is_valid = self.dataplane_phase.as_deref().is_none_or(|phase| {
-            matches!(
-                phase,
-                "control_received"
-                    | "control_verified"
-                    | "config_compiled"
-                    | "netd_prepared"
-                    | "core_policy_staged"
-                    | "peer_connecting"
-                    | "peer_authenticated"
-                    | "stream_opening"
-                    | "stream_ready"
-                    | "route_owners_ready"
-                    | "steering_committed"
-                    | "data_plane_active"
-                    | "degraded"
-                    | "recovering"
-                    | "failed"
-                    | "stopping"
-                    | "stopped"
-            )
-        });
+        let phase_is_valid = self
+            .dataplane_phase
+            .as_deref()
+            .is_none_or(runtime_dataplane_phase_is_valid);
         let error_is_valid = self.last_error_code.as_deref().is_none_or(|value| {
             !value.is_empty()
                 && value.len() <= 80
@@ -611,6 +593,30 @@ impl RuntimeTelemetryWrite {
         }
         Ok(())
     }
+}
+
+fn runtime_dataplane_phase_is_valid(phase: &str) -> bool {
+    matches!(
+        phase,
+        "control_received"
+            | "control_verified"
+            | "config_compiled"
+            | "netd_prepared"
+            | "core_policy_staged"
+            | "peer_connecting"
+            | "peer_authenticated"
+            | "stream_opening"
+            | "stream_ready"
+            | "route_owners_ready"
+            | "packet_path_probing"
+            | "steering_committed"
+            | "data_plane_active"
+            | "degraded"
+            | "recovering"
+            | "failed"
+            | "stopping"
+            | "stopped"
+    )
 }
 
 fn validate_runtime_route_diagnostics(value: &RuntimeRouteDiagnosticsWrite) -> bool {
@@ -938,6 +944,12 @@ mod runtime_stream_validation_tests {
                 last_error_code: None,
             }],
         }
+    }
+
+    #[test]
+    fn accepts_packet_path_probing_as_a_runtime_dataplane_phase() {
+        assert!(runtime_dataplane_phase_is_valid("packet_path_probing"));
+        assert!(!runtime_dataplane_phase_is_valid("packet_path_unknown"));
     }
 
     #[test]

@@ -38,18 +38,19 @@ describe('operational status boundaries', () => {
     })).tone).toBe('gray');
   });
 
-  it('keeps Lane, Peer and route failures out of node identity status', () => {
+  it('shows fail-open as a Runtime fault even while telemetry remains fresh', () => {
     expect(nodeOperationalStatus(node({
       failOpenRequired: true,
-      runtimeErrorCode: 'all_peer_reads_failed',
+      runtimeErrorCode: 'core_runtime_failed',
+      runtimeErrorDetail: 'netd recovery failed',
       configuredPeers: 2,
       activePeers: 1,
       requiredRouteOwners: 1,
       readyRouteOwners: 0,
     }))).toMatchObject({
-      code: 'healthy',
-      label: '在线',
-      tone: 'green',
+      code: 'runtime_fault',
+      tone: 'red',
+      detail: 'netd recovery failed',
     });
     expect(nodeOperationalStatus(node({ telemetryState: 'unreported', lifecycle: null }))).toMatchObject({ code: 'registered', label: '未上线', tone: 'gray' });
   });
@@ -78,7 +79,7 @@ describe('operational status boundaries', () => {
     ['starting', { lifecycle: 'starting' }, 'orange'],
     ['healthy', {}, 'green'],
     ['policy_rejected', { applyState: 'rejected' }, 'red'],
-    ['healthy', { failOpenRequired: true, lifecycle: 'degraded' }, 'green'],
+    ['runtime_fault', { failOpenRequired: true, lifecycle: 'degraded' }, 'red'],
     ['runtime_fault', { lifecycle: 'degraded' }, 'red'],
   ] as const)('classifies node state %s', (code, overrides, tone) => {
     expect(nodeOperationalStatus(node(overrides))).toMatchObject({ code, tone });
