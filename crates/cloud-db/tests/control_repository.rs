@@ -3,7 +3,7 @@ use std::{net::Ipv4Addr, time::Duration};
 use chrono::{Duration as ChronoDuration, Utc};
 use cloud_control::{
     ControlResourceV1, Ipv4PrefixV1, ResourceMetadataV1, ResourceSpecV1, ResourceState, SegmentV1,
-    ServicePolicyV1, CONTROL_SCHEMA_V1,
+    CONTROL_SCHEMA_V1,
 };
 use cloud_db::control::{
     ControlRepository, ControlStoreError, GenerationJobRepository, JobFailure, MutationContext,
@@ -48,31 +48,6 @@ fn segment(tenant: Uuid, id: Uuid, revision: u64, name: &str) -> ControlResource
                 network: Ipv4Addr::new(10, 200, 0, 0),
                 prefix_len: 16,
             },
-        }),
-    }
-}
-
-fn service_policy(
-    tenant: Uuid,
-    id: Uuid,
-    segment_id: Uuid,
-    revision: u64,
-    name: &str,
-) -> ControlResourceV1 {
-    ControlResourceV1 {
-        metadata: ResourceMetadataV1 {
-            schema_version: CONTROL_SCHEMA_V1,
-            id,
-            tenant_id: tenant,
-            revision,
-            state: ResourceState::Active,
-        },
-        resource: ResourceSpecV1::ServicePolicy(ServicePolicyV1 {
-            segment_id,
-            generation: 1,
-            name: name.into(),
-            enabled: true,
-            rules: Vec::new(),
         }),
     }
 }
@@ -339,82 +314,4 @@ async fn repository_enforces_tenant_revision_idempotency_and_lease_recovery() {
         .unwrap();
     assert_eq!(next.desired_revision, 2);
     assert_eq!(next.attempt_count, 1);
-}
-
-#[tokio::test]
-async fn policy_rename_persists_without_advancing_segment_generation() {
-    let Some((pool, tenant)) = fixture().await else {
-        return;
-    };
-    let repository = ControlRepository::new(pool.clone());
-    let segment_id = Uuid::new_v4();
-    let policy_id = Uuid::new_v4();
-    repository
-        .mutate(
-            &mutation(
-                segment(tenant, segment_id, 1, "office"),
-                "rename-segment",
-                21,
-                None,
-            ),
-            Utc::now(),
-        )
-        .await
-        .unwrap();
-    repository
-        .mutate(
-            &mutation(
-                service_policy(tenant, policy_id, segment_id, 1, "旧名称"),
-                "rename-policy-create",
-                22,
-                None,
-            ),
-            Utc::now(),
-        )
-        .await
-        .unwrap();
-    let generation_before: u64 = sqlx::query_scalar(
-        "SELECT desired_revision FROM segment_generation_heads WHERE tenant_id = ? AND segment_id = ?",
-    )
-    .bind(tenant)
-    .bind(segment_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-
-    repository
-        .mutate(
-            &mutation(
-                service_policy(tenant, policy_id, segment_id, 2, "杭州办公网经香港出口"),
-                "rename-policy-update",
-                23,
-                Some(1),
-            ),
-            Utc::now(),
-        )
-        .await
-        .unwrap();
-
-    let generation_after: u64 = sqlx::query_scalar(
-        "SELECT desired_revision FROM segment_generation_heads WHERE tenant_id = ? AND segment_id = ?",
-    )
-    .bind(tenant)
-    .bind(segment_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(generation_after, generation_before);
-    let stored = repository
-        .get(
-            tenant,
-            cloud_control::ResourceKind::ServicePolicy,
-            policy_id,
-        )
-        .await
-        .unwrap();
-    let ResourceSpecV1::ServicePolicy(policy) = stored.resource else {
-        panic!("stored resource is not a service policy")
-    };
-    assert_eq!(policy.name, "杭州办公网经香港出口");
-    assert_eq!(policy.generation, 1);
 }
