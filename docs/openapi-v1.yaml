@@ -1481,6 +1481,10 @@ components:
       properties:
         segment_id: { $ref: "#/components/schemas/Uuid" }
         generation: { $ref: "#/components/schemas/PositiveInteger" }
+        enabled:
+          type: boolean
+          default: true
+          description: Disabled policies remain editable but contribute no rules to Runtime policy publications.
         rules: { type: array, maxItems: 512, items: { $ref: "#/components/schemas/ServicePolicyRule" } }
     DnsRecordData:
       oneOf:

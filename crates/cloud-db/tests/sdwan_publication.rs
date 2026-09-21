@@ -1546,7 +1546,28 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
             policy_runtime.activation_phase,
             RuntimeConfigurationActivationPhase::Commit
         );
+        repository
+            .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+                lookup: (*lookup).clone(),
+                projection_publication_id: policy_runtime.projection_publication_id,
+                projection_content_hash: policy_runtime.projection_content_hash,
+                envelope_sha256: policy_runtime.envelope_sha256(),
+                apply_state: RuntimeConfigurationApplyState::Active,
+                error_code: None,
+            })
+            .await
+            .unwrap();
     }
+    let policy_statuses = cloud_db::control::ControlRepository::new(pool.clone())
+        .runtime_configuration_statuses(tenant_id)
+        .await
+        .unwrap();
+    assert_eq!(policy_statuses.len(), 2);
+    assert!(policy_statuses.iter().all(|status| {
+        status.apply_state == "ACTIVE"
+            && status.current
+            && status.segment_generation == Some(policy.generation)
+    }));
 
     let second_segment_id = Uuid::new_v4();
     sqlx::query("INSERT INTO segments (id, tenant_id, name, hub_node_pool_id, overlay_network, overlay_prefix_len) VALUES (?, ?, ?, ?, ?, ?)")

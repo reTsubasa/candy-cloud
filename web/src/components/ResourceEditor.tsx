@@ -12,6 +12,7 @@ import {
   Select,
   Space,
   Spin,
+  Switch,
   Tag,
   Typography,
 } from '@arco-design/web-react';
@@ -518,6 +519,7 @@ function PolicyFields({ spec, update, updateList, removeListItem, references, re
   const egressOptions = segmentEgresses(spec.segment_id, references);
   return <>
     <FormIntro title="在一个网络分段内选择出口">策略只匹配所选分段内的站点与流量，不会跨分段生效。规则按优先级依次匹配；没有命中的流量继续使用来源站点的本地出口。</FormIntro>
+    <Form.Item label="策略状态"><Switch checked={spec.enabled !== false} checkedText="启用" uncheckedText="禁用" onChange={(value) => update('enabled', value)} /><FieldHelp>禁用后保留策略配置，但所有规则立即从运行策略中移除；重新启用后按原规则热加载。</FieldHelp></Form.Item>
     <Form.Item label="生效网络" required>{referenceSelect('segments', spec.segment_id, (value) => {
       update('segment_id', value);
       update('rules', rules.map((rule) => ({ ...rule, source_site_ids: [], egress_id: rule.action_type === 'REMOTE_EGRESS' ? '' : rule.egress_id })));

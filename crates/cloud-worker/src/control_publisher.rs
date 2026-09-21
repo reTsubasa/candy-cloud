@@ -157,6 +157,7 @@ impl ControlRoutePublisher {
                 }
                 ResourceSpecV1::ServicePolicy(policy)
                     if resource.metadata.state == ResourceState::Active
+                        && policy.enabled
                         && policy.segment_id == snapshot.segment_id =>
                 {
                     let content_hash = resource

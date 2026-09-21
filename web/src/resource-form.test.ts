@@ -55,6 +55,15 @@ describe('resource form contract mapping', () => {
     vi.unstubAllGlobals();
   });
 
+  it('defaults legacy policies to enabled and preserves an explicit disabled state', () => {
+    expect(normalizeSpecForEditor({
+      kind: 'SERVICE_POLICY', spec: { segment_id: 'segment', generation: 1, rules: [] },
+    }).enabled).toBe(true);
+    expect(buildResourceSpec('SERVICE_POLICY', {
+      segment_id: 'segment', generation: 2, enabled: false, rules: [],
+    }).spec).toMatchObject({ generation: 2, enabled: false, rules: [] });
+  });
+
   it('stores an empty remote-egress destination as the canonical default route', () => {
     vi.stubGlobal('crypto', { randomUUID: () => '019ff9c1-ac24-7303-a6c3-905768fe5905' });
     const document = buildResourceSpec('SERVICE_POLICY', {

@@ -13,6 +13,14 @@ pub const MAX_DNS_RECORDS: usize = 4096;
 pub const MIN_DNS_TTL_SECONDS: u32 = 5;
 pub const MAX_DNS_TTL_SECONDS: u32 = 86_400;
 
+const fn default_enabled() -> bool {
+    true
+}
+
+fn enabled_is_default(value: &bool) -> bool {
+    *value
+}
+
 pub fn runtime_path_candidate_id(path_resource_id: Uuid, endpoint_id: Uuid) -> Uuid {
     let mut hasher = Sha256::new();
     hasher.update(b"candy/path-endpoint-candidate-v1\0");
@@ -245,6 +253,11 @@ pub struct ServicePolicyRuleV1 {
 pub struct ServicePolicyV1 {
     pub segment_id: Uuid,
     pub generation: u64,
+    #[serde(
+        default = "default_enabled",
+        skip_serializing_if = "enabled_is_default"
+    )]
+    pub enabled: bool,
     pub rules: Vec<ServicePolicyRuleV1>,
 }
 
@@ -760,6 +773,7 @@ mod tests {
         let policy = ResourceSpecV1::ServicePolicy(ServicePolicyV1 {
             segment_id: id(1),
             generation: 1,
+            enabled: true,
             rules: vec![ServicePolicyRuleV1 {
                 id: id(2),
                 priority: 100,
@@ -791,6 +805,7 @@ mod tests {
             ResourceSpecV1::ServicePolicy(ServicePolicyV1 {
                 segment_id: id(1),
                 generation: 1,
+                enabled: true,
                 rules: vec![rule],
             })
         };
@@ -801,6 +816,27 @@ mod tests {
         assert_eq!(
             policy(rule(PolicyActionV1::LocalEgress)).validate(),
             Err(ContractError::InvalidPrefix)
+        );
+    }
+
+    #[test]
+    fn policy_enabled_defaults_true_without_changing_legacy_documents() {
+        let mut policy: ServicePolicyV1 = serde_json::from_value(serde_json::json!({
+            "segment_id": id(1),
+            "generation": 1,
+            "rules": []
+        }))
+        .unwrap();
+        assert!(policy.enabled);
+        assert!(serde_json::to_value(&policy)
+            .unwrap()
+            .get("enabled")
+            .is_none());
+
+        policy.enabled = false;
+        assert_eq!(
+            serde_json::to_value(&policy).unwrap()["enabled"],
+            serde_json::Value::Bool(false)
         );
     }
 

@@ -9,13 +9,14 @@ import {
   Modal,
   Space,
   Spin,
+  Switch,
   Table,
   Tag,
   Tooltip,
   Typography,
 } from '@arco-design/web-react';
 import { IconDelete, IconEdit, IconInfoCircle, IconPlus, IconRefresh, IconRight, IconSafe, IconSearch, IconSync } from '@arco-design/web-react/icon';
-import { CloudApiError, createNodeUpgrade, deleteResource, fetchRuntimeActivationReadiness, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, getNodeUpgrades, getResource, listAllResources, listResourceReferences, listResources, type NodeUpgradesResponse } from '../api';
+import { CloudApiError, createNodeUpgrade, deleteResource, fetchRuntimeActivationReadiness, fetchRuntimeConfigurationStatuses, fetchRuntimeTelemetry, getNodeUpgrades, getResource, listAllResources, listResourceReferences, listResources, replaceResource, type NodeUpgradesResponse } from '../api';
 import { buildOperationalTopology, emptyOperationalResources, type OperationalNode, type OperationalResourceKey, type OperationalResources, type OperationalTopologySnapshot } from '../operational-topology';
 import type { OperationalStatus } from '../operational-status';
 import { pathDefinition, resourceDefinitions } from '../resource-definitions';
@@ -218,6 +219,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
   const [query, setQuery] = useState('');
   const [editor, setEditor] = useState<{ visible: boolean; resource: ControlResource | null }>({ visible: false, resource: null });
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [updatingPolicyId, setUpdatingPolicyId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ControlResource | null>(null);
   const [referenceLoading, setReferenceLoading] = useState(false);
   const [deleteReferences, setDeleteReferences] = useState<ResourceReference[]>([]);
@@ -389,6 +391,31 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
     }
   };
 
+  const setPolicyEnabled = async (record: ControlResource, enabled: boolean) => {
+    if (!tenantId || record.resource.kind !== 'SERVICE_POLICY') return;
+    setUpdatingPolicyId(record.metadata.id);
+    try {
+      const next = structuredClone(record.resource);
+      next.spec.enabled = enabled;
+      next.spec.generation = Number(next.spec.generation) + 1;
+      const response = await replaceResource(
+        session.token,
+        tenantId,
+        definition.collection,
+        record.metadata.id,
+        record.metadata.revision,
+        next,
+      );
+      setItems((current) => current.map((item) => item.metadata.id === record.metadata.id ? response.resource : item));
+      message.success?.(enabled ? '策略已启用并开始热更新' : '策略已禁用并开始热更新');
+    } catch (reason) {
+      message.error?.(reason instanceof Error ? reason.message : '策略状态更新失败');
+      await load();
+    } finally {
+      setUpdatingPolicyId(null);
+    }
+  };
+
   const actionColumn = {
     title: '操作',
     width: definition.kind === 'NODE' ? 164 : 124,
@@ -440,6 +467,11 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
   };
   const policyColumns = [
     {
+      title: '策略 ID',
+      width: 300,
+      render: (_: unknown, record: ControlResource) => <Typography.Text code copyable={{ text: record.metadata.id }}>{record.metadata.id}</Typography.Text>,
+    },
+    {
       title: '生效网络',
       width: 220,
       render: (_: unknown, record: ControlResource) => {
@@ -462,7 +494,18 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
         </div>)}</div>;
       },
     },
-    { title: '配置状态', width: 104, render: (_: unknown, record: ControlResource) => <Tag color={stateColor(record.metadata.state)}>{record.metadata.state === 'ACTIVE' ? '已配置' : label(record.metadata.state)}</Tag> },
+    {
+      title: '策略状态',
+      width: 120,
+      render: (_: unknown, record: ControlResource) => <Switch
+        checked={record.resource.spec.enabled !== false}
+        checkedText="启用"
+        uncheckedText="禁用"
+        loading={updatingPolicyId === record.metadata.id}
+        disabled={updatingPolicyId !== null}
+        onChange={(enabled) => void setPolicyEnabled(record, enabled)}
+      />,
+    },
     actionColumn,
   ];
   const defaultColumns = [
@@ -557,7 +600,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
               columns={columns}
               data={filtered}
               pagination={filtered.length > 20 ? { pageSize: 20, sizeCanChange: true } : false}
-              scroll={{ x: 820 }}
+              scroll={{ x: definition.kind === 'SERVICE_POLICY' ? 1280 : 820 }}
             />
           )}
         </Spin>

@@ -59,6 +59,7 @@ export function collapseDefaultRouteSlices(cidrs: string[]): string[] {
 
 export function normalizeSpecForEditor(resource: ResourceSpec): Spec {
   const spec = structuredClone(resource.spec);
+  if (resource.kind === 'SERVICE_POLICY') spec.enabled = spec.enabled !== false;
   if (resource.kind === 'DNS_INTENT') {
     const legacySiteId = typeof spec.site_id === 'string' ? spec.site_id : '';
     const siteIds = Array.isArray(spec.site_ids) ? spec.site_ids : legacySiteId ? [legacySiteId] : [];
@@ -107,6 +108,7 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
   }
   if (kind === 'SERVICE_POLICY') {
     spec.generation = positiveInteger(editor.generation);
+    spec.enabled = editor.enabled !== false;
     spec.rules = ((editor.rules as Spec[]) ?? []).map((rule) => {
       const cidrs = (rule.destination_cidrs as string[]) ?? [];
       const effectiveCidrs = rule.action_type === 'REMOTE_EGRESS' && cidrs.length === 0
