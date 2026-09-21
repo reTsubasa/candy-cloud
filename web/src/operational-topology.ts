@@ -398,6 +398,14 @@ export function buildOperationalTopology(
         failedEndpointLabels: rejectedNodes.length > 0 ? rejectedNodes.map((node) => node.name) : failedEndpointLabels,
         degradedPathLabels,
       });
+      const activeKinds = new Set(activePaths.map((path) => path.path_kind));
+      const kindLabel = activeKinds.size === 1
+        ? (activeKinds.has('relay') ? '中继' : '直连')
+        : activeKinds.size > 1
+          ? '多路径'
+          : kinds.size === 1
+            ? `${kinds.has('RELAY') ? '中继' : '直连'}候选`
+            : '线路候选';
       return {
         id: peer.metadata.id,
         siteAId,
@@ -405,7 +413,7 @@ export function buildOperationalTopology(
         siteAName,
         siteBName,
         directionCount: Math.min(2, paths.length),
-        kindLabel: kinds.has('RELAY') ? '中继' : '直连',
+        kindLabel,
         state: operationalStatus.code,
         status: operationalStatus,
         activeDirectionCount,

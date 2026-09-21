@@ -182,6 +182,21 @@ describe('operational topology', () => {
     });
   });
 
+  it('shows the actual active relay kind instead of the configured candidate kind', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    telemetry[0].paths[0] = { ...telemetry[0].paths[0], path_kind: 'relay' };
+    telemetry[2].paths[0] = { ...telemetry[2].paths[0], path_kind: 'relay' };
+    const snapshot = buildOperationalTopology(resources, ['wrt', 'us', 'hk'].map(configurationStatus), {}, '', telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)?.kindLabel).toBe('中继');
+  });
+
+  it('marks mixed active direct and relay directions as multi-path', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    telemetry[0].paths[0] = { ...telemetry[0].paths[0], path_kind: 'relay' };
+    const snapshot = buildOperationalTopology(resources, ['wrt', 'us', 'hk'].map(configurationStatus), {}, '', telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)?.kindLabel).toBe('多路径');
+  });
+
   it('removes a faulted stream from active direction readiness', () => {
     const { resources, telemetry } = threeSiteFixture();
     telemetry[0].transport_mode = 'stream_primary';

@@ -264,8 +264,17 @@ button, input, textarea { font: inherit; }
 .topology-site-node line { stroke: #edf0f4; }.topology-site-node text.value { fill: #4e5969; font-size: 10px; }.topology-site-node text.site-name { font-weight: 600; }
 .topology-node-state text { font-size: 9px; }.topology-node-state text.state { fill: #6b778c; }.topology-node-state.tone-green circle { fill: #00a870; }.topology-node-state.tone-orange circle { fill: #d97706; }.topology-node-state.tone-red circle { fill: #d92d20; }.topology-node-state.tone-gray circle { fill: #86909c; }
 .topology-peer-link path { fill: none; stroke-width: 1.8; }.topology-peer-link.ok path { stroke: #00a870; }.topology-peer-link.warn path { stroke: #d97706; stroke-dasharray: 5 4; }.topology-peer-link.error path { stroke: #d92d20; stroke-dasharray: 3 3; }.topology-peer-link.neutral path { stroke: #86909c; stroke-dasharray: 5 4; }
-.topology-peer-link rect { fill: #fff; }.topology-peer-link.ok rect { stroke: #79c9ad; }.topology-peer-link.warn rect { stroke: #e4bd7d; }.topology-peer-link.error rect { stroke: #ee9b92; }.topology-peer-link.neutral rect { stroke: #c9d2df; }
+.topology-peer-link .topology-link-label { fill: rgba(255, 255, 255, .96); stroke: #c9d2df; }
+.topology-peer-link.ok .topology-link-label { stroke: #79c9ad; }.topology-peer-link.warn .topology-link-label { stroke: #e4bd7d; }.topology-peer-link.error .topology-link-label { stroke: #ee9b92; }.topology-peer-link.neutral .topology-link-label { stroke: #c9d2df; }
 .topology-peer-link text { fill: #4e5969; font-size: 10px; }.topology-peer-link text.telemetry { fill: #86909c; font-size: 9px; }
+.topology-tag rect { stroke-width: 1; }.topology-tag text { font-size: 9px; font-weight: 600; }
+.status-tag.ok rect { fill: #e9f8f1; stroke: #79c9ad; }.status-tag.ok text { fill: #087443; }
+.status-tag.warn rect { fill: #fff5e6; stroke: #e4bd7d; }.status-tag.warn text { fill: #9a5b00; }
+.status-tag.error rect { fill: #fff0ef; stroke: #ee9b92; }.status-tag.error text { fill: #b42318; }
+.status-tag.neutral rect { fill: #f2f4f7; stroke: #c9d2df; }.status-tag.neutral text { fill: #5e6c7d; }
+.kind-tag.direct rect { fill: #eef4ff; stroke: #a7c1ef; }.kind-tag.direct text { fill: #315b9b; }
+.kind-tag.relay rect { fill: #f4efff; stroke: #c4b5e8; }.kind-tag.relay text { fill: #6741a5; }
+.kind-tag.neutral rect { fill: #f2f4f7; stroke: #c9d2df; }.kind-tag.neutral text { fill: #5e6c7d; }
 .status-boundary-legend { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); background: #fff; }
 .status-boundary-legend > div { min-width: 0; padding: 10px 12px 11px; }.status-boundary-legend > div:first-child { border-right: 1px solid var(--line); }
 .status-boundary-legend > div > strong { display: block; margin-bottom: 8px; color: #4e5969; font-size: 11px; }
