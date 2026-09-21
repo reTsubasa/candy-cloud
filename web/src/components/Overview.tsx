@@ -294,7 +294,7 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
   const siteBottom = siteY + siteCardHeight;
   const linkLaneGap = 62;
   const linkLaneCount = Math.min(snapshot.links.length, 8);
-  const height = siteBottom + 42 + linkLaneCount * linkLaneGap + 32;
+  const height = siteBottom + 42 + linkLaneCount * linkLaneGap + 12;
   const siteX = (index: number) => siteCount <= 1 ? center : 100 + index * ((width - 200) / (siteCount - 1));
   const siteById = Object.fromEntries(snapshot.sites.map((site, index) => [site.id, { ...site, x: siteX(index) }]));
   const allSitesOffline = snapshot.sites.length > 0 && snapshot.sites.every((site) => site.status.tone === 'gray');
@@ -355,11 +355,6 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
           </> : <text x={(left.x + right.x) / 2} y={y + 4} textAnchor="middle">{link.status.label}</text>}
         </g>;
       })}
-      <g className="topology-legend" transform={`translate(${center - 225} ${height - 24})`}>
-        <circle className="ok" cx="6" cy="6" r="5" /><text x="17" y="10">正常 / 已认证</text>
-        <circle className="warn" cx="126" cy="6" r="5" /><text x="137" y="10">处理中 / 待确认</text>
-        <circle className="error" cx="286" cy="6" r="5" /><text x="297" y="10">明确故障</text>
-      </g>
     </svg>
   </div><StatusBoundaryLegend /></>;
 }

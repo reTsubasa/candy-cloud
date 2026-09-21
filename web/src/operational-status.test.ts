@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { linkOperationalStatus, nodeOperationalStatus, type NodeOperationalInput } from './operational-status';
+import { LINK_STATUS_BOUNDARIES, SITE_STATUS_BOUNDARIES, linkOperationalStatus, nodeOperationalStatus, type NodeOperationalInput } from './operational-status';
 
 const node = (overrides: Partial<NodeOperationalInput> = {}): NodeOperationalInput => ({
   registered: true,
@@ -18,6 +18,11 @@ const node = (overrides: Partial<NodeOperationalInput> = {}): NodeOperationalInp
 });
 
 describe('operational status boundaries', () => {
+  it('uses user-facing status names in the topology legend', () => {
+    expect(SITE_STATUS_BOUNDARIES.map((item) => item.label)).toEqual(['未上线', '在线', '处理中', '异常']);
+    expect(LINK_STATUS_BOUNDARIES.map((item) => item.label)).toEqual(['链路断开', '链路协商中', '链路正常', '链路性能降级', '链路故障']);
+  });
+
   it('keeps an authenticated but offline node gray, green only when online', () => {
     expect(nodeOperationalStatus(node({ attached: false, applyState: 'pending', telemetryState: 'unreported' }))).toMatchObject({
       code: 'registered', label: '未接入', tone: 'gray',

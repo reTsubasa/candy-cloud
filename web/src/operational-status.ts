@@ -72,17 +72,18 @@ export const NODE_STATUS_BOUNDARIES = [
 ];
 
 export const SITE_STATUS_BOUNDARIES = [
-  { tone: 'gray' as const, label: '灰色', detail: '站点没有在线节点；已认证但未上线、遥测中断或全体离线都显示灰色。' },
-  { tone: 'green' as const, label: '绿色', detail: '站点内已认证节点均在线且 Runtime 稳定；Lane 状态不影响站点颜色。' },
-  { tone: 'orange' as const, label: '橙色', detail: '站点存在节点状态变化，或仅部分节点在线；全体离线不使用橙色。' },
-  { tone: 'red' as const, label: '红色', detail: '站点至少有一个节点拒绝配置或 Runtime 明确异常。' },
+  { tone: 'gray' as const, label: '未上线', detail: '没有在线节点，或节点遥测已中断。' },
+  { tone: 'green' as const, label: '在线', detail: '已认证节点在线，Runtime 稳定上报。' },
+  { tone: 'orange' as const, label: '处理中', detail: '节点正在注册、启动或切换状态。' },
+  { tone: 'red' as const, label: '异常', detail: '节点拒绝配置或 Runtime 明确异常。' },
 ];
 
 export const LINK_STATUS_BOUNDARIES = [
-  { tone: 'gray' as const, label: '链路断开', detail: '任一端站点没有在线节点，或链路遥测已过期。' },
-  { tone: 'green' as const, label: '链路正常', detail: '两端均有新鲜的双向数据面遥测，链路可正常转发。' },
-  { tone: 'orange' as const, label: '链路处理中', detail: '链路正在协商、更新或性能降级；具体原因显示在链路状态中。' },
-  { tone: 'red' as const, label: '链路故障', detail: '端点或配置明确失败，当前链路不可正常转发。' },
+  { tone: 'gray' as const, label: '链路断开', detail: '端点没有在线节点，或遥测已过期。' },
+  { tone: 'orange' as const, label: '链路协商中', detail: '双向路径尚未全部建立。' },
+  { tone: 'green' as const, label: '链路正常', detail: '双向数据面已建立，遥测持续更新。' },
+  { tone: 'orange' as const, label: '链路性能降级', detail: '链路可达，但 Stream 背压影响吞吐或时延。' },
+  { tone: 'red' as const, label: '链路故障', detail: '端点或配置明确失败，当前不可转发。' },
 ];
 
 export function nodeOperationalStatus(input: NodeOperationalInput): OperationalStatus<NodeOperationalCode> {
