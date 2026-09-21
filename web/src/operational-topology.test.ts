@@ -178,7 +178,7 @@ describe('operational topology', () => {
     const snapshot = buildOperationalTopology(resources, ['wrt', 'us', 'hk'].map(configurationStatus), {}, '', telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
     expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)).toMatchObject({
       activeDirectionCount: 2,
-      status: { label: '线路性能降级', tone: 'orange' },
+      status: { label: '链路性能降级', tone: 'orange' },
     });
   });
 
@@ -354,7 +354,7 @@ describe('operational topology', () => {
     expect(snapshot.activeLinkCount).toBe(0);
     expect(snapshot.links[0].activeDirectionCount).toBe(1);
     expect(snapshot.links[0]).toMatchObject({ siteAName: '上海', siteBName: '东京', state: 'endpoint_offline' });
-    expect(snapshot.links[0].status.detail).toContain('线路随站点状态置灰');
+    expect(snapshot.links[0].status.detail).toContain('当前没有可用链路');
     expect(snapshot.links[0].activePathCount).toBe(1);
     expect(snapshot.links[0].activePaths[0].sourceSiteId).toBe('site-a');
     expect(snapshot.links[0].activePaths[0].destinationSiteId).toBe('site-b');
