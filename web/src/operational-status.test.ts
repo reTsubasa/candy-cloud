@@ -64,16 +64,16 @@ describe('operational status boundaries', () => {
 
   it('turns a link green only after fresh bidirectional authentication', () => {
     const configured = { configuredPathCount: 2, activeDirectionCount: 0, staleDirectionCount: 0, policyUpdating: false, configurationFailed: false, endpointFailed: false };
-    expect(linkOperationalStatus(configured)).toMatchObject({ code: 'authenticating', label: '路径未建立', tone: 'orange' });
+    expect(linkOperationalStatus(configured)).toMatchObject({ code: 'authenticating', label: '链路协商中', tone: 'orange' });
     expect(linkOperationalStatus({ ...configured, activeDirectionCount: 1 })).toMatchObject({ code: 'one_way', tone: 'orange' });
-    expect(linkOperationalStatus({ ...configured, activeDirectionCount: 2 })).toMatchObject({ code: 'active', tone: 'green' });
+    expect(linkOperationalStatus({ ...configured, activeDirectionCount: 2 })).toMatchObject({ code: 'active', label: '链路正常', tone: 'green' });
     expect(linkOperationalStatus({ ...configured, activeDirectionCount: 2, policyUpdating: true })).toMatchObject({ code: 'policy_updating', tone: 'orange' });
     expect(linkOperationalStatus({ ...configured, configurationFailed: true })).toMatchObject({ code: 'configuration_failed', tone: 'red' });
     expect(linkOperationalStatus({
       ...configured,
       activeDirectionCount: 1,
       missingDirectionLabels: ['香港 -> 美国'],
-    }).detail).toBe('香港 -> 美国 未建立；检查发起端策略、认证日志和公网 UDP 端点');
+    }).detail).toBe('香港 -> 美国 尚未建立；正在等待另一方向完成协商');
     expect(linkOperationalStatus({ ...configured, endpointOffline: true, configurationFailed: true })).toMatchObject({ code: 'endpoint_offline', tone: 'gray' });
   });
 

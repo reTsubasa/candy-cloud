@@ -79,10 +79,10 @@ export const SITE_STATUS_BOUNDARIES = [
 ];
 
 export const LINK_STATUS_BOUNDARIES = [
-  { tone: 'gray' as const, label: '灰色', detail: '任一端站点没有在线节点；线路随端点状态置灰。' },
-  { tone: 'green' as const, label: '绿色', detail: '两端均有新鲜的已协商认证路径遥测，双向数据面成立。' },
-  { tone: 'orange' as const, label: '黄色', detail: '仅完成配置、正在更新/认证、只有单向成立，或链路遥测已过期。' },
-  { tone: 'red' as const, label: '红色', detail: '两端仍有在线节点，但配置应用或数据面明确故障。' },
+  { tone: 'gray' as const, label: '链路断开', detail: '任一端站点没有在线节点，或链路遥测已过期。' },
+  { tone: 'green' as const, label: '链路正常', detail: '两端均有新鲜的双向数据面遥测，链路可正常转发。' },
+  { tone: 'orange' as const, label: '链路处理中', detail: '链路正在协商、更新或性能降级；具体原因显示在链路状态中。' },
+  { tone: 'red' as const, label: '链路故障', detail: '端点或配置明确失败，当前链路不可正常转发。' },
 ];
 
 export function nodeOperationalStatus(input: NodeOperationalInput): OperationalStatus<NodeOperationalCode> {
@@ -112,14 +112,14 @@ export function nodeOperationalStatus(input: NodeOperationalInput): OperationalS
 }
 
 export function linkOperationalStatus(input: LinkOperationalInput): OperationalStatus<LinkOperationalCode> {
-  if (input.endpointOffline) return { code: 'endpoint_offline', label: '端点离线', detail: '至少一个端点站点没有在线节点，线路随站点状态置灰', tone: 'gray' };
+  if (input.endpointOffline) return { code: 'endpoint_offline', label: '链路断开', detail: '至少一个端点站点没有在线节点，当前没有可用链路', tone: 'gray' };
   if (input.configuredPathCount === 0) return { code: 'not_configured', label: '线路未配置', detail: '互联关系已建立，但尚未设置候选线路', tone: 'orange' };
-  if (input.configurationFailed) return { code: 'configuration_failed', label: '配置失败', detail: input.failedEndpointLabels?.length ? `${input.failedEndpointLabels.join('、')}拒绝了当前互联策略` : '至少一个端点拒绝了当前互联策略', tone: 'red' };
-  if (input.endpointFailed) return { code: 'endpoint_failed', label: '端点故障', detail: input.failedEndpointLabels?.length ? `${input.failedEndpointLabels.join('、')}没有可工作的节点` : '至少一端没有可工作的节点', tone: 'red' };
+  if (input.configurationFailed) return { code: 'configuration_failed', label: '链路故障', detail: input.failedEndpointLabels?.length ? `${input.failedEndpointLabels.join('、')}拒绝了当前互联策略` : '至少一个端点拒绝了当前互联策略', tone: 'red' };
+  if (input.endpointFailed) return { code: 'endpoint_failed', label: '链路故障', detail: input.failedEndpointLabels?.length ? `${input.failedEndpointLabels.join('、')}没有可工作的节点` : '至少一端没有可工作的节点', tone: 'red' };
   if (input.policyUpdating) return { code: 'policy_updating', label: '策略更新中', detail: '互联配置正在发布或等待端点确认', tone: 'orange' };
-  if (input.degradedPathLabels?.length) return { code: 'telemetry_stale', label: '线路性能降级', detail: `${input.degradedPathLabels.join('、')} 出现 Stream 背压，线路仍可达但吞吐或时延可能受影响`, tone: 'orange' };
-  if (input.activeDirectionCount === 2) return { code: 'active', label: '双向已认证', detail: '两端协商认证完成，双向路径遥测新鲜', tone: 'green' };
-  if (input.activeDirectionCount === 1) return { code: 'one_way', label: '单向路径异常', detail: input.missingDirectionLabels?.length ? `${input.missingDirectionLabels.join('、')} 未建立；检查发起端策略、认证日志和公网 UDP 端点` : '只有一个方向完成路径认证，检查另一端策略、认证日志和公网 UDP 端点', tone: 'orange' };
-  if (input.staleDirectionCount > 0) return { code: 'telemetry_stale', label: '链路状态过期', detail: input.staleDirectionLabels?.length ? `${input.staleDirectionLabels.join('、')} 的路径遥测已超过新鲜度窗口` : '曾收到路径状态，但已超过遥测新鲜度窗口', tone: 'orange' };
-  return { code: 'authenticating', label: '路径未建立', detail: input.missingDirectionLabels?.length ? `${input.missingDirectionLabels.join('、')} 均未上报路径；检查发起端策略、认证日志和公网 UDP 端点` : '线路已配置但没有路径遥测；检查发起端策略、认证日志和公网 UDP 端点', tone: 'orange' };
+  if (input.degradedPathLabels?.length) return { code: 'telemetry_stale', label: '链路性能降级', detail: `${input.degradedPathLabels.join('、')} 出现 Stream 背压，链路仍可达但吞吐或时延可能受影响`, tone: 'orange' };
+  if (input.activeDirectionCount === 2) return { code: 'active', label: '链路正常', detail: '双向数据面已建立，链路遥测持续更新', tone: 'green' };
+  if (input.activeDirectionCount === 1) return { code: 'one_way', label: '链路协商中', detail: input.missingDirectionLabels?.length ? `${input.missingDirectionLabels.join('、')} 尚未建立；正在等待另一方向完成协商` : '一侧路径已建立，正在等待另一方向完成协商', tone: 'orange' };
+  if (input.staleDirectionCount > 0) return { code: 'telemetry_stale', label: '链路断开', detail: input.staleDirectionLabels?.length ? `${input.staleDirectionLabels.join('、')} 的链路遥测已过期，当前无法确认可达性` : '链路遥测已过期，当前无法确认可达性', tone: 'orange' };
+  return { code: 'authenticating', label: '链路协商中', detail: input.missingDirectionLabels?.length ? `${input.missingDirectionLabels.join('、')} 尚未建立；正在等待两端完成认证和路径协商` : '正在等待两端完成认证和路径协商', tone: 'orange' };
 }
