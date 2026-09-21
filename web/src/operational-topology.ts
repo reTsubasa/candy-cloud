@@ -6,6 +6,7 @@ import {
   type NodeOperationalCode,
   type OperationalStatus,
 } from './operational-status';
+import { pathHealth, runtimeAttention, runtimeDataPlaneReady } from './runtime-observability';
 
 export type OperationalResourceKey = 'sites' | 'nodes' | 'segments' | 'attachments' | 'prefixes' | 'peers' | 'paths' | 'egress' | 'policies' | 'dns' | 'relays';
 export type OperationalResources = Record<OperationalResourceKey, ControlResource[]>;
@@ -165,7 +166,7 @@ function pathIsReady(path: RuntimePathTelemetry, runtime: RuntimeTelemetry): boo
     || path.ready_streams != null || path.stream_count != null || (path.streams?.length ?? 0) > 0;
   if (streamTelemetry) {
     return (path.ready_streams ?? 0) > 0
-      && (!path.streams?.length || path.streams.some((stream) => stream.state === 'ready'));
+      && (!path.streams?.length || pathHealth(path) !== 'fault');
   }
   // Legacy reports do not identify stream readiness. Only retain their previous
   // authenticated-path meaning when the whole reported data plane is ready.
@@ -235,14 +236,15 @@ export function buildOperationalTopology(
       failOpenRequired: runtime?.fail_open_required ?? false,
       runtimeErrorCode: runtime?.last_error_code ?? null,
       runtimeErrorDetail: runtime?.last_error_detail ?? null,
+      dataPlaneReady: runtime ? runtimeDataPlaneReady(runtime) : undefined,
+      operationalAttention: runtime ? runtimeAttention(runtime) : null,
+      operationalTransition: runtime?.route_diagnostics?.integrity === 'reconciling' || runtime?.dataplane_phase === 'recovering',
     });
     const dataPlaneActive = registered
       && applyState === 'active'
       && telemetryState === 'online'
-      && runtime?.lifecycle === 'active'
-      && !runtime.fail_open_required
-      && runtime.required_route_owners > 0
-      && runtime.ready_route_owners === runtime.required_route_owners;
+      && runtime !== null
+      && runtimeDataPlaneReady(runtime);
     return {
       id: item.metadata.id,
       name: name(item),
@@ -330,7 +332,7 @@ export function buildOperationalTopology(
         [siteBId, new Set(peerAttachments.filter((attachment) => value(attachment, 'site_id') === siteBId).map((attachment) => attachment.metadata.id))],
       ]);
       const activePaths: OperationalPathTelemetry[] = peerNodes.flatMap((node) => {
-        if (!node.registered || node.telemetryState !== 'online' || node.lifecycle !== 'active' || node.failOpenRequired || !node.telemetry || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
+        if (!node.registered || node.telemetryState !== 'online' || node.lifecycle !== 'active' || node.failOpenRequired || !node.telemetry || !runtimeDataPlaneReady(node.telemetry) || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
         const destinationSiteId = node.siteId === siteAId ? siteBId : siteAId;
         const destinationAttachmentIds = attachmentIdsBySite.get(destinationSiteId) ?? new Set<string>();
         return (node.telemetry?.paths ?? [])
@@ -345,6 +347,9 @@ export function buildOperationalTopology(
       });
       const activeDirections = new Set(activePaths.map((path) => `${path.sourceSiteId}:${path.destinationSiteId}`));
       const activeDirectionCount = activeDirections.size;
+      const degradedPathLabels = activePaths
+        .filter((path) => pathHealth(path) === 'backpressured')
+        .map((path) => `${path.sourceNodeName} -> ${siteNameById.get(path.destinationSiteId) ?? '对端'}`);
       const staleDirections = peerNodes.flatMap((node) => {
         if (node.telemetryState !== 'stale' || !node.telemetry || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
         const destinationSiteId = node.siteId === siteAId ? siteBId : siteAId;
@@ -361,7 +366,11 @@ export function buildOperationalTopology(
         siteNodes.length > 0 && siteNodes.every((node) => (
           !node.registered
           || node.failOpenRequired
-          || (node.telemetryState === 'online' && (node.lifecycle === 'degraded' || node.lifecycle === 'stopped'))
+          || (node.telemetryState === 'online' && (
+            node.lifecycle === 'degraded'
+            || node.lifecycle === 'stopped'
+            || (node.telemetry !== null && !runtimeDataPlaneReady(node.telemetry))
+          ))
         ))
           ? [index === 0 ? siteAName : siteBName]
           : []
@@ -387,6 +396,7 @@ export function buildOperationalTopology(
         missingDirectionLabels: expectedDirections.filter((direction) => !activeDirections.has(direction.key)).map((direction) => direction.label),
         staleDirectionLabels: expectedDirections.filter((direction) => staleDirectionKeys.has(direction.key)).map((direction) => direction.label),
         failedEndpointLabels: rejectedNodes.length > 0 ? rejectedNodes.map((node) => node.name) : failedEndpointLabels,
+        degradedPathLabels,
       });
       return {
         id: peer.metadata.id,

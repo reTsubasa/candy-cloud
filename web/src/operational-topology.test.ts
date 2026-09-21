@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ControlResource, RuntimeActivationReadiness, RuntimeConfigurationStatus, RuntimeTelemetry } from './types';
+import type { ControlResource, RuntimeActivationReadiness, RuntimeConfigurationStatus, RuntimeStreamTelemetry, RuntimeTelemetry } from './types';
 import { buildOperationalTopology, emptyOperationalResources, type OperationalResources } from './operational-topology';
 
 function resource(id: string, kind: string, spec: Record<string, unknown>): ControlResource {
@@ -67,6 +67,18 @@ function configurationStatus(device: string): RuntimeConfigurationStatus {
     device_id: `device-${device}`, device_key_id: `key-${device}`,
     projection_publication_id: `projection-${device}`, state: 'active',
     error_code: null, reported_at: '2026-08-26T05:59:45Z', current: true,
+  };
+}
+
+function streamTelemetry(overrides: Partial<RuntimeStreamTelemetry> = {}): RuntimeStreamTelemetry {
+  return {
+    slot: 0, stream_id: 1, state: 'ready', generation: 1,
+    tx_packets: 0, rx_packets: 0, tx_bytes: 0, rx_bytes: 0, tx_frames: 0, rx_frames: 0,
+    active_flows: 0, queue_depth: 0, queue_limit: 100, queue_peak: 0,
+    last_ack_seq: null, ack_rtt_ms: null, rx_bps: null, tx_bps: null,
+    reset_count: 0, decode_errors: 0, high_watermark_hits: 0, low_watermark_hits: 0,
+    blocked_ms: 0, send_window_bytes: 64_000, last_tx_monotonic_ms: null,
+    last_rx_monotonic_ms: null, last_error_code: null, ...overrides,
   };
 }
 
@@ -154,6 +166,34 @@ describe('operational topology', () => {
     const snapshot = buildOperationalTopology(resources, ['wrt', 'us', 'hk'].map(configurationStatus), {}, '', telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
     expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)?.activeDirectionCount).toBe(1);
     expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.hkUs)?.status.tone).toBe('green');
+  });
+
+  it('keeps a backpressured stream reachable while surfacing link degradation', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    telemetry[0].transport_mode = 'stream_primary';
+    telemetry[0].paths[0] = {
+      ...telemetry[0].paths[0], transport_mode: 'stream_primary', ready_streams: 1, stream_count: 1,
+      streams: [streamTelemetry({ queue_depth: 90, queue_peak: 90, high_watermark_hits: 1 })],
+    };
+    const snapshot = buildOperationalTopology(resources, ['wrt', 'us', 'hk'].map(configurationStatus), {}, '', telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)).toMatchObject({
+      activeDirectionCount: 2,
+      status: { label: '线路性能降级', tone: 'orange' },
+    });
+  });
+
+  it('removes a faulted stream from active direction readiness', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    telemetry[0].transport_mode = 'stream_primary';
+    telemetry[0].paths[0] = {
+      ...telemetry[0].paths[0], transport_mode: 'stream_primary', ready_streams: 1, stream_count: 1,
+      streams: [streamTelemetry({ last_error_code: 'peer_stream_closed' })],
+    };
+    const snapshot = buildOperationalTopology(resources, ['wrt', 'us', 'hk'].map(configurationStatus), {}, '', telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)).toMatchObject({
+      activeDirectionCount: 1,
+      status: { code: 'one_way', tone: 'orange' },
+    });
   });
 
   it('joins resources and runtime receipts without inventing telemetry', () => {
