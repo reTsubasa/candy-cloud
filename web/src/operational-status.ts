@@ -45,6 +45,9 @@ export type NodeOperationalInput = {
   failOpenRequired: boolean;
   runtimeErrorCode: string | null;
   runtimeErrorDetail?: string | null;
+  dataPlaneReady?: boolean;
+  operationalAttention?: string | null;
+  operationalTransition?: boolean;
 };
 
 export type LinkOperationalInput = {
@@ -55,9 +58,10 @@ export type LinkOperationalInput = {
   policyUpdating: boolean;
   configurationFailed: boolean;
   endpointFailed: boolean;
-  missingDirectionLabels?: string[];
-  staleDirectionLabels?: string[];
-  failedEndpointLabels?: string[];
+  missingDirectionLabels?: readonly string[];
+  staleDirectionLabels?: readonly string[];
+  failedEndpointLabels?: readonly string[];
+  degradedPathLabels?: readonly string[];
 };
 
 export const NODE_STATUS_BOUNDARIES = [
@@ -100,6 +104,10 @@ export function nodeOperationalStatus(input: NodeOperationalInput): OperationalS
   if (input.lifecycle === 'starting' || input.lifecycle === 'unknown' || input.lifecycle === null) {
     return { code: 'starting', label: '正在启动', detail: 'Runtime 在线，但数据面尚未进入稳定运行状态', tone: 'orange' };
   }
+  if (input.operationalTransition) return { code: 'starting', label: '数据面自愈中', detail: input.operationalAttention ?? 'Runtime 正在恢复数据面一致性', tone: 'orange' };
+  if (input.telemetryState === 'online' && input.dataPlaneReady === false) {
+    return { code: 'runtime_fault', label: '数据面未就绪', detail: input.operationalAttention ?? 'Runtime 在线，但数据面尚未达到可转发条件', tone: 'red' };
+  }
   return { code: 'healthy', label: '在线', detail: '节点身份已认证，Runtime 正常上报；Lane 状态在线路中单独判定', tone: 'green' };
 }
 
@@ -109,6 +117,7 @@ export function linkOperationalStatus(input: LinkOperationalInput): OperationalS
   if (input.configurationFailed) return { code: 'configuration_failed', label: '配置失败', detail: input.failedEndpointLabels?.length ? `${input.failedEndpointLabels.join('、')}拒绝了当前互联策略` : '至少一个端点拒绝了当前互联策略', tone: 'red' };
   if (input.endpointFailed) return { code: 'endpoint_failed', label: '端点故障', detail: input.failedEndpointLabels?.length ? `${input.failedEndpointLabels.join('、')}没有可工作的节点` : '至少一端没有可工作的节点', tone: 'red' };
   if (input.policyUpdating) return { code: 'policy_updating', label: '策略更新中', detail: '互联配置正在发布或等待端点确认', tone: 'orange' };
+  if (input.degradedPathLabels?.length) return { code: 'telemetry_stale', label: '线路性能降级', detail: `${input.degradedPathLabels.join('、')} 出现 Stream 背压，线路仍可达但吞吐或时延可能受影响`, tone: 'orange' };
   if (input.activeDirectionCount === 2) return { code: 'active', label: '双向已认证', detail: '两端协商认证完成，双向路径遥测新鲜', tone: 'green' };
   if (input.activeDirectionCount === 1) return { code: 'one_way', label: '单向路径异常', detail: input.missingDirectionLabels?.length ? `${input.missingDirectionLabels.join('、')} 未建立；检查发起端策略、认证日志和公网 UDP 端点` : '只有一个方向完成路径认证，检查另一端策略、认证日志和公网 UDP 端点', tone: 'orange' };
   if (input.staleDirectionCount > 0) return { code: 'telemetry_stale', label: '链路状态过期', detail: input.staleDirectionLabels?.length ? `${input.staleDirectionLabels.join('、')} 的路径遥测已超过新鲜度窗口` : '曾收到路径状态，但已超过遥测新鲜度窗口', tone: 'orange' };

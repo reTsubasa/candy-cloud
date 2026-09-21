@@ -55,6 +55,13 @@ describe('operational status boundaries', () => {
     expect(nodeOperationalStatus(node({ telemetryState: 'unreported', lifecycle: null }))).toMatchObject({ code: 'registered', label: '未上线', tone: 'gray' });
   });
 
+  it('keeps Runtime startup and policy transitions orange', () => {
+    expect(nodeOperationalStatus(node({ lifecycle: 'starting', dataPlaneReady: false }))).toMatchObject({ code: 'starting', tone: 'orange' });
+    expect(nodeOperationalStatus(node({ applyState: 'pending', lifecycle: 'active', dataPlaneReady: false }))).toMatchObject({ code: 'policy_updating', tone: 'orange' });
+    expect(nodeOperationalStatus(node({ lifecycle: 'active', dataPlaneReady: false, operationalAttention: 'route_snapshot_mismatch' }))).toMatchObject({ code: 'runtime_fault', tone: 'red', detail: 'route_snapshot_mismatch' });
+    expect(nodeOperationalStatus(node({ lifecycle: 'active', dataPlaneReady: false, operationalTransition: true, operationalAttention: '数据面自愈中' }))).toMatchObject({ code: 'starting', tone: 'orange', detail: '数据面自愈中' });
+  });
+
   it('turns a link green only after fresh bidirectional authentication', () => {
     const configured = { configuredPathCount: 2, activeDirectionCount: 0, staleDirectionCount: 0, policyUpdating: false, configurationFailed: false, endpointFailed: false };
     expect(linkOperationalStatus(configured)).toMatchObject({ code: 'authenticating', label: '路径未建立', tone: 'orange' });
@@ -95,6 +102,7 @@ describe('operational status boundaries', () => {
     ['active', { activeDirectionCount: 2 }, 'green'],
     ['configuration_failed', { configurationFailed: true }, 'red'],
     ['endpoint_failed', { endpointFailed: true }, 'red'],
+    ['telemetry_stale', { activeDirectionCount: 2, degradedPathLabels: ['杭州 -> 美国'] }, 'orange'],
   ] as const)('classifies link state %s', (code, overrides, tone) => {
     expect(linkOperationalStatus({
       configuredPathCount: 2,
