@@ -22,6 +22,17 @@ export type PolicySummary = {
   defaultAction: string;
 };
 
+export function shortResourceId(value: string): string {
+  return `${value.slice(0, 8)}…${value.slice(-4)}`;
+}
+
+export function policyDisplayName(resource: ControlResource, summary: PolicySummary): string {
+  const configured = String(resource.resource.spec.name ?? '').trim();
+  if (configured) return configured;
+  const action = summary.rules[0]?.action ?? '本站出口';
+  return `${summary.segmentName} · ${action}`;
+}
+
 const trafficClassLabels: Record<string, string> = {
   interactive: '交互业务',
   realtime: '实时音视频',

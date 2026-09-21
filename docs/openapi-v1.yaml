@@ -1479,6 +1479,7 @@ components:
       additionalProperties: false
       required: [segment_id, generation, rules]
       properties:
+        name: { type: string, maxLength: 120, description: Human-readable operator label; omitted for legacy resources. }
         segment_id: { $ref: "#/components/schemas/Uuid" }
         generation: { $ref: "#/components/schemas/PositiveInteger" }
         enabled:

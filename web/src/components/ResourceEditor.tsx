@@ -23,6 +23,7 @@ import {
   buildResourceSpec,
   dnsRecordsForEditor,
   normalizeSpecForEditor,
+  policyDataPlaneChanged,
   policyRulesForEditor,
   validateResourceEditor,
   type Spec,
@@ -92,7 +93,7 @@ function displayName(item: ControlResource): string {
   if (overlay) return `${overlay.network}/${overlay.prefix_len}`;
   if (item.resource.kind === 'ATTACHMENT') return `网络接入 · ${String(spec.overlay_router_ipv4 ?? '待分配')}`;
   if (item.resource.kind === 'PEER') return '站点互联';
-  if (item.resource.kind === 'SERVICE_POLICY') return '流量策略';
+  if (item.resource.kind === 'SERVICE_POLICY') return String(spec.name || '未命名策略');
   return item.metadata.id;
 }
 
@@ -207,7 +208,9 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
     const current = resource?.resource ?? defaultSpec(definition.kind);
     const normalized = normalizeSpecForEditor(current);
     if (!resource && initialSpec) Object.assign(normalized, initialSpec);
-    if (definition.kind === 'SERVICE_POLICY') normalized.rules = policyRulesForEditor(normalized.rules);
+    if (definition.kind === 'SERVICE_POLICY') {
+      normalized.rules = policyRulesForEditor(normalized.rules);
+    }
     if (definition.kind === 'DNS_INTENT') normalized.records = dnsRecordsForEditor(normalized.records);
     setSpec(normalized);
     setError(null);
@@ -332,7 +335,9 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
         if (!Number.isSafeInteger(currentGeneration) || currentGeneration < 1 || currentGeneration >= Number.MAX_SAFE_INTEGER) {
           throw new Error('策略代次无效，无法安全发布新配置');
         }
-        document.spec.generation = currentGeneration + 1;
+        document.spec.generation = policyDataPlaneChanged(resource.resource, document)
+          ? currentGeneration + 1
+          : currentGeneration;
       }
       const response = resource
         ? await replaceResource(session.token, tenantId, definition.collection, resource.metadata.id, resource.metadata.revision, document)
@@ -519,6 +524,7 @@ function PolicyFields({ spec, update, updateList, removeListItem, references, re
   const egressOptions = segmentEgresses(spec.segment_id, references);
   return <>
     <FormIntro title="在一个网络分段内选择出口">策略只匹配所选分段内的站点与流量，不会跨分段生效。规则按优先级依次匹配；没有命中的流量继续使用来源站点的本地出口。</FormIntro>
+    <Form.Item label="策略名称"><Input value={getValue(spec, 'name')} maxLength={120} showWordLimit onChange={(value) => update('name', value)} placeholder="例如：杭州办公网经美国出口" /><FieldHelp>名称用于控制台展示和运维识别；留空时按生效网络和出口自动生成展示名称。系统内部仍使用不可变 UUID 精确引用策略。</FieldHelp></Form.Item>
     <Form.Item label="策略状态"><Switch checked={spec.enabled !== false} checkedText="启用" uncheckedText="禁用" onChange={(value) => update('enabled', value)} /><FieldHelp>禁用后保留策略配置，但所有规则立即从运行策略中移除；重新启用后按原规则热加载。</FieldHelp></Form.Item>
     <Form.Item label="生效网络" required>{referenceSelect('segments', spec.segment_id, (value) => {
       update('segment_id', value);

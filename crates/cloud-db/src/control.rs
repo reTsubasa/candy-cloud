@@ -1147,16 +1147,18 @@ impl ControlRepository {
         if let Some(segment_id) = segment_id.filter(|_| !deleting_segment) {
             affected_segments.insert(segment_id);
         }
-        let policy_only = policy_only_activation(mutation.resource.resource.kind());
-        for segment_id in affected_segments {
-            enqueue_generation(
-                &mut transaction,
-                metadata.tenant_id,
-                segment_id,
-                mutation.context.request_hash,
-                policy_only,
-            )
-            .await?;
+        if mutation_requires_publication(previous.as_ref(), &mutation.resource) {
+            let policy_only = policy_only_activation(mutation.resource.resource.kind());
+            for segment_id in affected_segments {
+                enqueue_generation(
+                    &mut transaction,
+                    metadata.tenant_id,
+                    segment_id,
+                    mutation.context.request_hash,
+                    policy_only,
+                )
+                .await?;
+            }
         }
         insert_resource_audit(&mut transaction, mutation, previous.as_ref()).await?;
         insert_idempotency(&mut transaction, mutation).await?;
@@ -1228,7 +1230,9 @@ fn resource_audit_name(resource: &ResourceSpecV1) -> Option<String> {
         ResourceSpecV1::Relay(value) => Some(value.name.clone()),
         ResourceSpecV1::PathCandidate(_) => None,
         ResourceSpecV1::Egress(value) => Some(value.name.clone()),
-        ResourceSpecV1::ServicePolicy(_) => None,
+        ResourceSpecV1::ServicePolicy(value) => {
+            (!value.name.is_empty()).then(|| value.name.clone())
+        }
         ResourceSpecV1::DnsIntent(value) => Some(value.zone.clone()),
         ResourceSpecV1::Attachment(_) | ResourceSpecV1::Peer(_) => None,
     }
@@ -2521,9 +2525,49 @@ fn policy_only_activation(kind: ResourceKind) -> bool {
     matches!(kind, ResourceKind::ServicePolicy)
 }
 
+fn mutation_requires_publication(
+    previous: Option<&ControlResourceV1>,
+    current: &ControlResourceV1,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    if previous.metadata.state != current.metadata.state {
+        return true;
+    }
+    match (&previous.resource, &current.resource) {
+        (ResourceSpecV1::ServicePolicy(previous), ResourceSpecV1::ServicePolicy(current)) => {
+            previous.segment_id != current.segment_id
+                || previous.generation != current.generation
+                || previous.enabled != current.enabled
+                || previous.rules != current.rules
+        }
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn service_policy_resource(name: &str) -> ControlResourceV1 {
+        ControlResourceV1 {
+            metadata: cloud_control::ResourceMetadataV1 {
+                schema_version: cloud_control::CONTROL_SCHEMA_V1,
+                id: Uuid::from_u128(1),
+                tenant_id: Uuid::from_u128(2),
+                revision: 1,
+                state: ResourceState::Active,
+            },
+            resource: ResourceSpecV1::ServicePolicy(cloud_control::ServicePolicyV1 {
+                segment_id: Uuid::from_u128(3),
+                generation: 1,
+                name: name.into(),
+                enabled: true,
+                rules: Vec::new(),
+            }),
+        }
+    }
 
     #[test]
     fn mutation_context_rejects_zero_hash_and_expired_replay_window() {
@@ -2606,6 +2650,29 @@ mod tests {
         ] {
             assert!(!policy_only_activation(kind));
         }
+    }
+
+    #[test]
+    fn policy_display_name_does_not_enqueue_a_data_plane_publication() {
+        let previous = service_policy_resource("杭州办公网经香港出口");
+        let mut renamed = previous.clone();
+        renamed.metadata.revision += 1;
+        if let ResourceSpecV1::ServicePolicy(policy) = &mut renamed.resource {
+            policy.name = "杭州办公网经美国出口".into();
+        }
+        assert!(!mutation_requires_publication(Some(&previous), &renamed));
+
+        if let ResourceSpecV1::ServicePolicy(policy) = &mut renamed.resource {
+            policy.enabled = false;
+            policy.generation += 1;
+        }
+        assert!(mutation_requires_publication(Some(&previous), &renamed));
+
+        let mut disabled = previous.clone();
+        disabled.metadata.revision += 1;
+        disabled.metadata.state = ResourceState::Disabled;
+        assert!(mutation_requires_publication(Some(&previous), &disabled));
+        assert!(mutation_requires_publication(None, &previous));
     }
 
     #[test]

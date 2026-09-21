@@ -253,12 +253,26 @@ pub struct ServicePolicyRuleV1 {
 pub struct ServicePolicyV1 {
     pub segment_id: Uuid,
     pub generation: u64,
+    /// Human-readable operator label. It is deliberately separate from the
+    /// immutable resource UUID used by the API and signed projections.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     #[serde(
         default = "default_enabled",
         skip_serializing_if = "enabled_is_default"
     )]
     pub enabled: bool,
     pub rules: Vec<ServicePolicyRuleV1>,
+}
+
+impl ServicePolicyV1 {
+    /// Hash only fields consumed by the data plane. Operator-facing metadata
+    /// must not invalidate signed policy references or trigger runtime reloads.
+    pub fn data_plane_hash(&self) -> Result<[u8; 32], ContractError> {
+        let mut canonical = self.clone();
+        canonical.name.clear();
+        ResourceSpecV1::ServicePolicy(canonical).document_hash()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -503,6 +517,9 @@ fn validate_service_policy(value: &ServicePolicyV1) -> Result<(), ContractError>
     require_ids([value.segment_id])?;
     if value.generation == 0 || value.rules.len() > MAX_POLICY_RULES {
         return Err(ContractError::InvalidServicePolicy);
+    }
+    if !value.name.is_empty() {
+        validate_display_text(&value.name, 120)?;
     }
     let mut ids = std::collections::HashSet::new();
     let mut priorities = std::collections::HashSet::new();
@@ -773,6 +790,7 @@ mod tests {
         let policy = ResourceSpecV1::ServicePolicy(ServicePolicyV1 {
             segment_id: id(1),
             generation: 1,
+            name: "杭州默认出口".into(),
             enabled: true,
             rules: vec![ServicePolicyRuleV1 {
                 id: id(2),
@@ -805,6 +823,7 @@ mod tests {
             ResourceSpecV1::ServicePolicy(ServicePolicyV1 {
                 segment_id: id(1),
                 generation: 1,
+                name: "杭州默认出口".into(),
                 enabled: true,
                 rules: vec![rule],
             })
@@ -828,6 +847,7 @@ mod tests {
         }))
         .unwrap();
         assert!(policy.enabled);
+        assert!(policy.name.is_empty());
         assert!(serde_json::to_value(&policy)
             .unwrap()
             .get("enabled")
@@ -838,6 +858,35 @@ mod tests {
             serde_json::to_value(&policy).unwrap()["enabled"],
             serde_json::Value::Bool(false)
         );
+    }
+
+    #[test]
+    fn policy_accepts_localized_operator_name() {
+        let policy = ResourceSpecV1::ServicePolicy(ServicePolicyV1 {
+            segment_id: id(1),
+            generation: 1,
+            name: "杭州办公网经美国出口".into(),
+            enabled: true,
+            rules: Vec::new(),
+        });
+        assert_eq!(policy.validate(), Ok(()));
+    }
+
+    #[test]
+    fn policy_display_name_is_excluded_from_data_plane_hash() {
+        let mut policy = ServicePolicyV1 {
+            segment_id: id(1),
+            generation: 1,
+            name: "杭州办公网经美国出口".into(),
+            enabled: true,
+            rules: Vec::new(),
+        };
+        let named_hash = policy.data_plane_hash().unwrap();
+        policy.name = "杭州办公网经香港出口".into();
+        assert_eq!(policy.data_plane_hash().unwrap(), named_hash);
+
+        policy.enabled = false;
+        assert_ne!(policy.data_plane_hash().unwrap(), named_hash);
     }
 
     #[test]

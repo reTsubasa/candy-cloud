@@ -107,6 +107,9 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
     spec.relay_id = editor.kind === 'RELAY' ? cleanText(editor.relay_id) : null;
   }
   if (kind === 'SERVICE_POLICY') {
+    const name = cleanText(editor.name);
+    if (name) spec.name = name;
+    else delete spec.name;
     spec.generation = positiveInteger(editor.generation);
     spec.enabled = editor.enabled !== false;
     spec.rules = ((editor.rules as Spec[]) ?? []).map((rule) => {
@@ -139,6 +142,16 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
     }));
   }
   return { kind, spec };
+}
+
+export function policyDataPlaneChanged(previous: ResourceSpec, current: ResourceSpec): boolean {
+  if (previous.kind !== 'SERVICE_POLICY' || current.kind !== 'SERVICE_POLICY') return true;
+  const effective = (spec: Spec) => ({
+    segment_id: spec.segment_id,
+    enabled: spec.enabled !== false,
+    rules: spec.rules ?? [],
+  });
+  return JSON.stringify(effective(previous.spec)) !== JSON.stringify(effective(current.spec));
 }
 
 function required(spec: Spec, fields: string[], errors: string[]) {
@@ -187,6 +200,7 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
   }
   if (kind === 'SERVICE_POLICY') {
     const rules = (spec.rules as Spec[]) ?? [];
+    if (Array.from(cleanText(spec.name)).length > 120) errors.push('name:length');
     if (!Number.isInteger(Number(spec.generation)) || Number(spec.generation) < 1) errors.push('generation:positive');
     const priorities = new Set<number>();
     rules.forEach((rule, index) => {

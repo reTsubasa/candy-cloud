@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildResourceSpec, normalizeSpecForEditor, parseCidr, policyRulesForEditor, validateResourceEditor } from './resource-form';
+import { buildResourceSpec, normalizeSpecForEditor, parseCidr, policyDataPlaneChanged, policyRulesForEditor, validateResourceEditor } from './resource-form';
 
 describe('resource form contract mapping', () => {
   it('accepts canonical IPv4 CIDR and rejects host addresses', () => {
@@ -45,13 +45,14 @@ describe('resource form contract mapping', () => {
   it('serializes structured policy rules and remote egress action', () => {
     vi.stubGlobal('crypto', { randomUUID: () => '019ff9c1-ac24-7303-a6c3-905768fe5905' });
     expect(buildResourceSpec('SERVICE_POLICY', {
+      name: ' 杭州办公网经香港出口 ',
       segment_id: '019ff9c1-ac24-7303-a6c3-905768fe5901', generation: 2,
       rules: [{ priority: 100, source_site_ids: [], destination_cidrs: ['10.20.0.0/16'], domains: ['app.corp.test'], traffic_classes: ['interactive'], action_type: 'REMOTE_EGRESS', egress_id: '019ff9c1-ac24-7303-a6c3-905768fe5902' }],
-    }).spec.rules).toEqual([{
+    })).toMatchObject({ spec: { name: '杭州办公网经香港出口', rules: [{
       id: '019ff9c1-ac24-7303-a6c3-905768fe5905', priority: 100, source_site_ids: [],
       destination_prefixes: [{ network: '10.20.0.0', prefix_len: 16 }], domains: ['app.corp.test'], traffic_classes: ['interactive'],
       action: { type: 'REMOTE_EGRESS', egress_id: '019ff9c1-ac24-7303-a6c3-905768fe5902' },
-    }]);
+    }] } });
     vi.unstubAllGlobals();
   });
 
@@ -95,6 +96,27 @@ describe('resource form contract mapping', () => {
       { priority: 100, destination_cidrs: [], domains: [], action_type: 'LOCAL_EGRESS' },
       { priority: 100, destination_cidrs: [], domains: [], action_type: 'LOCAL_EGRESS' },
     ] })).toContain('rules.1.priority:unique');
+  });
+
+  it('bounds the optional policy display name without rejecting legacy policies', () => {
+    const uuid = '019ff9c1-ac24-7303-a6c3-905768fe5901';
+    expect(validateResourceEditor('SERVICE_POLICY', { segment_id: uuid, generation: 1, rules: [] })).not.toContain('name:required');
+    expect(validateResourceEditor('SERVICE_POLICY', { name: '策'.repeat(121), segment_id: uuid, generation: 1, rules: [] })).toContain('name:length');
+  });
+
+  it('treats a policy rename as management-only metadata', () => {
+    const previous = {
+      kind: 'SERVICE_POLICY',
+      spec: { name: '旧名称', segment_id: 'segment', generation: 4, enabled: true, rules: [] },
+    };
+    expect(policyDataPlaneChanged(previous, {
+      kind: 'SERVICE_POLICY',
+      spec: { name: '新名称', segment_id: 'segment', generation: 4, enabled: true, rules: [] },
+    })).toBe(false);
+    expect(policyDataPlaneChanged(previous, {
+      kind: 'SERVICE_POLICY',
+      spec: { name: '旧名称', segment_id: 'segment', generation: 4, enabled: false, rules: [] },
+    })).toBe(true);
   });
 
   it('requires a transport node and rejects malformed DNS address values', () => {

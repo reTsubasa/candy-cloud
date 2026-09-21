@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ControlResource } from './types';
-import { compactPolicyValues, summarizePolicy, type PolicyReferences } from './policy-summary';
+import { compactPolicyValues, policyDisplayName, shortResourceId, summarizePolicy, type PolicyReferences } from './policy-summary';
 
 const references: PolicyReferences = {
   segments: { 'segment-id': '办公网络' },
@@ -79,5 +79,19 @@ describe('policy summary', () => {
 
   it('compacts long match lists without hiding their total size', () => {
     expect(compactPolicyValues(['杭州', '香港', '美国'])).toBe('杭州 · 香港 等 3 项');
+  });
+
+  it('uses an operator name and falls back to a readable network/action label', () => {
+    const named = policy({ name: '杭州办公网经香港出口', segment_id: 'segment-id', rules: [] });
+    expect(policyDisplayName(named, summarizePolicy(named, references))).toBe('杭州办公网经香港出口');
+
+    const legacy = policy({ segment_id: 'segment-id', rules: [{
+      priority: 100, action: { type: 'REMOTE_EGRESS', egress_id: 'egress-hk' },
+    }] });
+    expect(policyDisplayName(legacy, summarizePolicy(legacy, references))).toBe('办公网络 · 香港互联网出口');
+  });
+
+  it('keeps the UUID copyable while presenting a compact technical identifier', () => {
+    expect(shortResourceId('02f87c42-4517-5c7d-b5d0-56dc5ef0cd19')).toBe('02f87c42…cd19');
   });
 });

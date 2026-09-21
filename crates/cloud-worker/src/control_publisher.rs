@@ -7,7 +7,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 use cloud_control::{
     runtime_path_candidate_id, PathCandidateKindV1, PeerPathPolicyV1, PolicyActionV1,
-    ResourceSpecV1, ResourceState, ServicePolicyRuleV1,
+    ResourceSpecV1, ResourceState, ServicePolicyRuleV1, ServicePolicyV1,
 };
 use cloud_core_module::CoreModule;
 use cloud_db::{
@@ -64,6 +64,16 @@ struct EffectiveRemoteEgressRule {
     source_site_id: Uuid,
     destination: Ipv4PrefixV1,
     egress_id: Uuid,
+}
+
+fn service_policy_ref(resource_id: Uuid, policy: &ServicePolicyV1) -> Result<PolicyRefV1> {
+    Ok(PolicyRefV1 {
+        policy_id: PolicyId(resource_id.into_bytes()),
+        generation: policy.generation,
+        content_hash: policy
+            .data_plane_hash()
+            .context("service policy hash failed")?,
+    })
 }
 
 impl InputReadinessError {
@@ -160,15 +170,7 @@ impl ControlRoutePublisher {
                         && policy.enabled
                         && policy.segment_id == snapshot.segment_id =>
                 {
-                    let content_hash = resource
-                        .resource
-                        .document_hash()
-                        .context("service policy hash failed")?;
-                    let policy_ref = PolicyRefV1 {
-                        policy_id: PolicyId(resource.metadata.id.into_bytes()),
-                        generation: resource.metadata.revision,
-                        content_hash,
-                    };
+                    let policy_ref = service_policy_ref(resource.metadata.id, policy)?;
                     for rule in &policy.rules {
                         if matches!(rule.action, PolicyActionV1::RemoteEgress(_))
                             && rule.destination_prefixes.is_empty()
@@ -1021,6 +1023,26 @@ mod tests {
             generation: 1,
             content_hash: [seed; 32],
         }
+    }
+
+    #[test]
+    fn service_policy_reference_ignores_operator_name_and_uses_policy_generation() {
+        let resource_id = Uuid::from_bytes([9; 16]);
+        let mut policy = ServicePolicyV1 {
+            segment_id: Uuid::from_bytes([1; 16]),
+            generation: 7,
+            name: "旧名称".into(),
+            enabled: true,
+            rules: Vec::new(),
+        };
+        let previous = service_policy_ref(resource_id, &policy).unwrap();
+        policy.name = "新的可读名称".into();
+        let renamed = service_policy_ref(resource_id, &policy).unwrap();
+        assert_eq!(renamed, previous);
+        assert_eq!(renamed.generation, 7);
+
+        policy.generation = 8;
+        assert_ne!(service_policy_ref(resource_id, &policy).unwrap(), previous);
     }
 
     fn policy_rule(

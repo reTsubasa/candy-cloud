@@ -22,7 +22,7 @@ import type { OperationalStatus } from '../operational-status';
 import { pathDefinition, resourceDefinitions } from '../resource-definitions';
 import type { ControlResource, ResourceDefinition, ResourceReference, RuntimeActivationReadiness, Session } from '../types';
 import { attachmentTableValues } from '../resource-table';
-import { compactPolicyValues, summarizePolicy, type PolicyReferences } from '../policy-summary';
+import { compactPolicyValues, policyDisplayName, shortResourceId, summarizePolicy, type PolicyReferences } from '../policy-summary';
 import { latestNodeUpgradeJobs, nodeUpgradePresentation } from '../node-upgrade';
 import { ResourceEditor } from './ResourceEditor';
 import { ActivationStatusBar } from './ActivationStatusBar';
@@ -130,7 +130,7 @@ function resourceName(resource: ControlResource, relatedNames: Record<string, st
   if (prefix) return `${text(prefix.network)}/${text(prefix.prefix_len)}`;
   if (resource.resource.kind === 'ATTACHMENT') return attachmentTableValues(resource, relatedNames).nodeName;
   if (resource.resource.kind === 'PEER') return `${relatedNames[String(spec.site_a_id)] ?? '站点 A'} ↔ ${relatedNames[String(spec.site_b_id)] ?? '站点 B'}`;
-  if (resource.resource.kind === 'SERVICE_POLICY') return '流量策略';
+  if (resource.resource.kind === 'SERVICE_POLICY') return text(spec.name ?? '未命名策略');
   return text(spec.display_name ?? spec.name ?? spec.zone ?? spec.endpoint ?? resource.metadata.id);
 }
 
@@ -467,9 +467,15 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
   };
   const policyColumns = [
     {
-      title: '策略 ID',
-      width: 300,
-      render: (_: unknown, record: ControlResource) => <Typography.Text code copyable={{ text: record.metadata.id }}>{record.metadata.id}</Typography.Text>,
+      title: '策略',
+      width: 280,
+      render: (_: unknown, record: ControlResource) => {
+        const summary = summarizePolicy(record, policyReferences);
+        return <div className="resource-primary">
+          <Typography.Text bold>{policyDisplayName(record, summary)}</Typography.Text>
+          <Typography.Text type="secondary" code copyable={{ text: record.metadata.id }}>ID {shortResourceId(record.metadata.id)}</Typography.Text>
+        </div>;
+      },
     },
     {
       title: '生效网络',
