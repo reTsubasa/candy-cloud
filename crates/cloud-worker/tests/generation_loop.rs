@@ -96,6 +96,7 @@ fn job() -> GenerationJob {
         tenant_id: Uuid::new_v4(),
         segment_id: Uuid::new_v4(),
         desired_revision: 4,
+        policy_only: false,
         attempt_count: 2,
         lease_owner: "worker-a".into(),
         lease_until: Utc::now() + chrono::Duration::minutes(1),

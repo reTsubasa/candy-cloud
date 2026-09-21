@@ -551,6 +551,7 @@ impl BuiltRoutePublication {
             expected_previous_generation,
             expected_previous_hash: self.segment.source.previous_hash,
             generation,
+            policy_only: false,
             expires_at: self.segment.source.expires_at,
             stale_until: self.segment.source.stale_until,
             snapshot: SignedObjectWrite {

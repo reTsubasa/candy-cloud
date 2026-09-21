@@ -122,6 +122,16 @@ fn runtime_generations_distinguish_tunnel_from_policy_updates() {
 }
 
 #[test]
+fn policy_only_publications_have_an_explicit_activation_mode() {
+    let migration = include_str!("../migrations/0048_policy_only_activation.sql");
+    assert!(migration.contains("segment_generation_jobs"));
+    assert!(migration.contains("segment_route_publications"));
+    assert!(migration.contains("runtime_configuration_rollouts"));
+    assert!(migration.contains("ENUM('TUNNEL','POLICY_ONLY')"));
+    assert!(migration.contains("DEFAULT 'TUNNEL'"));
+}
+
+#[test]
 fn upgrade_failure_detail_is_bounded_and_failed_only() {
     let migration = include_str!("../migrations/0044_upgrade_error_detail.sql");
     assert!(migration.contains("ADD COLUMN error_detail VARCHAR(512) NULL"));

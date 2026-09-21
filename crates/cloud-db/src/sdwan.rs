@@ -1423,6 +1423,7 @@ pub struct SegmentPublicationWrite {
     pub expected_previous_generation: u64,
     pub expected_previous_hash: [u8; 32],
     pub generation: u64,
+    pub policy_only: bool,
     pub expires_at: u64,
     pub stale_until: u64,
     pub snapshot: SignedObjectWrite,
@@ -1600,6 +1601,8 @@ pub enum SdwanError {
     InvalidContentHash,
     #[error("segment was not found in the requested tenant")]
     SegmentNotFound,
+    #[error("the preceding Runtime activation has not completed")]
+    RolloutPending,
     #[error("database error: {0}")]
     Database(String),
 }
@@ -2517,24 +2520,39 @@ impl SdwanRepository {
             transaction.rollback().await?;
             return Err(SdwanError::GenerationGap);
         }
+        if write.policy_only {
+            let previous_rollout: Option<String> = sqlx::query_scalar(
+                "SELECT state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? FOR UPDATE",
+            )
+            .bind(write.tenant_id)
+            .bind(write.segment_id)
+            .bind(current_generation)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if previous_rollout.as_deref() != Some("COMPLETE") {
+                transaction.rollback().await?;
+                return Err(SdwanError::RolloutPending);
+            }
+        }
 
         validate_projection_ownership(&mut transaction, write).await?;
         validate_projection_heads(&mut transaction, write).await?;
 
         sqlx::query(
-            "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'WORKER', ?, 'SDWAN_SEGMENT_ROUTES_PUBLISHED', 'SEGMENT', ?, JSON_OBJECT('generation', ?, 'projection_count', ?, 'expansion_count', ?))",
+            "INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, 'WORKER', ?, 'SDWAN_SEGMENT_ROUTES_PUBLISHED', 'SEGMENT', ?, JSON_OBJECT('generation', ?, 'activation_mode', ?, 'projection_count', ?, 'expansion_count', ?))",
         )
         .bind(write.audit_event_id)
         .bind(write.tenant_id)
         .bind(&write.actor_id)
         .bind(write.segment_id.to_string())
         .bind(write.generation)
+        .bind(if write.policy_only { "POLICY_ONLY" } else { "TUNNEL" })
         .bind(write.projections.len() as u64)
         .bind(write.expansions.len() as u64)
         .execute(&mut *transaction)
         .await?;
         sqlx::query(
-            "INSERT INTO segment_route_publications (id, tenant_id, segment_id, expected_previous_generation, expected_previous_hash, generation, content_hash, signed_envelope, expires_at, stale_until, audit_event_id, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO segment_route_publications (id, tenant_id, segment_id, expected_previous_generation, expected_previous_hash, generation, activation_mode, content_hash, signed_envelope, expires_at, stale_until, audit_event_id, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(write.publication_id)
         .bind(write.tenant_id)
@@ -2542,6 +2560,7 @@ impl SdwanRepository {
         .bind(write.expected_previous_generation)
         .bind(write.expected_previous_hash.as_slice())
         .bind(write.generation)
+        .bind(if write.policy_only { "POLICY_ONLY" } else { "TUNNEL" })
         .bind(write.snapshot.content_hash.as_slice())
         .bind(&write.snapshot.signed_envelope)
         .bind(write.expires_at)
@@ -2569,13 +2588,15 @@ impl SdwanRepository {
             u32::try_from(write.projections.len()).map_err(|_| SdwanError::InvalidScope)?;
         if member_count > 0 {
             sqlx::query(
-                "INSERT INTO runtime_configuration_rollouts (tenant_id, segment_id, segment_generation, allowed_ordinal, member_count, state) VALUES (?, ?, ?, ?, ?, 'PREPARING')",
+                "INSERT INTO runtime_configuration_rollouts (tenant_id, segment_id, segment_generation, allowed_ordinal, member_count, activation_mode, state) VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(write.tenant_id)
             .bind(write.segment_id)
             .bind(write.generation)
             .bind(member_count)
             .bind(member_count)
+            .bind(if write.policy_only { "POLICY_ONLY" } else { "TUNNEL" })
+            .bind(if write.policy_only { "COMMITTING" } else { "PREPARING" })
             .execute(&mut *transaction)
             .await?;
         }
@@ -2637,16 +2658,21 @@ async fn load_current_runtime_configuration(
     }
 
     let rollout_query = format!(
-        "SELECT seg.current_generation, member.rollout_ordinal, rollout.allowed_ordinal, rollout.state FROM segment_attachments a JOIN tenants t ON t.id = a.tenant_id AND t.status = 'ACTIVE' JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = seg.current_generation AND p.segment_content_hash = seg.current_content_hash JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = p.tenant_id AND rollout.segment_id = p.segment_id AND rollout.segment_generation = p.segment_generation WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY'){suffix}"
+        "SELECT seg.current_generation, member.rollout_ordinal, rollout.allowed_ordinal, rollout.activation_mode, rollout.state FROM segment_attachments a JOIN tenants t ON t.id = a.tenant_id AND t.status = 'ACTIVE' JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = seg.current_generation AND p.segment_content_hash = seg.current_content_hash JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = p.tenant_id AND rollout.segment_id = p.segment_id AND rollout.segment_generation = p.segment_generation WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY'){suffix}"
     );
-    let rollout_position: Option<(u64, u32, u32, String)> = sqlx::query_as(&rollout_query)
+    let rollout_position: Option<(u64, u32, u32, String, String)> = sqlx::query_as(&rollout_query)
         .bind(lookup.tenant_id)
         .bind(lookup.device_id)
         .bind(lookup.device_key_id)
         .fetch_optional(&mut **transaction)
         .await?;
-    let Some((current_generation, rollout_ordinal, allowed_ordinal, rollout_state)) =
-        rollout_position
+    let Some((
+        current_generation,
+        rollout_ordinal,
+        allowed_ordinal,
+        activation_mode,
+        rollout_state,
+    )) = rollout_position
     else {
         return Err(RuntimeConfigurationError::MissingCurrentProjection);
     };
@@ -2820,7 +2846,9 @@ async fn load_current_runtime_configuration(
         signed_projection_envelope: row.try_get("signed_projection_envelope")?,
         peer_projection_catalog,
         compatibility_generations,
-        activation_phase: if matches!(rollout_state.as_str(), "COMMITTING" | "COMPLETE") {
+        activation_phase: if activation_mode == "POLICY_ONLY"
+            || matches!(rollout_state.as_str(), "COMMITTING" | "COMPLETE")
+        {
             RuntimeConfigurationActivationPhase::Commit
         } else {
             RuntimeConfigurationActivationPhase::Prepare
@@ -2924,7 +2952,7 @@ async fn publication_matches(
     write: &SegmentPublicationWrite,
 ) -> Result<bool, sqlx::Error> {
     let row = sqlx::query(
-            "SELECT tenant_id, segment_id, expected_previous_generation, expected_previous_hash, generation, content_hash, signed_envelope, expires_at, stale_until, audit_event_id, actor_id FROM segment_route_publications WHERE id = ? FOR SHARE",
+            "SELECT tenant_id, segment_id, expected_previous_generation, expected_previous_hash, generation, activation_mode, content_hash, signed_envelope, expires_at, stale_until, audit_event_id, actor_id FROM segment_route_publications WHERE id = ? FOR SHARE",
     )
     .bind(write.publication_id)
     .fetch_one(&mut **transaction)
@@ -2938,6 +2966,12 @@ async fn publication_matches(
             .as_slice()
             != write.expected_previous_hash
         || row.try_get::<u64, _>("generation")? != write.generation
+        || row.try_get::<String, _>("activation_mode")?
+            != if write.policy_only {
+                "POLICY_ONLY"
+            } else {
+                "TUNNEL"
+            }
         || row.try_get::<Vec<u8>, _>("content_hash")?.as_slice() != write.snapshot.content_hash
         || row.try_get::<Vec<u8>, _>("signed_envelope")? != write.snapshot.signed_envelope
         || row.try_get::<u64, _>("expires_at")? != write.expires_at

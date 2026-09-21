@@ -203,6 +203,7 @@ pub struct SegmentControlSnapshot {
     pub tenant_id: Uuid,
     pub segment_id: Uuid,
     pub desired_revision: u64,
+    pub policy_only: bool,
     pub resources: Vec<ControlResourceV1>,
     pub transport_bindings: HashMap<Uuid, Vec<RuntimeTransportBinding>>,
 }
@@ -610,17 +611,23 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let mut transaction = self.pool.begin().await?;
-        let current_revision: u64 = sqlx::query_scalar(
-            "SELECT desired_revision FROM segment_generation_heads WHERE tenant_id = ? AND segment_id = ? FOR SHARE",
+        let job: (u64, String) = sqlx::query_as(
+            "SELECT head.desired_revision, job.activation_mode FROM segment_generation_heads head JOIN segment_generation_jobs job ON job.tenant_id = head.tenant_id AND job.segment_id = head.segment_id AND job.desired_revision = ? WHERE head.tenant_id = ? AND head.segment_id = ? FOR SHARE",
         )
+        .bind(desired_revision)
         .bind(tenant_id)
         .bind(segment_id)
         .fetch_optional(&mut *transaction)
         .await?
         .ok_or(ControlStoreError::NotFound)?;
-        if current_revision < desired_revision {
+        if job.0 < desired_revision {
             return Err(ControlStoreError::InvalidTransition);
         }
+        let policy_only = match job.1.as_str() {
+            "TUNNEL" => false,
+            "POLICY_ONLY" => true,
+            _ => return Err(ControlStoreError::InvalidTransition),
+        };
         let rows = sqlx::query(
             "WITH RECURSIVE graph (resource_kind, resource_id) AS (SELECT resource_kind, id FROM sdwan_control_resources WHERE tenant_id = ? AND state = 'ACTIVE' AND ((resource_kind = 'SEGMENT' AND id = ?) OR segment_id = ?) UNION DISTINCT SELECT refs.target_kind, refs.target_id FROM sdwan_control_resource_references refs JOIN graph current ON refs.tenant_id = ? AND refs.source_kind = current.resource_kind AND refs.source_id = current.resource_id) SELECT DISTINCT resources.resource_kind, resources.id, CAST(resources.document_json AS CHAR) AS document_json FROM graph JOIN sdwan_control_resources resources ON resources.tenant_id = ? AND resources.resource_kind = graph.resource_kind AND resources.id = graph.resource_id WHERE resources.state = 'ACTIVE' ORDER BY resources.resource_kind, resources.id",
         )
@@ -657,6 +664,7 @@ impl ControlRepository {
             tenant_id,
             segment_id,
             desired_revision,
+            policy_only,
             resources,
             transport_bindings,
         })
@@ -860,7 +868,8 @@ impl ControlRepository {
         )
         .await?
         {
-            enqueue_generation(&mut transaction, tenant_id, segment_id, request_hash).await?;
+            enqueue_generation(&mut transaction, tenant_id, segment_id, request_hash, false)
+                .await?;
         }
         transaction.commit().await?;
         Ok(response)
@@ -929,7 +938,8 @@ impl ControlRepository {
         )
         .await?
         {
-            enqueue_generation(&mut transaction, tenant_id, segment_id, request_hash).await?;
+            enqueue_generation(&mut transaction, tenant_id, segment_id, request_hash, false)
+                .await?;
         }
         transaction.commit().await?;
         Ok(())
@@ -1137,12 +1147,14 @@ impl ControlRepository {
         if let Some(segment_id) = segment_id.filter(|_| !deleting_segment) {
             affected_segments.insert(segment_id);
         }
+        let policy_only = policy_only_activation(mutation.resource.resource.kind());
         for segment_id in affected_segments {
             enqueue_generation(
                 &mut transaction,
                 metadata.tenant_id,
                 segment_id,
                 mutation.context.request_hash,
+                policy_only,
             )
             .await?;
         }
@@ -2038,6 +2050,7 @@ async fn enqueue_generation(
     tenant_id: Uuid,
     segment_id: Uuid,
     idempotency_hash: [u8; 32],
+    policy_only: bool,
 ) -> Result<(), ControlStoreError> {
     sqlx::query(
         "INSERT IGNORE INTO segment_generation_heads (tenant_id, segment_id, desired_revision) VALUES (?, ?, 0)",
@@ -2083,13 +2096,14 @@ async fn enqueue_generation(
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO segment_generation_jobs (id, tenant_id, segment_id, desired_revision, idempotency_hash) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO segment_generation_jobs (id, tenant_id, segment_id, desired_revision, idempotency_hash, activation_mode) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(Uuid::now_v7())
     .bind(tenant_id)
     .bind(segment_id)
     .bind(desired)
     .bind(idempotency_hash.as_slice())
+    .bind(if policy_only { "POLICY_ONLY" } else { "TUNNEL" })
     .execute(&mut **transaction)
     .await?;
     Ok(())
@@ -2110,6 +2124,7 @@ pub struct GenerationJob {
     pub tenant_id: Uuid,
     pub segment_id: Uuid,
     pub desired_revision: u64,
+    pub policy_only: bool,
     pub attempt_count: u32,
     pub lease_owner: String,
     pub lease_until: DateTime<Utc>,
@@ -2230,7 +2245,7 @@ impl GenerationJobRepository {
             now + chrono::Duration::from_std(ttl).map_err(|_| ControlStoreError::InvalidRequest)?;
         let mut transaction = self.pool.begin().await?;
         let row = sqlx::query(
-            "SELECT candidate.id, candidate.tenant_id, candidate.segment_id, candidate.desired_revision, candidate.attempt_count FROM segment_generation_jobs candidate WHERE ((candidate.state IN ('PENDING','RETRY') AND candidate.next_attempt_at <= ?) OR (candidate.state = 'LEASED' AND candidate.lease_until <= ?)) AND NOT EXISTS (SELECT 1 FROM segment_generation_jobs earlier WHERE earlier.tenant_id = candidate.tenant_id AND earlier.segment_id = candidate.segment_id AND earlier.desired_revision < candidate.desired_revision AND earlier.state NOT IN ('PUBLISHED','PERMANENT_FAILURE')) ORDER BY candidate.next_attempt_at, candidate.created_at, candidate.id LIMIT 1 FOR UPDATE SKIP LOCKED",
+            "SELECT candidate.id, candidate.tenant_id, candidate.segment_id, candidate.desired_revision, candidate.activation_mode, candidate.attempt_count FROM segment_generation_jobs candidate WHERE ((candidate.state IN ('PENDING','RETRY') AND candidate.next_attempt_at <= ?) OR (candidate.state = 'LEASED' AND candidate.lease_until <= ?)) AND NOT EXISTS (SELECT 1 FROM segment_generation_jobs earlier WHERE earlier.tenant_id = candidate.tenant_id AND earlier.segment_id = candidate.segment_id AND earlier.desired_revision < candidate.desired_revision AND earlier.state NOT IN ('PUBLISHED','PERMANENT_FAILURE')) ORDER BY candidate.next_attempt_at, candidate.created_at, candidate.id LIMIT 1 FOR UPDATE SKIP LOCKED",
         )
         .bind(now)
         .bind(now)
@@ -2258,11 +2273,18 @@ impl GenerationJobRepository {
             transaction.rollback().await?;
             return Err(ControlStoreError::LeaseLost);
         }
+        let activation_mode: String = row.try_get("activation_mode")?;
+        let policy_only = match activation_mode.as_str() {
+            "TUNNEL" => false,
+            "POLICY_ONLY" => true,
+            _ => return Err(ControlStoreError::InvalidTransition),
+        };
         let job = GenerationJob {
             id,
             tenant_id: row.try_get("tenant_id")?,
             segment_id: row.try_get("segment_id")?,
             desired_revision: row.try_get("desired_revision")?,
+            policy_only,
             attempt_count: next_attempt,
             lease_owner: owner.to_owned(),
             lease_until,
@@ -2495,6 +2517,10 @@ fn resource_state(state: ResourceState) -> &'static str {
     }
 }
 
+fn policy_only_activation(kind: ResourceKind) -> bool {
+    matches!(kind, ResourceKind::ServicePolicy)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2565,6 +2591,21 @@ mod tests {
             Some(&published),
             Some(&(5, vec![8; 32]))
         ));
+    }
+
+    #[test]
+    fn only_service_policy_mutations_bypass_the_tunnel_barrier() {
+        assert!(policy_only_activation(ResourceKind::ServicePolicy));
+        for kind in [
+            ResourceKind::Segment,
+            ResourceKind::Attachment,
+            ResourceKind::Prefix,
+            ResourceKind::Peer,
+            ResourceKind::PathCandidate,
+            ResourceKind::Egress,
+        ] {
+            assert!(!policy_only_activation(kind));
+        }
     }
 
     #[test]

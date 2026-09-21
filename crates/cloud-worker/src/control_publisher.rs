@@ -927,11 +927,12 @@ impl SegmentGenerationPublisher for ControlRoutePublisher {
             }
         })?;
         let content_hash = built.segment.content_hash;
-        let write = built
+        let mut write = built
             .database_write()
             .map_err(|error| PublicationFailure::Permanent {
                 code: format!("ROUTE_DB_WRITE_{error}"),
             })?;
+        write.policy_only = snapshot.policy_only;
         self.routes
             .publish(&write)
             .await
@@ -958,10 +959,11 @@ fn classify_publish_error(error: SdwanError) -> PublicationFailure {
         SdwanError::DivergentReplay => "ROUTE_DB_DIVERGENT_REPLAY",
         SdwanError::InvalidContentHash => "ROUTE_DB_INVALID_CONTENT_HASH",
         SdwanError::SegmentNotFound => "ROUTE_DB_SEGMENT_NOT_FOUND",
+        SdwanError::RolloutPending => "ROUTE_DB_ROLLOUT_PENDING",
         SdwanError::Database(_) => "ROUTE_DB_DATABASE",
     };
     match error {
-        SdwanError::Database(_) => PublicationFailure::Retryable {
+        SdwanError::Database(_) | SdwanError::RolloutPending => PublicationFailure::Retryable {
             code: code.into(),
             retry_after: std::time::Duration::from_secs(5),
         },
@@ -1328,6 +1330,17 @@ mod tests {
         assert!(matches!(
             failure,
             PublicationFailure::Retryable { code, .. } if code == "ROUTE_DB_DATABASE"
+        ));
+    }
+
+    #[test]
+    fn unfinished_predecessor_rollouts_retry_policy_publication() {
+        let failure = classify_publish_error(SdwanError::RolloutPending);
+        assert!(matches!(
+            failure,
+            PublicationFailure::Retryable { code, retry_after }
+                if code == "ROUTE_DB_ROLLOUT_PENDING"
+                    && retry_after == std::time::Duration::from_secs(5)
         ));
     }
 

@@ -33,6 +33,7 @@ fn publication(tenant_id: Uuid, segment_id: Uuid) -> SegmentPublicationWrite {
         expected_previous_generation: 0,
         expected_previous_hash: [0; 32],
         generation: 1,
+        policy_only: false,
         expires_at: 3_600,
         stale_until: 7_200,
         snapshot: snapshot.clone(),
@@ -1014,6 +1015,35 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     .await
     .unwrap();
     assert_eq!(rollout, (2, 2, "PREPARING".into()));
+    let mut policy = second.clone();
+    policy.publication_id = Uuid::new_v4();
+    policy.audit_event_id = Uuid::new_v4();
+    policy.expected_previous_generation = 2;
+    policy.expected_previous_hash = [17_u8; 32];
+    policy.generation = 3;
+    policy.policy_only = true;
+    policy.snapshot = signed(47);
+    policy.projections[0].publication_id = Uuid::new_v4();
+    policy.projections[0].segment_generation = 3;
+    policy.projections[0].segment_content_hash = policy.snapshot.content_hash;
+    policy.projections[0].projection_generation = 3;
+    policy.projections[0].previous_hash = [18_u8; 32];
+    policy.projections[0].object = signed(48);
+    policy.projections[1].publication_id = Uuid::new_v4();
+    policy.projections[1].segment_generation = 3;
+    policy.projections[1].segment_content_hash = policy.snapshot.content_hash;
+    policy.projections[1].projection_generation = 3;
+    policy.projections[1].previous_hash = [20_u8; 32];
+    policy.projections[1].object = signed(50);
+    policy.expansions[0].publication_id = Uuid::new_v4();
+    policy.expansions[0].generation = 3;
+    policy.expansions[0].segment_generation = 3;
+    policy.expansions[0].segment_content_hash = policy.snapshot.content_hash;
+    policy.expansions[0].object = signed(49);
+    assert_eq!(
+        repository.publish(&policy).await,
+        Err(SdwanError::RolloutPending)
+    );
     let RuntimeConfigurationState::Current(second_runtime) = repository
         .current_runtime_configuration(&runtime_lookup)
         .await
@@ -1489,6 +1519,34 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         repository.publish(&divergent_catalog).await,
         Err(SdwanError::DivergentReplay)
     ));
+
+    assert_eq!(
+        repository.publish(&policy).await.unwrap(),
+        PublicationOutcome::Published
+    );
+    let policy_rollout: (String, String) = sqlx::query_as(
+        "SELECT activation_mode, state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = 3",
+    )
+    .bind(tenant_id)
+    .bind(segment_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(policy_rollout, ("POLICY_ONLY".into(), "COMMITTING".into()));
+    for lookup in [&runtime_lookup, &peer_runtime_lookup] {
+        let RuntimeConfigurationState::Current(policy_runtime) = repository
+            .current_runtime_configuration(lookup)
+            .await
+            .unwrap()
+        else {
+            panic!("expected policy-only Runtime configuration");
+        };
+        assert_eq!(policy_runtime.segment_generation, 3);
+        assert_eq!(
+            policy_runtime.activation_phase,
+            RuntimeConfigurationActivationPhase::Commit
+        );
+    }
 
     let second_segment_id = Uuid::new_v4();
     sqlx::query("INSERT INTO segments (id, tenant_id, name, hub_node_pool_id, overlay_network, overlay_prefix_len) VALUES (?, ?, ?, ?, ?, ?)")
