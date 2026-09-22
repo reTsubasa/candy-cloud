@@ -292,9 +292,9 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
   const hasOverflowNodes = snapshot.sites.some((site) => site.nodes.length > maximumNodeRows);
   const siteCardHeight = 126 + maximumNodeRows * 18 + (hasOverflowNodes ? 18 : 0);
   const siteBottom = siteY + siteCardHeight;
-  const linkLaneGap = 62;
+  const linkLaneGap = 56;
   const linkLaneCount = Math.min(snapshot.links.length, 8);
-  const height = siteBottom + 42 + linkLaneCount * linkLaneGap + 12;
+  const height = siteBottom + 54 + linkLaneCount * linkLaneGap + 12;
   const siteX = (index: number) => siteCount <= 1 ? center : 100 + index * ((width - 200) / (siteCount - 1));
   const siteById = Object.fromEntries(snapshot.sites.map((site, index) => [site.id, { ...site, x: siteX(index) }]));
   const allSitesOffline = snapshot.sites.length > 0 && snapshot.sites.every((site) => site.status.tone === 'gray');
@@ -339,35 +339,36 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const left = source.x < target.x ? source : target;
         const right = source.x < target.x ? target : source;
         const lane = Math.min(linkIndex, 7);
-        const y = siteBottom + 28 + lane * linkLaneGap;
+        // Keep the first link below the site cards; subsequent links use fixed
+        // lanes so labels never collide when several peers share the canvas.
+        const y = siteBottom + 44 + lane * linkLaneGap;
         const tone = toneClass(link.status.tone);
         const telemetrySummary = link.status.code === 'active' ? linkTelemetrySummary(link) : null;
         const pathDetail = telemetrySummary ? ` · ${telemetrySummary}` : '';
-        const labelWidth = telemetrySummary ? 388 : 288;
-        const labelHeight = telemetrySummary ? 58 : 36;
+        const labelWidth = telemetrySummary ? 326 : 236;
+        const labelHeight = telemetrySummary ? 48 : 32;
         const labelCenter = (left.x + right.x) / 2;
-        const statusTagWidth = Math.max(78, link.status.label.length * 11 + 24);
-        const kindTagWidth = Math.max(52, link.kindLabel.length * 11 + 20);
-        const tagGap = 7;
+        const statusTagWidth = Math.max(68, link.status.label.length * 9 + 22);
+        const kindTagWidth = Math.max(48, link.kindLabel.length * 9 + 18);
+        const tagGap = 5;
         const tagsWidth = statusTagWidth + tagGap + kindTagWidth;
-        const statusTagX = labelCenter - tagsWidth / 2 - (link.activePathCount > 0 ? 18 : 0);
+        const statusTagX = labelCenter - tagsWidth / 2;
         const kindTagX = statusTagX + statusTagWidth + tagGap;
-        const tagY = y - labelHeight / 2 + 8;
+        const tagY = y - labelHeight / 2 + 6;
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
           <title>{`${link.status.label}：${link.status.detail}${pathDetail}`}</title>
           <path aria-label="站点数据线路" d={`M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`} />
           <rect className="topology-link-label" x={labelCenter - labelWidth / 2} y={y - labelHeight / 2} width={labelWidth} height={labelHeight} rx="10" />
           <g className={`topology-tag status-tag ${tone}`}>
-            <rect x={statusTagX} y={tagY} width={statusTagWidth} height="22" rx="11" />
-            <circle className="status-tag-dot" cx={statusTagX + 12} cy={tagY + 11} r="3" />
-            <text x={statusTagX + 21} y={tagY + 15}>{link.status.label}</text>
+            <rect x={statusTagX} y={tagY} width={statusTagWidth} height="18" rx="9" />
+            <circle className="status-tag-dot" cx={statusTagX + 10} cy={tagY + 9} r="2.5" />
+            <text x={statusTagX + 17} y={tagY + 12}>{link.status.label}</text>
           </g>
           <g className={`topology-tag kind-tag ${link.kindLabel.includes('中继') ? 'relay' : link.kindLabel.includes('直连') ? 'direct' : 'neutral'}`}>
-            <rect x={kindTagX} y={tagY} width={kindTagWidth} height="22" rx="11" />
-            <text x={kindTagX + kindTagWidth / 2} y={tagY + 15} textAnchor="middle">{link.kindLabel}</text>
+            <rect x={kindTagX} y={tagY} width={kindTagWidth} height="18" rx="9" />
+            <text x={kindTagX + kindTagWidth / 2} y={tagY + 12} textAnchor="middle">{link.kindLabel}</text>
           </g>
-          {link.activePathCount > 0 && <text className="topology-path-count" x={labelCenter + labelWidth / 2 - 14} y={tagY + 15} textAnchor="end">{link.activePathCount} 路径</text>}
-          {telemetrySummary && <text className="telemetry" x={labelCenter} y={y + 17} textAnchor="middle">{ellipsis(telemetrySummary, 78)}</text>}
+          {telemetrySummary && <text className="telemetry" x={labelCenter} y={y + 16} textAnchor="middle">{ellipsis(telemetrySummary, 68)}</text>}
         </g>;
       })}
     </svg>
