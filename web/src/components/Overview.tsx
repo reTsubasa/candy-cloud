@@ -347,25 +347,13 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const telemetrySummary = link.status.code === 'active' ? linkTelemetrySummary(link) : null;
         const pathDetail = telemetrySummary ? ` · ${telemetrySummary}` : '';
         const labelCenter = (left.x + right.x) / 2;
-        const statusDotX = labelCenter - (telemetrySummary ? 58 : 10);
-        const kindDotX = statusDotX + 16;
-        const telemetryX = telemetrySummary ? kindDotX + 13 : labelCenter;
         const markerY = y - 13;
         const linkPath = `M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`;
-        const kindTone = link.kindLabel.includes('中继') ? 'relay' : link.kindLabel.includes('直连') ? 'direct' : 'neutral';
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
           <title>{`${link.status.label}：${link.status.detail}${pathDetail}`}</title>
           <path aria-label="站点数据线路" d={linkPath} />
           {tone === 'ok' && <path className="topology-link-flow" d={linkPath} aria-hidden="true" />}
-          <g className={`topology-tag status-tag ${tone}`}>
-            <title>{`链路状态：${link.status.label}。${link.status.detail}`}</title>
-            <circle className="status-tag-dot" cx={statusDotX} cy={markerY} r="4" />
-          </g>
-          <g className={`topology-tag kind-tag ${kindTone}`}>
-            <title>{`连接方式：${link.kindLabel}`}</title>
-            <circle className="kind-tag-dot" cx={kindDotX} cy={markerY} r="4" />
-          </g>
-          {telemetrySummary && <text className="telemetry" x={telemetryX} y={markerY + 3} textAnchor="start">{ellipsis(telemetrySummary, 68)}</text>}
+          {telemetrySummary && <text className="telemetry" x={labelCenter} y={markerY + 3} textAnchor="middle"><title>{`链路状态：${link.status.label}。${link.status.detail}`}</title>{ellipsis(telemetrySummary, 86)}</text>}
         </g>;
       })}
     </svg>
@@ -413,5 +401,6 @@ function linkTelemetrySummary(link: OperationalLink): string {
   const loss = average(paths.flatMap((path) => path.packet_loss_ppm == null ? [] : [path.packet_loss_ppm]));
   const tx = average(paths.flatMap((path) => path.tx_bps == null ? [] : [path.tx_bps]));
   const rx = average(paths.flatMap((path) => path.rx_bps == null ? [] : [path.rx_bps]));
-  return `${link.siteAName} ↔ ${link.siteBName}  RTT ${formatMetric(rtt === null ? null : Math.round(rtt), ' ms')}  丢包 ${loss === null ? '—' : `${(loss / 10_000).toFixed(2)}%`}  ↑${formatRate(tx === null ? null : Math.round(tx))} ↓${formatRate(rx === null ? null : Math.round(rx))}`;
+  const relay = link.relayNodeNames.length > 0 ? ` · 中继 ${link.relayNodeNames.join('、')}` : '';
+  return `${link.siteAName} ↔ ${link.siteBName}${relay}  RTT ${formatMetric(rtt === null ? null : Math.round(rtt), ' ms')}  丢包 ${loss === null ? '—' : `${(loss / 10_000).toFixed(2)}%`}  ↑${formatRate(tx === null ? null : Math.round(tx))} ↓${formatRate(rx === null ? null : Math.round(rx))}`;
 }

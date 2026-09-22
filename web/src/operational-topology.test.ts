@@ -190,6 +190,18 @@ describe('operational topology', () => {
     expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)?.kindLabel).toBe('中继');
   });
 
+  it('resolves the relay service node for the link telemetry label', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    const relayId = 'relay-hk';
+    resources.relays = [resource(relayId, 'RELAY', { name: '香港中继', service_node_id: threeSiteIds.nodes.hk })];
+    const relayPath = resources.paths.find((item) => item.metadata.id === `${threeSiteIds.peers.wrtHk}-path-1`)!;
+    relayPath.resource.spec.kind = 'RELAY';
+    relayPath.resource.spec.relay_id = relayId;
+    telemetry[0].paths[0] = { ...telemetry[0].paths[0], path_kind: 'relay', candidate_id: relayPath.metadata.id };
+    const snapshot = buildOperationalTopology(resources, ['wrt', 'us', 'hk'].map(configurationStatus), {}, threeSiteIds.segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)?.relayNodeNames).toEqual(['47.83.1.189']);
+  });
+
   it('marks mixed active direct and relay directions as multi-path', () => {
     const { resources, telemetry } = threeSiteFixture();
     telemetry[0].paths[0] = { ...telemetry[0].paths[0], path_kind: 'relay' };

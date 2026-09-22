@@ -69,6 +69,7 @@ export type OperationalLink = {
   siteBName: string;
   directionCount: number;
   kindLabel: string;
+  relayNodeNames: string[];
   state: LinkOperationalCode;
   status: OperationalStatus<LinkOperationalCode>;
   activeDirectionCount: number;
@@ -399,6 +400,21 @@ export function buildOperationalTopology(
         degradedPathLabels,
       });
       const activeKinds = new Set(activePaths.map((path) => path.path_kind));
+      const pathById = new Map(paths.map((path) => [path.metadata.id, path]));
+      const allNodeNames = new Map(resources.nodes.map((item) => [item.metadata.id, name(item)]));
+      const relayNodeNames = [...new Set(activePaths
+        .filter((path) => path.path_kind === 'relay')
+        .flatMap((path) => {
+          const candidate = (path.candidate_id ? pathById.get(path.candidate_id) : undefined)
+            ?? paths.find((item) => value(item, 'kind') === 'RELAY');
+          const relayId = candidate && value(candidate, 'relay_id');
+          const relay = relayId ? resources.relays.find((item) => item.metadata.id === relayId) : undefined;
+          const serviceNodeId = relay ? value(relay, 'service_node_id') : '';
+          const serviceNodeName = serviceNodeId ? allNodeNames.get(serviceNodeId) : undefined;
+          if (serviceNodeName) return [serviceNodeName];
+          if (relay) return [name(relay)];
+          return ['中继节点'];
+        }))];
       const kindLabel = activeKinds.size === 1
         ? (activeKinds.has('relay') ? '中继' : '直连')
         : activeKinds.size > 1
@@ -414,6 +430,7 @@ export function buildOperationalTopology(
         siteBName,
         directionCount: Math.min(2, paths.length),
         kindLabel,
+        relayNodeNames,
         state: operationalStatus.code,
         status: operationalStatus,
         activeDirectionCount,
