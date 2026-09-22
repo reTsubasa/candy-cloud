@@ -350,6 +350,7 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const statusDotX = labelCenter - (telemetrySummary ? 58 : 10);
         const kindDotX = statusDotX + 16;
         const telemetryX = telemetrySummary ? kindDotX + 13 : labelCenter;
+        const markerY = y - 13;
         const linkPath = `M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`;
         const kindTone = link.kindLabel.includes('中继') ? 'relay' : link.kindLabel.includes('直连') ? 'direct' : 'neutral';
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
@@ -358,13 +359,13 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
           {tone === 'ok' && <path className="topology-link-flow" d={linkPath} aria-hidden="true" />}
           <g className={`topology-tag status-tag ${tone}`}>
             <title>{`链路状态：${link.status.label}。${link.status.detail}`}</title>
-            <circle className="status-tag-dot" cx={statusDotX} cy={y} r="4" />
+            <circle className="status-tag-dot" cx={statusDotX} cy={markerY} r="4" />
           </g>
           <g className={`topology-tag kind-tag ${kindTone}`}>
             <title>{`连接方式：${link.kindLabel}`}</title>
-            <circle className="kind-tag-dot" cx={kindDotX} cy={y} r="4" />
+            <circle className="kind-tag-dot" cx={kindDotX} cy={markerY} r="4" />
           </g>
-          {telemetrySummary && <text className="telemetry" x={telemetryX} y={y + 3} textAnchor="start">{ellipsis(telemetrySummary, 68)}</text>}
+          {telemetrySummary && <text className="telemetry" x={telemetryX} y={markerY + 3} textAnchor="start">{ellipsis(telemetrySummary, 68)}</text>}
         </g>;
       })}
     </svg>
