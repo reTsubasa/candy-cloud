@@ -345,8 +345,6 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const tone = toneClass(link.status.tone);
         const telemetrySummary = link.status.code === 'active' ? linkTelemetrySummary(link) : null;
         const pathDetail = telemetrySummary ? ` · ${telemetrySummary}` : '';
-        const labelWidth = telemetrySummary ? 326 : 236;
-        const labelHeight = telemetrySummary ? 48 : 32;
         const labelCenter = (left.x + right.x) / 2;
         const statusTagWidth = Math.max(68, link.status.label.length * 9 + 22);
         const kindTagWidth = Math.max(48, link.kindLabel.length * 9 + 18);
@@ -354,11 +352,10 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const tagsWidth = statusTagWidth + tagGap + kindTagWidth;
         const statusTagX = labelCenter - tagsWidth / 2;
         const kindTagX = statusTagX + statusTagWidth + tagGap;
-        const tagY = y - labelHeight / 2 + 6;
+        const tagY = telemetrySummary ? y - 18 : y - 9;
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
           <title>{`${link.status.label}：${link.status.detail}${pathDetail}`}</title>
           <path aria-label="站点数据线路" d={`M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`} />
-          <rect className="topology-link-label" x={labelCenter - labelWidth / 2} y={y - labelHeight / 2} width={labelWidth} height={labelHeight} rx="10" />
           <g className={`topology-tag status-tag ${tone}`}>
             <rect x={statusTagX} y={tagY} width={statusTagWidth} height="18" rx="9" />
             <circle className="status-tag-dot" cx={statusTagX + 10} cy={tagY + 9} r="2.5" />

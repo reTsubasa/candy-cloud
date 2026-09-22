@@ -263,18 +263,26 @@ button, input, textarea { font: inherit; }
 .topology-site-node > circle { fill: #86909c; }.topology-site-node.ok > circle { fill: #00a870; }.topology-site-node.pending > circle { fill: #d97706; }.topology-site-node.error > circle { fill: #d92d20; }
 .topology-site-node line { stroke: #edf0f4; }.topology-site-node text.value { fill: #4e5969; font-size: 10px; }.topology-site-node text.site-name { font-weight: 600; }
 .topology-node-state text { font-size: 9px; }.topology-node-state text.state { fill: #6b778c; }.topology-node-state.tone-green circle { fill: #00a870; }.topology-node-state.tone-orange circle { fill: #d97706; }.topology-node-state.tone-red circle { fill: #d92d20; }.topology-node-state.tone-gray circle { fill: #86909c; }
-.topology-peer-link path { fill: none; stroke-width: 2.2; filter: drop-shadow(0 1px 1px rgba(37, 55, 78, .08)); }.topology-peer-link.ok path { stroke: #00a870; }.topology-peer-link.warn path { stroke: #d97706; stroke-dasharray: 6 4; }.topology-peer-link.error path { stroke: #d92d20; stroke-dasharray: 3 3; }.topology-peer-link.neutral path { stroke: #86909c; stroke-dasharray: 6 4; }
-.topology-peer-link .topology-link-label { fill: rgba(255, 255, 255, .98); stroke-width: 1.1; filter: drop-shadow(0 3px 6px rgba(42, 61, 88, .1)); }
-.topology-peer-link.ok .topology-link-label { stroke: #6fc9aa; }.topology-peer-link.warn .topology-link-label { stroke: #e3b66f; }.topology-peer-link.error .topology-link-label { stroke: #e99a91; }.topology-peer-link.neutral .topology-link-label { stroke: #c2ccd9; }
-.topology-peer-link text { fill: #4e5969; font-size: 10px; }.topology-peer-link text.telemetry { fill: #7b8798; font-size: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .1px; }
+.topology-peer-link path { fill: none; stroke-width: 2.2; filter: drop-shadow(0 1px 1px rgba(37, 55, 78, .08)); }.topology-peer-link.ok path { stroke: #00a870; stroke-dasharray: 2 10; animation: topology-flow 2.4s linear infinite; }.topology-peer-link.warn path { stroke: #d97706; stroke-dasharray: 7 5; animation: topology-pulse 1.8s ease-in-out infinite; }.topology-peer-link.error path { stroke: #d92d20; stroke-dasharray: 3 7; animation: topology-alert 1.1s ease-in-out infinite; }.topology-peer-link.neutral path { stroke: #86909c; stroke-dasharray: 6 6; animation: topology-idle 4s linear infinite; }
+.topology-peer-link text { fill: #4e5969; font-size: 10px; }.topology-peer-link text.telemetry { fill: #7b8798; font-size: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .1px; paint-order: stroke; stroke: #fbfcfe; stroke-width: 4px; stroke-linejoin: round; }
 .topology-tag rect { stroke-width: 1; }.topology-tag text { font-size: 8px; font-weight: 650; }.status-tag-dot { stroke: none; }
-.status-tag.ok rect { fill: #dff7ed; stroke: none; }.status-tag.ok text { fill: #087b58; }.status-tag.ok .status-tag-dot { fill: #00a870; }
-.status-tag.warn rect { fill: #fff0d8; stroke: none; }.status-tag.warn text { fill: #a65b08; }.status-tag.warn .status-tag-dot { fill: #d97706; }
-.status-tag.error rect { fill: #ffe5e1; stroke: none; }.status-tag.error text { fill: #b42318; }.status-tag.error .status-tag-dot { fill: #d92d20; }
+.status-tag.ok rect { fill: #dff7ed; stroke: none; }.status-tag.ok text { fill: #087b58; }.status-tag.ok .status-tag-dot { fill: #00a870; animation: topology-dot-breathe 2.4s ease-in-out infinite; }
+.status-tag.warn rect { fill: #fff0d8; stroke: none; }.status-tag.warn text { fill: #a65b08; }.status-tag.warn .status-tag-dot { fill: #d97706; animation: topology-dot-pulse 1.8s ease-in-out infinite; }
+.status-tag.error rect { fill: #ffe5e1; stroke: none; }.status-tag.error text { fill: #b42318; }.status-tag.error .status-tag-dot { fill: #d92d20; animation: topology-dot-alert 1.1s ease-in-out infinite; }
 .status-tag.neutral rect { fill: #edf0f4; stroke: none; }.status-tag.neutral text { fill: #596579; }.status-tag.neutral .status-tag-dot { fill: #86909c; }
 .kind-tag.direct rect { fill: #eef4ff; stroke: #9bb8f5; }.kind-tag.direct text { fill: #3565b8; }
 .kind-tag.relay rect { fill: #f3efff; stroke: #c7b7ec; }.kind-tag.relay text { fill: #6741a5; }
 .kind-tag.neutral rect { fill: #edf0f4; stroke: #c2ccd9; }.kind-tag.neutral text { fill: #596579; }
+@keyframes topology-flow { to { stroke-dashoffset: -24; } }
+@keyframes topology-pulse { 0%, 100% { opacity: .72; } 50% { opacity: 1; } }
+@keyframes topology-alert { 0%, 100% { opacity: .58; stroke-width: 2.2; } 50% { opacity: 1; stroke-width: 2.8; } }
+@keyframes topology-idle { to { stroke-dashoffset: -24; } }
+@keyframes topology-dot-breathe { 0%, 100% { opacity: .72; } 50% { opacity: 1; } }
+@keyframes topology-dot-pulse { 0%, 100% { transform: scale(.8); transform-origin: center; } 50% { transform: scale(1.15); transform-origin: center; } }
+@keyframes topology-dot-alert { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .topology-peer-link path, .topology-tag .status-tag-dot { animation: none !important; }
+}
 .status-boundary-legend { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); background: #fff; }
 .status-boundary-legend > div { min-width: 0; padding: 10px 12px 11px; }.status-boundary-legend > div:first-child { border-right: 1px solid var(--line); }
 .status-boundary-legend > div > strong { display: block; margin-bottom: 8px; color: #4e5969; font-size: 11px; }
