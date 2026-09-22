@@ -20,7 +20,6 @@ import {
 import {
   buildOperationalTopology,
   emptyOperationalResources,
-  type OperationalLink,
   type OperationalResources,
   type OperationalResourceKey,
   type OperationalTopologySnapshot,
@@ -292,9 +291,9 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
   const hasOverflowNodes = snapshot.sites.some((site) => site.nodes.length > maximumNodeRows);
   const siteCardHeight = 126 + maximumNodeRows * 18 + (hasOverflowNodes ? 18 : 0);
   const siteBottom = siteY + siteCardHeight;
-  const linkLaneGap = 56;
+  const linkLaneGap = 62;
   const linkLaneCount = Math.min(snapshot.links.length, 8);
-  const height = siteBottom + 54 + linkLaneCount * linkLaneGap + 12;
+  const height = siteBottom + 42 + linkLaneCount * linkLaneGap + 32;
   const siteX = (index: number) => siteCount <= 1 ? center : 100 + index * ((width - 200) / (siteCount - 1));
   const siteById = Object.fromEntries(snapshot.sites.map((site, index) => [site.id, { ...site, x: siteX(index) }]));
   const allSitesOffline = snapshot.sites.length > 0 && snapshot.sites.every((site) => site.status.tone === 'gray');
@@ -307,7 +306,6 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
       </g>
       {!aggregate && <>
         <line className={`topology-control-link tone-${controlLinkTone}`} x1={center} y1="68" x2={center} y2="92" />
-        {controlLinkTone === 'green' && <line className="topology-control-flow" x1={center} y1="68" x2={center} y2="92" aria-hidden="true" />}
         <g className={`topology-segment-node tone-${segmentTone}`} transform={`translate(${center - 120} 92)`}>
           <rect width="240" height="58" rx="7" /><text x="120" y="24" textAnchor="middle">{ellipsis(snapshot.segment?.name ?? '网络分段', 24)}</text><text className="sub" x="120" y="42" textAnchor="middle">{snapshot.segment?.overlayCidr} · {snapshot.readinessLabel}</text>
         </g>
@@ -340,26 +338,44 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const left = source.x < target.x ? source : target;
         const right = source.x < target.x ? target : source;
         const lane = Math.min(linkIndex, 7);
-        // Keep the first link below the site cards; subsequent links use fixed
-        // lanes so labels never collide when several peers share the canvas.
-        const y = siteBottom + 44 + lane * linkLaneGap;
+        const y = siteBottom + 28 + lane * linkLaneGap;
         const tone = toneClass(link.status.tone);
-        const telemetrySummary = link.status.code === 'active' ? linkTelemetrySummary(link) : null;
-        const pathDetail = telemetrySummary ? ` · ${telemetrySummary}` : '';
+        const telemetryRows = link.activePaths.slice(0, 2).map((path) => {
+          const sourceName = siteById[path.sourceSiteId]?.name ?? path.sourceNodeName;
+          const destinationName = siteById[path.destinationSiteId]?.name ?? '对端';
+          const staleLabel = path.sampledAt ? formatStaleTelemetry(path.sampledAt) : '';
+          return `${sourceName} -> ${destinationName}  RTT ${formatMetric(path.rtt_ms, ' ms')}  丢包 ${path.packet_loss_ppm == null ? '—' : `${(path.packet_loss_ppm / 10_000).toFixed(2)}%`}  ↑${formatRate(path.tx_bps)} ↓${formatRate(path.rx_bps)}${staleLabel ? `  ${staleLabel}` : ''}`;
+        });
+        const pathDetail = telemetryRows.length > 0 ? ` · ${telemetryRows.join(' · ')}` : '';
+        const labelWidth = telemetryRows.length > 0 ? 356 : 250;
+        const labelHeight = telemetryRows.length > 0 ? 62 : 34;
         const labelCenter = (left.x + right.x) / 2;
-        // The cubic path reaches only 75% of its lane depth at the midpoint.
-        // Anchor the label to that actual curve position so every lane keeps
-        // the same visual clearance from its telemetry text.
-        const curveMidY = siteBottom + (y - siteBottom) * 0.75;
-        const labelY = curveMidY - 9;
-        const linkPath = `M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`;
+        const statusWidth = Math.max(74, Math.min(112, link.status.label.length * 11 + 30));
+        const kindWidth = Math.max(50, Math.min(88, link.kindLabel.length * 11 + 24));
+        const badgeGap = 7;
+        const badgesWidth = statusWidth + badgeGap + kindWidth;
+        const badgesX = labelCenter - badgesWidth / 2;
+        const badgeY = y - labelHeight / 2 + 9;
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
           <title>{`${link.status.label}：${link.status.detail}${pathDetail}`}</title>
-          <path aria-label="站点数据线路" d={linkPath} />
-          {tone === 'ok' && <path className="topology-link-flow" d={linkPath} aria-hidden="true" />}
-          {telemetrySummary && <text className="telemetry" x={labelCenter} y={labelY} textAnchor="middle"><title>{`链路状态：${link.status.label}。${link.status.detail}`}</title>{ellipsis(telemetrySummary, 86)}</text>}
+          <path aria-label="站点数据线路" d={`M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`} />
+          <rect className="topology-link-label" x={labelCenter - labelWidth / 2} y={y - labelHeight / 2} width={labelWidth} height={labelHeight} rx="10" />
+          <rect className="topology-status-badge" x={badgesX} y={badgeY} width={statusWidth} height="22" rx="11" />
+          <circle className="topology-status-dot" cx={badgesX + 12} cy={badgeY + 11} r="3" />
+          <text className="topology-status-text" x={badgesX + 21} y={badgeY + 15}>{link.status.label}</text>
+          <rect className="topology-kind-badge" x={badgesX + statusWidth + badgeGap} y={badgeY} width={kindWidth} height="22" rx="11" />
+          <text className="topology-kind-text" x={badgesX + statusWidth + badgeGap + kindWidth / 2} y={badgeY + 15} textAnchor="middle">{link.kindLabel}</text>
+          {telemetryRows.length > 0 ? <>
+            <text className="topology-path-count" x={labelCenter + labelWidth / 2 - 12} y={badgeY + 15} textAnchor="end">{link.activePathCount} 路径</text>
+            {telemetryRows.map((row, index) => <text className="telemetry" key={row} x={labelCenter} y={y + 17 + index * 11} textAnchor="middle">{ellipsis(row, 82)}</text>)}
+          </> : <text className="topology-path-count" x={labelCenter + labelWidth / 2 - 12} y={badgeY + 15} textAnchor="end">待遥测</text>}
         </g>;
       })}
+      <g className="topology-legend" transform={`translate(${center - 225} ${height - 24})`}>
+        <circle className="ok" cx="6" cy="6" r="5" /><text x="17" y="10">正常 / 已认证</text>
+        <circle className="warn" cx="126" cy="6" r="5" /><text x="137" y="10">处理中 / 待确认</text>
+        <circle className="error" cx="286" cy="6" r="5" /><text x="297" y="10">明确故障</text>
+      </g>
     </svg>
   </div><StatusBoundaryLegend /></>;
 }
@@ -396,15 +412,9 @@ function formatRate(value: number | null): string {
   return `${value} bps`;
 }
 
-function linkTelemetrySummary(link: OperationalLink): string {
-  const paths = link.activePaths;
-  const average = (values: number[]) => values.length > 0
-    ? values.reduce((sum, value) => sum + value, 0) / values.length
-    : null;
-  const rtt = average(paths.flatMap((path) => path.rtt_ms == null ? [] : [path.rtt_ms]));
-  const loss = average(paths.flatMap((path) => path.packet_loss_ppm == null ? [] : [path.packet_loss_ppm]));
-  const tx = average(paths.flatMap((path) => path.tx_bps == null ? [] : [path.tx_bps]));
-  const rx = average(paths.flatMap((path) => path.rx_bps == null ? [] : [path.rx_bps]));
-  const relay = link.relayNodeNames.length > 0 ? ` · 中继 ${link.relayNodeNames.join('、')}` : '';
-  return `${link.siteAName} ↔ ${link.siteBName}${relay}  RTT ${formatMetric(rtt === null ? null : Math.round(rtt), ' ms')}  丢包 ${loss === null ? '—' : `${(loss / 10_000).toFixed(2)}%`}  ↑${formatRate(tx === null ? null : Math.round(tx))} ↓${formatRate(rx === null ? null : Math.round(rx))}`;
+function formatStaleTelemetry(value: string): string {
+  const reported = Date.parse(value);
+  if (!Number.isFinite(reported)) return '';
+  const seconds = Math.max(0, Math.round((Date.now() - reported) / 1000));
+  return seconds <= 60 ? '' : `遥测 ${Math.floor(seconds / 60)} 分钟未更新`;
 }
