@@ -347,13 +347,17 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const telemetrySummary = link.status.code === 'active' ? linkTelemetrySummary(link) : null;
         const pathDetail = telemetrySummary ? ` · ${telemetrySummary}` : '';
         const labelCenter = (left.x + right.x) / 2;
-        const markerY = y - 13;
+        // The cubic path reaches only 75% of its lane depth at the midpoint.
+        // Anchor the label to that actual curve position so every lane keeps
+        // the same visual clearance from its telemetry text.
+        const curveMidY = siteBottom + (y - siteBottom) * 0.75;
+        const labelY = curveMidY - 9;
         const linkPath = `M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`;
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
           <title>{`${link.status.label}：${link.status.detail}${pathDetail}`}</title>
           <path aria-label="站点数据线路" d={linkPath} />
           {tone === 'ok' && <path className="topology-link-flow" d={linkPath} aria-hidden="true" />}
-          {telemetrySummary && <text className="telemetry" x={labelCenter} y={markerY + 3} textAnchor="middle"><title>{`链路状态：${link.status.label}。${link.status.detail}`}</title>{ellipsis(telemetrySummary, 86)}</text>}
+          {telemetrySummary && <text className="telemetry" x={labelCenter} y={labelY} textAnchor="middle"><title>{`链路状态：${link.status.label}。${link.status.detail}`}</title>{ellipsis(telemetrySummary, 86)}</text>}
         </g>;
       })}
     </svg>
