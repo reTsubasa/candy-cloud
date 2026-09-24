@@ -36,6 +36,8 @@ use ed25519_dalek::{Signer, SigningKey};
 static VERIFIED_DEVICE_CERTIFICATE_HEADER: HeaderName =
     HeaderName::from_static("x-candy-verified-device-certificate-der");
 
+const MAX_RUNTIME_ROUTE_PREFIXES: usize = 65_536;
+
 pub type ServiceFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Authentication context inserted by an upstream mTLS or bootstrap-token verifier.
@@ -1399,7 +1401,7 @@ where
             .zip(request.policy_generation)
             .is_some_and(|(runtime, policy)| runtime != policy)
         || request.paths.len() > 256
-        || request.failed_route_prefixes.len() > 4096
+        || request.failed_route_prefixes.len() > MAX_RUNTIME_ROUTE_PREFIXES
         || request
             .failed_route_prefixes
             .iter()
