@@ -49,6 +49,6 @@ x509-parser = { version = "0.18", features = ["verify"] }
 
 [workspace.metadata.candy]
 core_version = "0.3.56"
-core_revision = "2a2a971"
+core_revision = "fb6a775a935049da925163af9b6dea6f10e31848"
 wire_line = "0.3"
 auth_profile = "cloud_grant_v1"
