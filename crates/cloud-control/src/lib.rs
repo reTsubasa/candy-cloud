@@ -243,9 +243,24 @@ pub struct ServicePolicyRuleV1 {
     pub priority: u32,
     pub source_site_ids: Vec<Uuid>,
     pub destination_prefixes: Vec<Ipv4PrefixV1>,
+    /// Optional destination GeoIP selector. Cloud expands this selector using
+    /// a pinned provider before signing the route projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_geo: Option<PolicyGeoSelectorV1>,
     pub domains: Vec<String>,
     pub traffic_classes: Vec<String>,
     pub action: PolicyActionV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyGeoSelectorV1 {
+    pub provider: String,
+    pub countries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -544,6 +559,30 @@ fn validate_service_policy(value: &ServicePolicyV1) -> Result<(), ContractError>
         for prefix in &rule.destination_prefixes {
             prefix.validate_with_default(matches!(rule.action, PolicyActionV1::RemoteEgress(_)))?;
         }
+        if let Some(geo) = &rule.destination_geo {
+            let unique_countries = geo
+                .countries
+                .iter()
+                .collect::<std::collections::HashSet<_>>();
+            if geo.provider.trim().is_empty()
+                || geo.provider.len() > 80
+                || geo.countries.is_empty()
+                || geo.countries.len() > 256
+                || unique_countries.len() != geo.countries.len()
+                || geo.countries.iter().any(|country| {
+                    country.len() != 2 || !country.bytes().all(|byte| byte.is_ascii_uppercase())
+                })
+                || geo
+                    .version
+                    .as_ref()
+                    .is_some_and(|value| value.is_empty() || value.len() > 120)
+                || geo.digest.as_ref().is_some_and(|value| {
+                    value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            {
+                return Err(ContractError::InvalidServicePolicy);
+            }
+        }
         for domain in &rule.domains {
             validate_dns_name(domain)?;
         }
@@ -797,6 +836,7 @@ mod tests {
                 priority: 100,
                 source_site_ids: vec![id(3), id(3)],
                 destination_prefixes: Vec::new(),
+                destination_geo: None,
                 domains: Vec::new(),
                 traffic_classes: Vec::new(),
                 action: PolicyActionV1::LocalEgress,
@@ -815,6 +855,7 @@ mod tests {
                 network: Ipv4Addr::UNSPECIFIED,
                 prefix_len: 0,
             }],
+            destination_geo: None,
             domains: Vec::new(),
             traffic_classes: Vec::new(),
             action,
@@ -857,6 +898,39 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&policy).unwrap()["enabled"],
             serde_json::Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn policy_geo_selector_is_strict_and_backward_compatible() {
+        let base = serde_json::json!({
+            "segment_id": id(1),
+            "generation": 1,
+            "rules": [{
+                "id": id(2),
+                "priority": 100,
+                "source_site_ids": [id(3)],
+                "destination_prefixes": [],
+                "destination_geo": {
+                    "provider": "geoip-country",
+                    "countries": ["CN", "US"],
+                    "version": "2026-09-24",
+                    "digest": "11".repeat(32)
+                },
+                "domains": [],
+                "traffic_classes": [],
+                "action": { "type": "REMOTE_EGRESS", "egress_id": id(4) }
+            }]
+        });
+        let policy: ServicePolicyV1 = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(validate_service_policy(&policy), Ok(()));
+
+        let mut invalid = base;
+        invalid["rules"][0]["destination_geo"]["countries"] = serde_json::json!(["cn"]);
+        let policy: ServicePolicyV1 = serde_json::from_value(invalid).unwrap();
+        assert_eq!(
+            validate_service_policy(&policy),
+            Err(ContractError::InvalidServicePolicy)
         );
     }
 

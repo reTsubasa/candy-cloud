@@ -77,6 +77,29 @@ describe('resource form contract mapping', () => {
     vi.unstubAllGlobals();
   });
 
+  it('serializes GeoIP destinations without accidentally widening them to a default route', () => {
+    vi.stubGlobal('crypto', { randomUUID: () => '019ff9c1-ac24-7303-a6c3-905768fe5905' });
+    const document = buildResourceSpec('SERVICE_POLICY', {
+      segment_id: '019ff9c1-ac24-7303-a6c3-905768fe5901', generation: 2,
+      rules: [{ priority: 100, source_site_ids: [], destination_cidrs: [], geo_countries: ['cn', 'US'], geo_provider: 'openwrt-cidr-v1', domains: [], traffic_classes: [], action_type: 'REMOTE_EGRESS', egress_id: '019ff9c1-ac24-7303-a6c3-905768fe5902' }],
+    });
+    expect(document.spec.rules).toMatchObject([{
+      destination_prefixes: [],
+      destination_geo: { provider: 'openwrt-cidr-v1', countries: ['CN', 'US'] },
+    }]);
+    expect(policyRulesForEditor(document.spec.rules)[0].geo_countries).toEqual(['CN', 'US']);
+    vi.unstubAllGlobals();
+  });
+
+  it('rejects malformed GeoIP country codes and provider digests', () => {
+    const uuid = '019ff9c1-ac24-7303-a6c3-905768fe5901';
+    const errors = validateResourceEditor('SERVICE_POLICY', { segment_id: uuid, generation: 1, rules: [{
+      priority: 100, destination_cidrs: [], geo_countries: ['CHN'], geo_digest: '1234', domains: [], action_type: 'LOCAL_EGRESS',
+    }] });
+    expect(errors).toContain('rules.0.geo_countries:country');
+    expect(errors).toContain('rules.0.geo_digest:digest');
+  });
+
   it('keeps a default route intact from the editor to the Cloud resource', () => {
     vi.stubGlobal('crypto', { randomUUID: () => '019ff9c1-ac24-7303-a6c3-905768fe5905' });
     const document = buildResourceSpec('SERVICE_POLICY', {

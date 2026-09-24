@@ -267,6 +267,8 @@ services:
       CORE_MODULE_VERSION: $core_version
       CORE_MODULE_BUNDLE_SHA256: $core_bundle_sha
       CORE_MODULE_SHA256: $core_module_sha
+  geoip-updater:
+    image: candy-cloud-cloud-worker:arm64-$revision
   cloud-web:
     image: candy-cloud-cloud-web:arm64-$revision
 EOF

@@ -32,6 +32,7 @@ RUN cargo build --release --target "${RUST_TARGET}" --workspace --bins
 
 FROM --platform=$TARGETPLATFORM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget && rm -rf /var/lib/apt/lists/*
+COPY --chmod=0755 scripts/update-geoip-provider.sh /usr/local/bin/update-geoip-provider
 ARG RUST_TARGET=aarch64-unknown-linux-gnu
 ARG BINARY
 COPY --from=build /workspace/candy-cloud/target/${RUST_TARGET}/release/${BINARY} /usr/local/bin/service

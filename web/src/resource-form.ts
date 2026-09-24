@@ -114,7 +114,8 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
     spec.enabled = editor.enabled !== false;
     spec.rules = ((editor.rules as Spec[]) ?? []).map((rule) => {
       const cidrs = (rule.destination_cidrs as string[]) ?? [];
-      const effectiveCidrs = rule.action_type === 'REMOTE_EGRESS' && cidrs.length === 0
+      const geoCountries = ((rule.geo_countries as string[]) ?? []).map(cleanText).filter(Boolean);
+      const effectiveCidrs = rule.action_type === 'REMOTE_EGRESS' && cidrs.length === 0 && geoCountries.length === 0
         ? [defaultRouteCidr]
         : cidrs;
       return {
@@ -122,6 +123,16 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
         priority: positiveInteger(rule.priority),
         source_site_ids: (rule.source_site_ids as string[]) ?? [],
         destination_prefixes: effectiveCidrs.map(parseCidr),
+        destination_geo: (() => {
+          const countries = geoCountries;
+          if (countries.length === 0) return undefined;
+          return {
+            provider: cleanText(rule.geo_provider) || 'openwrt-cidr-v1',
+            countries: countries.map((country) => country.toUpperCase()),
+            version: cleanText(rule.geo_version) || undefined,
+            digest: cleanText(rule.geo_digest).toLowerCase() || undefined,
+          };
+        })(),
         domains: ((rule.domains as string[]) ?? []).map(cleanText).filter(Boolean),
         traffic_classes: ((rule.traffic_classes as string[]) ?? []).map(cleanText).filter(Boolean),
         action: rule.action_type === 'REMOTE_EGRESS'
@@ -208,6 +219,11 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
       if (!Number.isInteger(priority) || priority < 0 || priorities.has(priority)) errors.push(`rules.${index}.priority:unique`);
       priorities.add(priority);
       ((rule.destination_cidrs as string[]) ?? []).forEach((cidr) => { if (!parseCidr(cidr)) errors.push(`rules.${index}.destination_cidrs:cidr`); });
+      const geoCountries = ((rule.geo_countries as string[]) ?? []).map(cleanText).filter(Boolean);
+      geoCountries.forEach((country) => { if (!/^[A-Z]{2}$/.test(country.toUpperCase())) errors.push(`rules.${index}.geo_countries:country`); });
+      if (geoCountries.length > 256) errors.push(`rules.${index}.geo_countries:range`);
+      const geoDigest = cleanText(rule.geo_digest);
+      if (geoDigest && !/^[0-9a-f]{64}$/i.test(geoDigest)) errors.push(`rules.${index}.geo_digest:digest`);
       ((rule.domains as string[]) ?? []).forEach((domain) => { if (!hostnamePattern.test(domain)) errors.push(`rules.${index}.domains:domain`); });
       if (rule.action_type === 'REMOTE_EGRESS' && !uuidPattern.test(cleanText(rule.egress_id))) errors.push(`rules.${index}.egress_id:uuid`);
     });
@@ -236,6 +252,10 @@ export function policyRulesForEditor(value: unknown): Spec[] {
     return {
       ...rule,
       destination_cidrs: collapseDefaultRouteSlices(((rule.destination_prefixes as unknown[]) ?? []).map(formatCidr)),
+      geo_countries: ((rule.destination_geo as Spec | undefined)?.countries as string[] | undefined) ?? [],
+      geo_provider: (rule.destination_geo as Spec | undefined)?.provider ?? 'openwrt-cidr-v1',
+      geo_version: (rule.destination_geo as Spec | undefined)?.version ?? '',
+      geo_digest: (rule.destination_geo as Spec | undefined)?.digest ?? '',
       action_type: action.type ?? 'LOCAL_EGRESS',
       egress_id: action.egress_id ?? '',
     };
