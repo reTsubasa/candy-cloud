@@ -4,6 +4,14 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$root"
 
+core_version=$(awk -F= '$1 == "CORE_MODULE_VERSION" { print $2 }' .env.example)
+core_bundle_sha=$(awk -F= '$1 == "CORE_MODULE_BUNDLE_SHA256" { print $2 }' .env.example)
+core_module_sha=$(awk -F= '$1 == "CORE_MODULE_SHA256" { print $2 }' .env.example)
+test -n "$core_version" -a -n "$core_bundle_sha" -a -n "$core_module_sha" || {
+  echo "compose_saas_identity_e2e: incomplete Core module contract in .env.example" >&2
+  exit 1
+}
+
 for command in curl docker jq openssl python3; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "compose_saas_identity_e2e: missing required command: $command" >&2
@@ -126,9 +134,9 @@ MYSQL_AUTH_PASSWORD=e2e-auth-password
 MYSQL_WORKER_PASSWORD=e2e-worker-password
 CANDY_ROUTE_SIGNING_KEY_ID=e2e-route
 CANDY_ROUTE_SIGNING_KEY_HEX=0000000000000000000000000000000000000000000000000000000000000001
-CORE_MODULE_VERSION=0.3.54
-CORE_MODULE_BUNDLE_SHA256=b6850114e741c0ade623b33042b349757490b5d1c7d8344e871fb16be6b3393d
-CORE_MODULE_SHA256=09d73e1cfa97817fb356b5a058d3c618471dc9bf7204737e8756b2a9cb4d30be
+CORE_MODULE_VERSION=$core_version
+CORE_MODULE_BUNDLE_SHA256=$core_bundle_sha
+CORE_MODULE_SHA256=$core_module_sha
 CLOUD_SIGNING_KEY_FILE=$secrets/cloud-signing.key
 CLOUD_SIGNING_KEY_ID=e2e-grant
 CLOUD_ISSUER_ID=00000000-0000-0000-0000-000000000001
