@@ -76,6 +76,15 @@ const trafficClassOptions = [
   { label: '批量传输', value: 'bulk' },
   { label: '默认流量', value: 'default' },
 ];
+const geoCountryOptions = [
+  { label: '中国大陆 · CN', value: 'CN' },
+  { label: '美国 · US', value: 'US' },
+  { label: '中国香港 · HK', value: 'HK' },
+  { label: '日本 · JP', value: 'JP' },
+  { label: '新加坡 · SG', value: 'SG' },
+  { label: '英国 · GB', value: 'GB' },
+  { label: '德国 · DE', value: 'DE' },
+];
 const entityLabels: Record<string, string> = {
   PEER: '站点互联',
   ATTACHMENT: '网络接入',
@@ -137,11 +146,11 @@ function errorMessage(errors: string[]): string {
     site_a_id: '站点 A', site_b_id: '站点 B', service_node_id: '服务节点', attachment_id: '接入关系',
     source_attachment_id: '源接入', destination_attachment_id: '目标接入', peer_id: '对等关系', relay_id: '中继',
     endpoint: '公网端点', transport_node_id: '提供公网传输的节点', priority: '优先级', max_sessions: '会话容量', capacity_mbps: '带宽容量',
-    generation: '配置代次', region: '部署区域', zone: '内部域', value: '记录值', ttl_seconds: 'TTL', domains: '域名', destination_cidrs: '目标网段',
+    generation: '配置代次', region: '部署区域', zone: '内部域', value: '记录值', ttl_seconds: 'TTL', domains: '域名', destination_cidrs: '目标网段', geo_countries: '目标国家/地区', geo_digest: 'Geo 数据摘要',
   };
   const reasonLabels: Record<string, string> = {
     required: '不能为空', uuid: '格式无效', cidr: '必须是规范 IPv4 CIDR', different: '不能与前一项相同', mismatch: '与所选站点不匹配',
-    positive: '必须大于 0', range: '超出允许范围', endpoint: '必须是有效的 IP:端口', unique: '必须为非负且不能重复', domain: '域名格式无效',
+    positive: '必须大于 0', range: '超出允许范围', endpoint: '必须是有效的 IP:端口', unique: '必须为非负且不能重复', domain: '域名格式无效', country: '必须是两位国家/地区码', digest: '必须是 64 位十六进制摘要',
     ipv4: '必须是有效 IPv4 地址', ipv6: '必须是有效 IPv6 地址', length: '长度超出限制',
   };
   return errors.slice(0, 4).map((value) => {
@@ -530,11 +539,12 @@ function PolicyFields({ spec, update, updateList, removeListItem, references, re
       update('segment_id', value);
       update('rules', rules.map((rule) => ({ ...rule, source_site_ids: [], egress_id: rule.action_type === 'REMOTE_EGRESS' ? '' : rule.egress_id })));
     }, '选择网络分段')}</Form.Item>
-    <div className="collection-heading"><div><Typography.Title heading={6}>流量规则</Typography.Title><Typography.Text type="secondary">优先级数字越小越先匹配；条件留空表示不限制。</Typography.Text></div><Button icon={<IconPlus />} onClick={() => update('rules', [...rules, { id: crypto.randomUUID(), priority: rules.length * 100 + 100, source_site_ids: [], destination_cidrs: [], domains: [], traffic_classes: [], action_type: 'LOCAL_EGRESS', egress_id: '' }])}>添加规则</Button></div>
+    <div className="collection-heading"><div><Typography.Title heading={6}>流量规则</Typography.Title><Typography.Text type="secondary">优先级数字越小越先匹配；条件留空表示不限制。</Typography.Text></div><Button icon={<IconPlus />} onClick={() => update('rules', [...rules, { id: crypto.randomUUID(), priority: rules.length * 100 + 100, source_site_ids: [], destination_cidrs: [], geo_countries: [], geo_provider: 'openwrt-cidr-v1', domains: [], traffic_classes: [], action_type: 'LOCAL_EGRESS', egress_id: '' }])}>添加规则</Button></div>
     {rules.length === 0 ? <div className="inline-empty">尚未添加覆盖规则，所有流量保持本站出口。</div> : <div className="structured-list">{rules.map((rule, index) => <section className="structured-item" key={String(rule.id ?? index)}>
       <header><div><strong>规则 {index + 1}</strong><span>优先级 {String(rule.priority)}</span></div><Button type="text" status="danger" icon={<IconDelete />} aria-label={`删除规则 ${index + 1}`} onClick={() => removeListItem('rules', index)} /></header>
       <div className="form-grid rule-grid"><Form.Item label="优先级"><InputNumber min={0} precision={0} value={Number(rule.priority)} onChange={(value) => updateList('rules', index, 'priority', value)} /></Form.Item><Form.Item label="来源站点"><Select mode="multiple" showSearch value={(rule.source_site_ids as string[]) ?? []} onChange={(value) => updateList('rules', index, 'source_site_ids', value)} options={siteOptions} placeholder={spec.segment_id ? '全部已接入站点' : '请先选择生效网络'} maxTagCount="responsive" /></Form.Item></div>
       <Form.Item label="目标网段"><InputTag value={(rule.destination_cidrs as string[]) ?? []} onChange={(value) => updateList('rules', index, 'destination_cidrs', value)} tokenSeparators={[',', ' ']} saveOnBlur placeholder={rule.action_type === 'REMOTE_EGRESS' ? '输入 0.0.0.0/0 表示全部互联网流量' : '输入 CIDR 后回车，例如 10.20.0.0/16'} /></Form.Item>
+      <Form.Item label="目标 IP 地理区域"><Select mode="multiple" allowCreate showSearch value={(rule.geo_countries as string[]) ?? []} onChange={(value) => updateList('rules', index, 'geo_countries', value.map((country: string) => String(country).trim().toUpperCase()).filter(Boolean))} options={geoCountryOptions} placeholder="选择或输入国家/地区码，例如 CN、US、HK" maxTagCount="responsive" /><FieldHelp>使用国家/地区代码匹配目标 IP。运行时需具备匹配版本的 GeoIP 数据；数据不可用时不会静默应用该规则。</FieldHelp></Form.Item>
       <Form.Item label="目标域名"><InputTag value={(rule.domains as string[]) ?? []} onChange={(value) => updateList('rules', index, 'domains', value)} tokenSeparators={[',', ' ']} saveOnBlur placeholder="输入域名后回车，例如 video.example.com" /></Form.Item>
       <div className="form-grid two"><Form.Item label="业务类型"><Select mode="multiple" allowCreate showSearch value={(rule.traffic_classes as string[]) ?? []} onChange={(value) => updateList('rules', index, 'traffic_classes', value)} options={trafficClassOptions} placeholder="全部业务" maxTagCount="responsive" /></Form.Item><Form.Item label="使用出口"><Radio.Group type="button" value={rule.action_type} onChange={(value) => updateList('rules', index, 'action_type', value)} options={[{ label: '本站出口', value: 'LOCAL_EGRESS' }, { label: '远端出口', value: 'REMOTE_EGRESS' }]} /></Form.Item></div>
       {rule.action_type === 'REMOTE_EGRESS' && <Form.Item label="指定远端出口" required>{referenceSelect('egresses', rule.egress_id, (value) => updateList('rules', index, 'egress_id', value), spec.segment_id ? '选择该网络内已发布的出口' : '请先选择生效网络', egressOptions)}</Form.Item>}

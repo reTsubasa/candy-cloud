@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     net::SocketAddr,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -74,6 +75,139 @@ fn service_policy_ref(resource_id: Uuid, policy: &ServicePolicyV1) -> Result<Pol
             .data_plane_hash()
             .context("service policy hash failed")?,
     })
+}
+
+const GEO_PROVIDER_KIND: &str = "openwrt-cidr-v1";
+const GEO_PROVIDER_DIR_ENV: &str = "CANDY_GEOIP_PROVIDER_DIR";
+const DEFAULT_GEO_PROVIDER_DIR: &str = "/etc/candy/rulesets";
+
+fn geo_provider_dir() -> PathBuf {
+    std::env::var_os(GEO_PROVIDER_DIR_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_GEO_PROVIDER_DIR))
+}
+
+fn digest_hex(value: &[u8; 32]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn expand_geo_rule(
+    rule: &mut ServicePolicyRuleV1,
+    provider_dir: &Path,
+) -> Result<Option<[u8; 32]>> {
+    let Some(selector) = rule.destination_geo.as_ref() else {
+        return Ok(None);
+    };
+    if selector.provider != GEO_PROVIDER_KIND {
+        bail!(
+            "unsupported GeoIP provider {}; expected {GEO_PROVIDER_KIND}",
+            selector.provider
+        );
+    }
+    if let Some(expected) = selector.version.as_deref() {
+        let actual = std::fs::read_to_string(provider_dir.join("VERSION"))
+            .context("GeoIP provider VERSION is unavailable")?;
+        if actual.trim() != expected {
+            bail!(
+                "GeoIP provider version mismatch: expected {expected}, found {}",
+                actual.trim()
+            );
+        }
+    }
+
+    let mut prefixes = rule.destination_prefixes.clone();
+    let mut canonical = Vec::new();
+    for country in &selector.countries {
+        let file = provider_dir.join(format!("{}-ip.cidr", country.to_ascii_lowercase()));
+        let content = std::fs::read_to_string(&file)
+            .with_context(|| format!("GeoIP provider file is unavailable: {}", file.display()))?;
+        for (line_index, raw) in content.lines().enumerate() {
+            let value = raw.split('#').next().unwrap_or_default().trim();
+            if value.is_empty() {
+                continue;
+            }
+            if value.contains(':') {
+                bail!(
+                    "IPv6 GeoIP entry is not supported at {}:{}",
+                    file.display(),
+                    line_index + 1
+                );
+            }
+            let (network, prefix_len) = value.split_once('/').with_context(|| {
+                format!(
+                    "invalid GeoIP CIDR at {}:{}",
+                    file.display(),
+                    line_index + 1
+                )
+            })?;
+            let prefix = cloud_control::Ipv4PrefixV1 {
+                network: network.parse().with_context(|| {
+                    format!(
+                        "invalid GeoIP IPv4 address at {}:{}",
+                        file.display(),
+                        line_index + 1
+                    )
+                })?,
+                prefix_len: prefix_len.parse().with_context(|| {
+                    format!(
+                        "invalid GeoIP prefix length at {}:{}",
+                        file.display(),
+                        line_index + 1
+                    )
+                })?,
+            };
+            prefix.validate().with_context(|| {
+                format!(
+                    "non-canonical GeoIP CIDR at {}:{}",
+                    file.display(),
+                    line_index + 1
+                )
+            })?;
+            canonical.extend_from_slice(country.as_bytes());
+            canonical.push(0);
+            canonical.extend_from_slice(value.as_bytes());
+            canonical.push(b'\n');
+            prefixes.push(prefix);
+        }
+    }
+    if canonical.is_empty() {
+        bail!("GeoIP selector has no IPv4 prefixes");
+    }
+    prefixes.sort_unstable_by_key(|prefix| (u32::from(prefix.network), prefix.prefix_len));
+    prefixes.dedup();
+    if prefixes.len() > 4096 {
+        bail!(
+            "GeoIP selector expands to {} prefixes, exceeding the signed route limit of 4096",
+            prefixes.len()
+        );
+    }
+    let digest: [u8; 32] = Sha256::digest(&canonical).into();
+    if let Some(expected) = selector.digest.as_deref() {
+        if digest_hex(&digest) != expected.to_ascii_lowercase() {
+            bail!("GeoIP provider digest mismatch");
+        }
+    }
+    rule.destination_prefixes = prefixes;
+    Ok(Some(digest))
+}
+
+fn service_policy_ref_with_geo(
+    resource_id: Uuid,
+    policy: &ServicePolicyV1,
+    geo_digests: &[(Uuid, [u8; 32])],
+) -> Result<PolicyRefV1> {
+    let mut reference = service_policy_ref(resource_id, policy)?;
+    if !geo_digests.is_empty() {
+        let mut hasher = Sha256::new();
+        hasher.update(reference.content_hash);
+        for (rule_id, digest) in geo_digests {
+            hasher.update(rule_id.as_bytes());
+            hasher.update(digest);
+        }
+        reference.content_hash = hasher.finalize().into();
+    }
+    Ok(reference)
 }
 
 impl InputReadinessError {
@@ -170,14 +304,24 @@ impl ControlRoutePublisher {
                         && policy.enabled
                         && policy.segment_id == snapshot.segment_id =>
                 {
-                    let policy_ref = service_policy_ref(resource.metadata.id, policy)?;
-                    for rule in &policy.rules {
+                    let mut expanded_rules = policy.rules.clone();
+                    let provider_dir = geo_provider_dir();
+                    let mut geo_digests = Vec::new();
+                    for rule in &mut expanded_rules {
+                        if let Some(digest) = expand_geo_rule(rule, &provider_dir)? {
+                            geo_digests.push((rule.id, digest));
+                        }
+                    }
+                    geo_digests.sort_unstable_by_key(|(rule_id, _)| *rule_id);
+                    let policy_ref =
+                        service_policy_ref_with_geo(resource.metadata.id, policy, &geo_digests)?;
+                    for rule in expanded_rules {
                         if matches!(rule.action, PolicyActionV1::RemoteEgress(_))
                             && rule.destination_prefixes.is_empty()
                         {
-                            bail!("remote egress policy requires explicit signed destination prefixes");
+                            bail!("remote egress policy requires an explicit CIDR or GeoIP destination selector");
                         }
-                        service_policy_rules.push((policy_ref.clone(), rule.clone()));
+                        service_policy_rules.push((policy_ref.clone(), rule));
                     }
                 }
                 _ => {}
@@ -1045,6 +1189,69 @@ mod tests {
         assert_ne!(service_policy_ref(resource_id, &policy).unwrap(), previous);
     }
 
+    #[test]
+    fn openwrt_geo_provider_expands_ipv4_and_binds_its_digest() {
+        let directory = std::env::temp_dir().join(format!("candy-geo-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("VERSION"), "2026-09-24\n").unwrap();
+        std::fs::write(
+            directory.join("cn-ip.cidr"),
+            "# OpenWrt-compatible provider\n1.0.1.0/24\n1.0.2.0/23\n",
+        )
+        .unwrap();
+        let mut rule = policy_rule(
+            2,
+            100,
+            Uuid::from_bytes([3; 16]),
+            PolicyActionV1::RemoteEgress(Uuid::from_bytes([4; 16])),
+        );
+        rule.destination_prefixes.clear();
+        rule.destination_geo = Some(cloud_control::PolicyGeoSelectorV1 {
+            provider: GEO_PROVIDER_KIND.into(),
+            countries: vec!["CN".into()],
+            version: Some("2026-09-24".into()),
+            digest: None,
+        });
+
+        let digest = expand_geo_rule(&mut rule, &directory).unwrap().unwrap();
+        assert_eq!(rule.destination_prefixes.len(), 2);
+        assert_eq!(rule.destination_prefixes[0].network.to_string(), "1.0.1.0");
+        rule.destination_geo.as_mut().unwrap().digest = Some(digest_hex(&digest));
+        rule.destination_prefixes.clear();
+        assert_eq!(
+            expand_geo_rule(&mut rule, &directory).unwrap(),
+            Some(digest)
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn geo_provider_rejects_ipv6_and_pinned_metadata_mismatches() {
+        let directory = std::env::temp_dir().join(format!("candy-geo-invalid-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("VERSION"), "2026-09-24\n").unwrap();
+        std::fs::write(directory.join("cn-ip.cidr"), "240e::/20\n").unwrap();
+        let mut rule = policy_rule(
+            5,
+            100,
+            Uuid::from_bytes([6; 16]),
+            PolicyActionV1::RemoteEgress(Uuid::from_bytes([7; 16])),
+        );
+        rule.destination_prefixes.clear();
+        rule.destination_geo = Some(cloud_control::PolicyGeoSelectorV1 {
+            provider: GEO_PROVIDER_KIND.into(),
+            countries: vec!["CN".into()],
+            version: Some("2026-09-23".into()),
+            digest: None,
+        });
+        assert!(expand_geo_rule(&mut rule, &directory).is_err());
+
+        rule.destination_geo.as_mut().unwrap().version = Some("2026-09-24".into());
+        assert!(expand_geo_rule(&mut rule, &directory).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn policy_rule(
         seed: u8,
         priority: u32,
@@ -1059,6 +1266,7 @@ mod tests {
                 network: "0.0.0.0".parse().unwrap(),
                 prefix_len: 1,
             }],
+            destination_geo: None,
             domains: Vec::new(),
             traffic_classes: Vec::new(),
             action,

@@ -79,6 +79,7 @@ export function summarizePolicy(resource: ControlResource, references: PolicyRef
       const priority = Number(rule.priority);
       const conditions = [
         ...cidrList(rule),
+        ...stringList((rule.destination_geo as Record<string, unknown> | undefined)?.countries).map((country) => `IP 区域 ${country}`),
         ...stringList(rule.domains),
         ...stringList(rule.traffic_classes).map((item) => trafficClassLabels[item] ?? item),
       ];

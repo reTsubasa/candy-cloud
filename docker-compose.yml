@@ -170,7 +170,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+  geoip-updater:
+    image: candy-cloud-cloud-worker:local
+    user: "0:0"
+    restart: "no"
+    entrypoint: ["/usr/local/bin/update-geoip-provider"]
+    environment:
+      CANDY_GEOIP_PROVIDER_DIR: /var/lib/candy/geoip
+      CANDY_GEOIP_COUNTRIES: ${CANDY_GEOIP_COUNTRIES:-CN,US,HK,JP,SG,GB,DE}
+      CANDY_GEOIP_SOURCE_URL: ${CANDY_GEOIP_SOURCE_URL:-https://www.ipdeny.com/ipblocks/data/aggregated}
+    volumes:
+      - candy-cloud-geoip-data:/var/lib/candy/geoip
+    networks: [candy-cloud-egress]
   cloud-worker:
+    image: candy-cloud-cloud-worker:local
     platform: linux/amd64
     build:
       context: .
@@ -192,9 +205,13 @@ services:
       CANDY_CORE_VERSION: ${CORE_MODULE_VERSION:?set CORE_MODULE_VERSION}
       CORE_MODULE_BUNDLE_SHA256: ${CORE_MODULE_BUNDLE_SHA256:?set CORE_MODULE_BUNDLE_SHA256}
       CORE_MODULE_SHA256: ${CORE_MODULE_SHA256:?set CORE_MODULE_SHA256}
+      CANDY_GEOIP_PROVIDER_DIR: /var/lib/candy/geoip
+    volumes:
+      - candy-cloud-geoip-data:/var/lib/candy/geoip:ro
     depends_on:
       mysql: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
+      geoip-updater: { condition: service_completed_successfully }
     networks: [candy-cloud-internal]
     healthcheck:
       test: ["CMD-SHELL", "kill -0 1"]
@@ -245,6 +262,8 @@ volumes:
     name: ${CANDY_CLOUD_MYSQL_VOLUME:-candy-cloud_mysql-data}
   candy-cloud-web-assets:
     name: ${CANDY_CLOUD_WEB_VOLUME:-candy-cloud_web-assets}
+  candy-cloud-geoip-data:
+    name: ${CANDY_CLOUD_GEOIP_VOLUME:-candy-cloud_geoip-data}
 
 networks:
   candy-cloud-edge:
