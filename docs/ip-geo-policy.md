@@ -19,7 +19,7 @@ Provider 文件位于 `CANDY_GEOIP_PROVIDER_DIR`，默认 `/etc/candy/rulesets`�
 
 - 国家代码必须是唯一的两位大写 ISO 代码。
 - Provider 版本或 digest（若规则指定）不匹配时拒绝发布。
-- 非规范 CIDR、空文件、IPv6 条目和超过 4096 条展开前缀的规则都会被拒绝。
+- 非规范 CIDR、空文件、IPv6 条目和超过 65,536 条展开前缀的规则都会被拒绝。
 - Geo 规则不能被静默转换为 `0.0.0.0/0`；远端出口必须拥有显式 CIDR 或可展开的 Geo selector。
 - Geo provider digest 会绑定到策略引用，provider 内容变化会产生新的签名策略代次。
 

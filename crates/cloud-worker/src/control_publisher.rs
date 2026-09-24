@@ -80,6 +80,8 @@ fn service_policy_ref(resource_id: Uuid, policy: &ServicePolicyV1) -> Result<Pol
 const GEO_PROVIDER_KIND: &str = "openwrt-cidr-v1";
 const GEO_PROVIDER_DIR_ENV: &str = "CANDY_GEOIP_PROVIDER_DIR";
 const DEFAULT_GEO_PROVIDER_DIR: &str = "/etc/candy/rulesets";
+/// Bounded route expansion capacity shared with the Core and runtime route contracts.
+const MAX_GEO_ROUTE_PREFIXES: usize = 65_536;
 
 fn geo_provider_dir() -> PathBuf {
     std::env::var_os(GEO_PROVIDER_DIR_ENV)
@@ -176,10 +178,11 @@ fn expand_geo_rule(
     }
     prefixes.sort_unstable_by_key(|prefix| (u32::from(prefix.network), prefix.prefix_len));
     prefixes.dedup();
-    if prefixes.len() > 4096 {
+    if prefixes.len() > MAX_GEO_ROUTE_PREFIXES {
         bail!(
-            "GeoIP selector expands to {} prefixes, exceeding the signed route limit of 4096",
-            prefixes.len()
+            "GeoIP selector expands to {} prefixes, exceeding the signed route limit of {}",
+            prefixes.len(),
+            MAX_GEO_ROUTE_PREFIXES
         );
     }
     let digest: [u8; 32] = Sha256::digest(&canonical).into();
@@ -735,7 +738,7 @@ impl ControlRoutePublisher {
                 },
                 max_inner_mtu: 1300,
                 resources: PacketResourcePolicyV1 {
-                    max_route_prefixes: 4096,
+                    max_route_prefixes: MAX_GEO_ROUTE_PREFIXES as u64,
                     max_queue_packets: 4096,
                     max_queue_bytes: 16 * 1024 * 1024,
                     replay_window_packets: 4096,
@@ -1224,6 +1227,52 @@ mod tests {
         );
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn geo_provider_accepts_real_country_sized_sets_and_enforces_hard_limit() {
+        fn provider_with_prefixes(count: usize) -> PathBuf {
+            let directory =
+                std::env::temp_dir().join(format!("candy-geo-large-{}", Uuid::new_v4()));
+            std::fs::create_dir(&directory).unwrap();
+            let mut content = String::with_capacity(count * 20);
+            for index in 0..count {
+                let address = u32::from(std::net::Ipv4Addr::new(10, 0, 0, 0)) + index as u32 + 1;
+                content.push_str(&format!("{}/32\n", std::net::Ipv4Addr::from(address)));
+            }
+            std::fs::write(directory.join("us-ip.cidr"), content).unwrap();
+            directory
+        }
+
+        fn geo_rule() -> ServicePolicyRuleV1 {
+            let mut rule = policy_rule(
+                8,
+                100,
+                Uuid::from_bytes([9; 16]),
+                PolicyActionV1::RemoteEgress(Uuid::from_bytes([10; 16])),
+            );
+            rule.destination_prefixes.clear();
+            rule.destination_geo = Some(cloud_control::PolicyGeoSelectorV1 {
+                provider: GEO_PROVIDER_KIND.into(),
+                countries: vec!["US".into()],
+                version: None,
+                digest: None,
+            });
+            rule
+        }
+
+        assert_eq!(MAX_GEO_ROUTE_PREFIXES, 65_536);
+        let country_sized = provider_with_prefixes(30_000);
+        let mut rule = geo_rule();
+        expand_geo_rule(&mut rule, &country_sized).unwrap();
+        assert_eq!(rule.destination_prefixes.len(), 30_000);
+        std::fs::remove_dir_all(country_sized).unwrap();
+
+        let over_limit = provider_with_prefixes(MAX_GEO_ROUTE_PREFIXES + 1);
+        let mut rule = geo_rule();
+        let error = expand_geo_rule(&mut rule, &over_limit).unwrap_err();
+        assert!(error.to_string().contains("65536"));
+        std::fs::remove_dir_all(over_limit).unwrap();
     }
 
     #[test]
