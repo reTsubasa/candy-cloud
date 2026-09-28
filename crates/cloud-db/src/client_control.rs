@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
@@ -20,6 +20,16 @@ const MAX_DEVICE_PUBLIC_KEY_LEN: usize = 64;
 /// `BIGINT UNSIGNED`; refusing to allocate past this keeps the value safely
 /// inside every downstream representation instead of silently wrapping.
 const MAX_GRANT_GENERATION: u64 = i64::MAX as u64;
+
+/// MySQL `TIMESTAMP(6)` stores microseconds. Normalize timestamps at the
+/// persistence boundary so values read back from storage remain identical to
+/// the canonical values used by the control plane, even when callers provide
+/// nanosecond precision.
+fn database_timestamp(value: DateTime<Utc>) -> DateTime<Utc> {
+    value
+        .with_nanosecond(value.nanosecond() / 1_000 * 1_000)
+        .expect("a truncated nanosecond value is always valid")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientPlatform {
@@ -1417,6 +1427,12 @@ impl ClientControlRepository {
         grant: &ClientGrantWrite,
     ) -> Result<ClientGrantWriteOutcome, ClientControlError> {
         grant.validate()?;
+        let issued_at = database_timestamp(grant.issued_at);
+        let expires_at = database_timestamp(grant.expires_at);
+        let assignment_lease_until = database_timestamp(grant.assignment_lease_until);
+        if expires_at <= issued_at || assignment_lease_until <= issued_at {
+            return Err(ClientControlError::InvalidRecord);
+        }
         let mut transaction = self
             .pool
             .begin()
@@ -1534,9 +1550,9 @@ impl ClientControlRepository {
         .bind(&grant.signing_key_id)
         .bind(digest.as_slice())
         .bind(&grant.grant_envelope)
-        .bind(grant.issued_at)
-        .bind(grant.expires_at)
-        .bind(grant.assignment_lease_until)
+        .bind(issued_at)
+        .bind(expires_at)
+        .bind(assignment_lease_until)
         .execute(&mut *transaction)
         .await
         .map_err(|_| ClientControlError::InvalidRecord)?;

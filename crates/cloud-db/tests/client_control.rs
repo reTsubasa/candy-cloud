@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::{Duration, Timelike, Utc};
 use cloud_db::client_access::ClientTrafficMode;
 use cloud_db::client_control::{
     ClientControlError, ClientControlRepository, ClientDeviceKeyRotation,
@@ -745,7 +745,12 @@ async fn a_written_grant_records_and_reads_back_its_assignment_lease() {
     registration.install_id = format!("lease-install-{tenant_id}");
     repository.register_device(&registration).await.unwrap();
 
+    // Deliberately use nanosecond precision: the persistence boundary must
+    // canonicalize it to MySQL TIMESTAMP(6) precision before storing.
     let issued_at = Utc::now();
+    let issued_at = issued_at
+        .with_nanosecond(issued_at.timestamp_subsec_nanos() / 1_000 * 1_000 + 903)
+        .unwrap();
     let expires_at = issued_at + Duration::hours(24);
     let lease_until = issued_at + Duration::hours(1);
     let mut write = valid_grant_write();
@@ -770,7 +775,10 @@ async fn a_written_grant_records_and_reads_back_its_assignment_lease() {
         .await
         .unwrap()
         .expect("the just-written Grant is active");
-    assert_eq!(active.assignment_lease_until, Some(lease_until));
+    let canonical_lease_until = lease_until
+        .with_nanosecond(lease_until.nanosecond() / 1_000 * 1_000)
+        .unwrap();
+    assert_eq!(active.assignment_lease_until, Some(canonical_lease_until));
 
     // And the idempotent read path used for replay must agree byte for byte.
     let by_request = repository
@@ -778,7 +786,10 @@ async fn a_written_grant_records_and_reads_back_its_assignment_lease() {
         .await
         .unwrap()
         .expect("the just-written Grant is readable by request");
-    assert_eq!(by_request.assignment_lease_until, Some(lease_until));
+    assert_eq!(
+        by_request.assignment_lease_until,
+        Some(canonical_lease_until)
+    );
     assert_eq!(by_request.grant_envelope, active.grant_envelope);
 
     // A historical row written before `0047` has no lease value; inserting one
