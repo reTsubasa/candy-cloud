@@ -67,6 +67,7 @@ pub enum IdentityRepositoryError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MembershipRole {
+    PlatformAdmin,
     OrganizationOwner,
     TenantAdmin,
     Operator,
@@ -77,6 +78,7 @@ pub enum MembershipRole {
 impl MembershipRole {
     pub const fn database_value(self) -> &'static str {
         match self {
+            Self::PlatformAdmin => "PLATFORM_ADMIN",
             Self::OrganizationOwner => "ORGANIZATION_OWNER",
             Self::TenantAdmin => "TENANT_ADMIN",
             Self::Operator => "OPERATOR",
@@ -87,6 +89,7 @@ impl MembershipRole {
 
     pub fn parse(value: &str) -> Result<Self, IdentityRepositoryError> {
         match value {
+            "PLATFORM_ADMIN" => Ok(Self::PlatformAdmin),
             "ORGANIZATION_OWNER" => Ok(Self::OrganizationOwner),
             "TENANT_ADMIN" => Ok(Self::TenantAdmin),
             "OPERATOR" => Ok(Self::Operator),
@@ -613,7 +616,10 @@ impl IdentityRepository {
             || invited_by.is_nil()
             || token_hash.len() != 32
             || invitation.expires_at <= Utc::now()
-            || invitation.role == MembershipRole::OrganizationOwner
+            || matches!(
+                invitation.role,
+                MembershipRole::PlatformAdmin | MembershipRole::OrganizationOwner
+            )
         {
             return Err(IdentityRepositoryError::InvalidInput);
         }
@@ -662,6 +668,15 @@ impl IdentityRepository {
             role: MembershipRole::parse(&row.try_get::<String, _>("role")?)?,
             expires_at: row.try_get("expires_at")?,
         };
+        // Invitations are tenant membership grants. Keep this invariant at the
+        // repository boundary as well as in the HTTP parser, so a future caller
+        // cannot smuggle the deployment-scoped role through this flow.
+        if matches!(
+            invitation.role,
+            MembershipRole::PlatformAdmin | MembershipRole::OrganizationOwner
+        ) {
+            return Err(IdentityRepositoryError::InvalidInput);
+        }
         let membership_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM organization_memberships WHERE organization_id = ? AND user_id = ?)")
             .bind(invitation.organization_id).bind(user_id).fetch_one(&mut *tx).await?;
         if membership_exists {
@@ -796,7 +811,10 @@ impl IdentityRepository {
         if organization_id.is_nil()
             || actor_id.is_nil()
             || user_id.is_nil()
-            || role == MembershipRole::OrganizationOwner
+            || matches!(
+                role,
+                MembershipRole::PlatformAdmin | MembershipRole::OrganizationOwner
+            )
         {
             return Err(IdentityRepositoryError::InvalidInput);
         }

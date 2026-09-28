@@ -18,14 +18,16 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Utc};
 use cloud_client_grant::{ClientGrantEnvelopeV1, CLIENT_GRANT_SCHEMA_VERSION};
-use cloud_db::client_control::{ClientDeviceLookup, ClientDeviceRegistration, ClientPlatform};
+use cloud_db::client_control::{
+    ClientDeviceLookup, ClientDeviceRecord, ClientDeviceRegistration, ClientPlatform,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::client_issuance::{ClientIssuance, ClientIssuanceError};
 use crate::management::{ApiError, AuthenticatedPrincipal, ManagementState};
 
-const CLIENT_API_VERSION: u16 = 1;
+pub(crate) const CLIENT_API_VERSION: u16 = 1;
 const ED25519_PUBLIC_KEY_LEN: usize = 32;
 
 /// The authenticated human session behind a terminal request.
@@ -44,10 +46,7 @@ where
 {
     type Rejection = ApiError;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         parts
             .extensions
             .get::<AuthenticatedPrincipal>()
@@ -61,7 +60,7 @@ where
 /// malformed body, an unknown field, or a wrong type always produces the
 /// contracted error envelope. Letting axum's default rejection escape would
 /// answer `422` with a plain-text body that a client cannot key off.
-fn json_body<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
+pub(crate) fn json_body<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
     body.map(|Json(value)| value).map_err(|rejection| {
         let (code, message) = match rejection {
             JsonRejection::MissingJsonContentType(_) => (
@@ -73,10 +72,9 @@ fn json_body<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
                 "INVALID_REQUEST",
                 "request body does not satisfy the V1 contract",
             ),
-            JsonRejection::BytesRejection(_) => (
-                "INVALID_REQUEST",
-                "request body could not be read",
-            ),
+            JsonRejection::BytesRejection(_) => {
+                ("INVALID_REQUEST", "request body could not be read")
+            }
             _ => ("INVALID_REQUEST", "request body is not acceptable"),
         };
         ApiError::bad_request(code, message)
@@ -324,7 +322,6 @@ pub async fn issue_client_grant(
             "payload device_id must match the request path",
         ));
     }
-    let user_id = session_user(&principal)?;
     let control = state
         .client_control
         .as_ref()
@@ -342,38 +339,7 @@ pub async fn issue_client_grant(
         .as_ref()
         .ok_or_else(ApiError::control_plane_unavailable)?;
 
-    let device = match control
-        .device_by_wire_id(
-            principal.context.organization_id,
-            principal.context.tenant_id,
-            user_id,
-            device_id,
-        )
-        .await
-        .map_err(ApiError::from_client_control)?
-    {
-        None => {
-            return Err(ApiError::not_found(
-                "CLIENT_DEVICE_NOT_FOUND",
-                "no terminal device is registered for this session",
-            ))
-        }
-        Some(ClientDeviceLookup::Revoked { .. }) => {
-            return Err(ApiError::gone(
-                "CLIENT_DEVICE_REVOKED",
-                "the terminal device is revoked",
-            ))
-        }
-        // Recoverable: re-registering the device key restores service, so this is
-        // a conflict rather than a terminal revocation.
-        Some(ClientDeviceLookup::Suspended { .. }) => {
-            return Err(ApiError::conflict(
-                "CLIENT_DEVICE_SUSPENDED",
-                "the terminal device has no active key",
-            ))
-        }
-        Some(ClientDeviceLookup::Active(device)) => device,
-    };
+    let device = resolve_active_device(control, &principal, device_id).await?;
     if device.device_key_id != envelope.payload.device_key_id {
         return Err(ApiError::forbidden());
     }
@@ -437,15 +403,88 @@ fn grant_body(record: &cloud_db::client_control::ClientGrantRecord) -> Result<Gr
     })
 }
 
-fn unix_seconds(value: DateTime<Utc>) -> Result<u64, ApiError> {
+pub(crate) fn unix_seconds(value: DateTime<Utc>) -> Result<u64, ApiError> {
     u64::try_from(value.timestamp()).map_err(|_| ApiError::control_plane_unavailable())
 }
 
-fn session_user(principal: &AuthenticatedPrincipal) -> Result<Uuid, ApiError> {
+pub(crate) fn session_user(principal: &AuthenticatedPrincipal) -> Result<Uuid, ApiError> {
     Uuid::parse_str(&principal.actor_id).map_err(|_| ApiError::unauthorized())
 }
 
-fn check_envelope(
+/// Refuses a body that names a different device than the path.
+///
+/// The two identifiers are redundant by design: the path scopes the lookup to the
+/// session, the body lets a client sign over what it believes it is asking for.
+/// Accepting a mismatch would let a request be ambiguous about its own target, so
+/// it is a `400` rather than a silent preference for one of them.
+pub(crate) fn check_device_binding(
+    payload_device_id: Uuid,
+    device_id: Uuid,
+) -> Result<(), ApiError> {
+    if payload_device_id != device_id {
+        return Err(ApiError::bad_request(
+            "DEVICE_BINDING_MISMATCH",
+            "payload device_id must match the request path",
+        ));
+    }
+    Ok(())
+}
+
+/// Resolves the caller-supplied `device_id` against the session scope, failing
+/// closed on every state Cloud cannot act for.
+///
+/// Shared by the Grant, Projection, heartbeat, receipt, and revoke handlers so
+/// "which device is this, and may Cloud act for it" is answered once, the same
+/// way every time. A revoked device is `410` rather than `404` because a client
+/// must not keep retrying something Cloud will never accept, and a device with no
+/// live key is `409` because re-registering a key restores service.
+pub(crate) async fn resolve_device(
+    control: &cloud_db::client_control::ClientControlRepository,
+    principal: &AuthenticatedPrincipal,
+    device_id: Uuid,
+) -> Result<ClientDeviceLookup, ApiError> {
+    let user_id = session_user(principal)?;
+    control
+        .device_by_wire_id(
+            principal.context.organization_id,
+            principal.context.tenant_id,
+            user_id,
+            device_id,
+        )
+        .await
+        .map_err(ApiError::from_client_control)?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "CLIENT_DEVICE_NOT_FOUND",
+                "no terminal device is registered for this session",
+            )
+        })
+}
+
+/// `resolve_device` for the routes that must have an issuable device.
+pub(crate) async fn resolve_active_device(
+    control: &cloud_db::client_control::ClientControlRepository,
+    principal: &AuthenticatedPrincipal,
+    device_id: Uuid,
+) -> Result<ClientDeviceRecord, ApiError> {
+    Ok(match resolve_device(control, principal, device_id).await? {
+        ClientDeviceLookup::Revoked { .. } => {
+            return Err(ApiError::gone(
+                "CLIENT_DEVICE_REVOKED",
+                "the terminal device is revoked",
+            ))
+        }
+        ClientDeviceLookup::Suspended { .. } => {
+            return Err(ApiError::conflict(
+                "CLIENT_DEVICE_SUSPENDED",
+                "the terminal device has no active key",
+            ))
+        }
+        ClientDeviceLookup::Active(device) => device,
+    })
+}
+
+pub(crate) fn check_envelope(
     api_version: u16,
     message_type: &str,
     expected: &'static str,
@@ -562,20 +601,53 @@ mod tests {
     #[test]
     fn envelope_rejects_version_type_and_nil_request_id() {
         let request_id = Uuid::new_v4();
-        assert!(check_envelope(1, "register_device_request", "register_device_request", request_id).is_ok());
-        assert!(check_envelope(2, "register_device_request", "register_device_request", request_id).is_err());
+        assert!(check_envelope(
+            1,
+            "register_device_request",
+            "register_device_request",
+            request_id
+        )
+        .is_ok());
+        assert!(check_envelope(
+            2,
+            "register_device_request",
+            "register_device_request",
+            request_id
+        )
+        .is_err());
         assert!(check_envelope(1, "grant_request", "register_device_request", request_id).is_err());
-        assert!(check_envelope(1, "register_device_request", "register_device_request", Uuid::nil()).is_err());
+        assert!(check_envelope(
+            1,
+            "register_device_request",
+            "register_device_request",
+            Uuid::nil()
+        )
+        .is_err());
     }
 
     #[test]
     fn issuance_errors_never_report_cloud_faults_as_client_errors() {
         // A storage/signing failure must surface as 503 so a client retries,
         // while a missing policy is a 409 the client resolves by waiting.
-        assert_eq!(map_issuance_error(ClientIssuanceError::Unavailable).status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(map_issuance_error(ClientIssuanceError::NoActiveNode).status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(map_issuance_error(ClientIssuanceError::PolicyNotBound).status, StatusCode::CONFLICT);
-        assert_eq!(map_issuance_error(ClientIssuanceError::IdempotencyConflict).status, StatusCode::CONFLICT);
-        assert_eq!(map_issuance_error(ClientIssuanceError::NotOwned).status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            map_issuance_error(ClientIssuanceError::Unavailable).status,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            map_issuance_error(ClientIssuanceError::NoActiveNode).status,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            map_issuance_error(ClientIssuanceError::PolicyNotBound).status,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            map_issuance_error(ClientIssuanceError::IdempotencyConflict).status,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            map_issuance_error(ClientIssuanceError::NotOwned).status,
+            StatusCode::FORBIDDEN
+        );
     }
 }

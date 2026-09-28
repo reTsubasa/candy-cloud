@@ -18,6 +18,36 @@ pub enum ClientTrafficMode {
     Global,
 }
 
+impl ClientTrafficMode {
+    /// The `client_devices.traffic_mode` column value. Unknown values are an
+    /// error rather than a default, so a corrupt row can never silently
+    /// downgrade a device to policy mode.
+    pub fn from_database_value(value: &str) -> Option<Self> {
+        match value {
+            "POLICY" => Some(Self::Policy),
+            "GLOBAL" => Some(Self::Global),
+            _ => None,
+        }
+    }
+
+    pub fn to_database_value(self) -> &'static str {
+        match self {
+            Self::Policy => "POLICY",
+            Self::Global => "GLOBAL",
+        }
+    }
+
+    /// The lowercase wire value the Client contract uses. Kept separate from the
+    /// database form so a handler cannot accidentally answer in the storage
+    /// spelling, which the frozen Client schema would reject.
+    pub fn to_wire_value(self) -> &'static str {
+        match self {
+            Self::Policy => "policy",
+            Self::Global => "global",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ClientAllowedResource {

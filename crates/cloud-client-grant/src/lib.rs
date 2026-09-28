@@ -33,6 +33,7 @@ pub const CLIENT_GRANT_MAX_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_CLIENT_GRANT_SIGNING_KEY_ID_LEN: usize = 128;
 pub const MAX_CLIENT_GRANT_NODES: usize = 3;
 pub const MAX_CLIENT_GRANT_TOKEN_LEN: usize = 64 * 1024;
+pub const ED25519_PUBLIC_KEY_LEN: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -43,6 +44,13 @@ pub enum ClientGrantTrafficMode {
 
 /// One Cloud-selected transport node. Mirrors the `node_assignment` shape frozen
 /// in the Client `policy-projection-v1` contract.
+/// One Cloud-selected transport node, including the TLS identity to dial it by.
+///
+/// A node serves a self-signed certificate and the terminal handshake has no
+/// server-side signature, so `server_cert_sha256` is the only value that proves
+/// the host answering `endpoint` is the node Cloud assigned. It is signed here,
+/// next to the address it belongs to, so routing and identity cannot be changed
+/// independently.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientGrantNodeAssignment {
@@ -51,6 +59,8 @@ pub struct ClientGrantNodeAssignment {
     pub priority: u8,
     pub node_key_id: Uuid,
     pub transport: String,
+    pub server_name: String,
+    pub server_cert_sha256: String,
     pub assignment_lease_until: u64,
 }
 
@@ -85,6 +95,10 @@ pub struct ClientGrantPayloadV1 {
     pub user_id: Uuid,
     pub device_id: Uuid,
     pub device_key_id: Uuid,
+    /// The device's Ed25519 public key, so a Node can verify the device proof
+    /// without a database of its own. Signed here, which is the only reason a
+    /// Node may trust it.
+    pub device_public_key: String,
     pub audience: ClientGrantAudience,
     pub device_generation: u64,
     pub generation: u64,
@@ -133,15 +147,21 @@ impl ClientGrantPayloadV1 {
             || self.grant_id.is_nil()
             || self.device_generation == 0
             || self.generation == 0
+            || !is_device_public_key(&self.device_public_key)
             || self.signing_key_id.is_empty()
             || self.signing_key_id.len() > MAX_CLIENT_GRANT_SIGNING_KEY_ID_LEN
         {
             return Err(ClientGrantError::InvalidPayload);
         }
         let audience = &self.audience;
-        if [audience.tenant_id, audience.user_id, audience.device_id, audience.device_key_id]
-            .into_iter()
-            .any(|id| id.is_nil())
+        if [
+            audience.tenant_id,
+            audience.user_id,
+            audience.device_id,
+            audience.device_key_id,
+        ]
+        .into_iter()
+        .any(|id| id.is_nil())
             || audience.tenant_id != self.tenant_id
             || audience.user_id != self.user_id
             || audience.device_id != self.device_id
@@ -177,6 +197,8 @@ impl ClientGrantPayloadV1 {
                 || node.endpoint.trim().is_empty()
                 || node.endpoint.len() > 255
                 || node.endpoint.bytes().any(|byte| byte.is_ascii_control())
+                || !is_valid_server_name(&node.server_name)
+                || parse_cert_pin(&node.server_cert_sha256).is_none()
                 || node.transport != "quic"
                 || node.assignment_lease_until <= self.issued_at
                 || node.assignment_lease_until > self.expires_at
@@ -272,7 +294,10 @@ pub struct ClientGrantSigner {
 }
 
 impl ClientGrantSigner {
-    pub fn new(key_id: impl Into<String>, signing_key: SigningKey) -> Result<Self, ClientGrantError> {
+    pub fn new(
+        key_id: impl Into<String>,
+        signing_key: SigningKey,
+    ) -> Result<Self, ClientGrantError> {
         let key_id = key_id.into();
         if key_id.is_empty() || key_id.len() > MAX_CLIENT_GRANT_SIGNING_KEY_ID_LEN {
             return Err(ClientGrantError::InvalidEnvelope);
@@ -338,6 +363,112 @@ pub fn format_content_hash(hash: &[u8; 32]) -> String {
     output
 }
 
+/// Renders the bare `64 lowercase hex` spelling a node certificate pin uses.
+///
+/// No `sha256:` prefix: this is the spelling the node-endpoint records and the
+/// `Sha256Hex` schema already use, and it is the only spelling the terminal
+/// verifier accepts.
+pub fn format_cert_pin(hash: &[u8; 32]) -> String {
+    let mut output = String::with_capacity(64);
+    for byte in hash {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    output
+}
+
+/// Renders one raw Ed25519 public key in the frozen `base64url` spelling, the
+/// same one `/v1/client/devices` registration accepts.
+///
+/// Keep this the only place Cloud spells a device public key: a Node compares
+/// the signed string against the key it decodes, so a second spelling would be
+/// a contract disagreement rather than a formatting choice.
+pub fn format_device_public_key(key: &[u8; ED25519_PUBLIC_KEY_LEN]) -> String {
+    URL_SAFE_NO_PAD.encode(key)
+}
+
+/// Parses a bare `64 lowercase hex` certificate pin.
+///
+/// Lowercase only, to match the terminal verifier exactly. Accepting uppercase
+/// here would let Cloud sign a Grant the client refuses, which is a contract
+/// disagreement rather than a formatting nicety.
+fn parse_cert_pin(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let mut hash = [0_u8; 32];
+    for (index, chunk) in value.as_bytes().chunks(2).enumerate() {
+        let text = std::str::from_utf8(chunk).ok()?;
+        hash[index] = u8::from_str_radix(text, 16).ok()?;
+    }
+    Some(hash)
+}
+
+/// Whether `value` can be used as a TLS `server_name`, mirroring the terminal
+/// verifier's rule so Cloud never signs a name the client would reject.
+/// See the Core copy in `candy-carrier-crypto/src/client_wire.rs` for the
+/// derivation; both are checked against rustls's own parser by test.
+fn is_valid_server_name(value: &str) -> bool {
+    is_valid_dns_name(value) || value.parse::<std::net::IpAddr>().is_ok()
+}
+
+fn is_valid_dns_name(value: &str) -> bool {
+    const MAX_NAME_LENGTH: usize = 253;
+    const MAX_LABEL_LENGTH: usize = 63;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum LabelState {
+        Start,
+        HasLetter,
+        AllNumeric,
+        EndsInHyphen,
+    }
+
+    let input = value.as_bytes();
+    if input.is_empty() || input.len() > MAX_NAME_LENGTH {
+        return false;
+    }
+    let mut start = 0;
+    let mut state = LabelState::Start;
+    let mut idx = 0;
+    loop {
+        match input.get(idx).copied() {
+            Some(b'a'..=b'z' | b'A'..=b'Z' | b'_') => state = LabelState::HasLetter,
+            Some(b'0'..=b'9') => {
+                state = match state {
+                    LabelState::Start | LabelState::AllNumeric => LabelState::AllNumeric,
+                    LabelState::HasLetter | LabelState::EndsInHyphen => LabelState::HasLetter,
+                }
+            }
+            Some(b'.') | None => {
+                let len = idx - start;
+                if len == 0 || len > MAX_LABEL_LENGTH || state == LabelState::EndsInHyphen {
+                    return false;
+                }
+                if idx + 1 >= input.len() {
+                    break;
+                }
+                idx += 1;
+                start = idx;
+                state = LabelState::Start;
+                continue;
+            }
+            Some(b'-') => {
+                if idx == start {
+                    return false;
+                }
+                state = LabelState::EndsInHyphen;
+            }
+            _ => return false,
+        }
+        idx += 1;
+    }
+    state != LabelState::AllNumeric
+}
+
 fn parse_content_hash(value: &str) -> Result<[u8; 32], ClientGrantError> {
     let hex = value
         .strip_prefix("sha256:")
@@ -348,13 +479,30 @@ fn parse_content_hash(value: &str) -> Result<[u8; 32], ClientGrantError> {
     let mut hash = [0_u8; 32];
     for (index, chunk) in hex.as_bytes().chunks(2).enumerate() {
         let text = std::str::from_utf8(chunk).map_err(|_| ClientGrantError::InvalidEnvelope)?;
-        hash[index] = u8::from_str_radix(text, 16).map_err(|_| ClientGrantError::InvalidEnvelope)?;
+        hash[index] =
+            u8::from_str_radix(text, 16).map_err(|_| ClientGrantError::InvalidEnvelope)?;
     }
     Ok(hash)
 }
 
 fn is_content_hash(value: &str) -> bool {
     parse_content_hash(value).is_ok()
+}
+
+/// Whether `value` is one bare Ed25519 public key in the frozen `base64url`
+/// spelling.
+///
+/// Strict `URL_SAFE_NO_PAD` on purpose: Cloud must never sign a public key the
+/// Node-side verifier would decode differently, so padding and any other
+/// alphabet are refused rather than normalized.
+fn is_device_public_key(value: &str) -> bool {
+    // 32 bytes encode to 43 base64url characters without padding.
+    if value.len() != 43 {
+        return false;
+    }
+    URL_SAFE_NO_PAD
+        .decode(value)
+        .is_ok_and(|raw| raw.len() == ED25519_PUBLIC_KEY_LEN)
 }
 
 fn has_duplicates<T: PartialEq>(values: &[T]) -> bool {

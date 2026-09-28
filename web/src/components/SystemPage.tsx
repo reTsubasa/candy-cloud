@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Descriptions, Drawer, Empty, Input, Select, Spin, Table, Tag, Typography } from '@arco-design/web-react';
+import { Alert, Button, Descriptions, Drawer, Empty, Input, Select, Spin, Switch, Table, Tag, Typography } from '@arco-design/web-react';
 import { IconRefresh } from '@arco-design/web-react/icon';
-import { fetchHealth, listAuditEvents } from '../api';
+import { fetchHealth, getGeoProvider, listAuditEvents, saveGeoProvider } from '../api';
 import { runtimeAuditEventDescription } from '../runtime-audit';
-import type { AuditEvent, HealthState, Session } from '../types';
+import type { AuditEvent, GeoProviderSettings, HealthState, Session } from '../types';
 
 const healthMeta = {
   live: { label: '服务进程', endpoint: '/api/health/live' },
@@ -20,6 +20,10 @@ const emptyHealth: HealthState = {
 type Props = { session: Session; initialTab?: 'status' | 'logs' };
 type LogLevel = 'error' | 'warning' | 'info';
 type LogCategory = 'operations' | 'runtime' | 'security' | 'all';
+
+function defaultGeoProvider(): GeoProviderSettings {
+  return { provider: 'openwrt-cidr-v1', source_url: 'https://www.ipdeny.com/ipblocks/data/aggregated', countries: ['CN', 'US', 'HK', 'JP', 'SG', 'GB', 'DE'], refresh_interval_seconds: 86400, enabled: true, version: null, digest: null, generation: 0, updated_at: '' };
+}
 
 function eventLevel(action: string): LogLevel {
   const normalized = action.toUpperCase();
@@ -195,21 +199,34 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
   const [textFilter, setTextFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [selectedEvent, setSelectedEvent] = useState<AuditEvent | null>(null);
+  const [geoProvider, setGeoProvider] = useState<GeoProviderSettings | null>(null);
+  const [geoSaving, setGeoSaving] = useState(false);
+  const [geoError, setGeoError] = useState<string | null>(null);
+  const [geoReadFailed, setGeoReadFailed] = useState(false);
+  const canManagePlatform = session.membership?.role === 'PLATFORM_ADMIN';
 
   const load = useCallback(async () => {
     setLoading(true);
     setAuditError(null);
-    const [live, ready, degraded, audit] = await Promise.all([
+    setGeoError(null);
+    setGeoReadFailed(false);
+    const [live, ready, degraded, audit, geo] = await Promise.all([
       fetchHealth('live'), fetchHealth('ready'), fetchHealth('degraded'),
       session.claims.tenant_id ? listAuditEvents(session.token, session.claims.tenant_id).catch((error) => {
         setAuditError(error instanceof Error ? error.message : '统一日志暂不可用');
         return { schema_version: 1, items: [] };
       }) : Promise.resolve({ schema_version: 1, items: [] }),
+      canManagePlatform ? getGeoProvider(session.token).catch((error) => {
+        setGeoError(error instanceof Error ? error.message : 'Geo 数据源读取失败');
+        setGeoReadFailed(true);
+        return null;
+      }) : Promise.resolve(null),
     ]);
     setHealth({ live, ready, degraded });
     setEvents(audit.items);
+    setGeoProvider(geo);
     setLoading(false);
-  }, [session.claims.tenant_id, session.token]);
+  }, [canManagePlatform, session.claims.tenant_id, session.token]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -243,6 +260,19 @@ export function SystemPage({ session, initialTab = 'status' }: Props) {
               { label: '会话到期', value: session.claims.exp ? new Date(session.claims.exp * 1000).toLocaleString() : '未提供' },
             ]} /></section>
           </div>
+          {canManagePlatform && <section className="detail-surface geo-provider-settings">
+            <div className="section-heading"><div><Typography.Title heading={5}>平台 Geo 数据源</Typography.Title><Typography.Text type="secondary">这是 Cloud 平台统一维护的 GeoIP 数据，所有租户策略共享同一份已验证 Provider。</Typography.Text></div><Tag color={geoReadFailed ? 'red' : geoProvider?.enabled ? 'green' : 'gray'}>{geoReadFailed ? '读取失败' : geoProvider ? (geoProvider.enabled ? '平台已启用' : '平台已停用') : '未配置'}</Tag></div>
+            {geoError && <Alert type="error" content={geoError} />}
+            {geoProvider?.enabled && <Alert type="info" content="平台配置变更后，Cloud Worker 会按刷新周期统一下载并原子替换数据；租户策略只引用这份平台数据，不会单独下载。" />}
+            <div className="geo-provider-form">
+              <Input value={geoProvider?.source_url ?? defaultGeoProvider().source_url} onChange={(value) => setGeoProvider((current) => ({ ...(current ?? defaultGeoProvider()), source_url: value }))} addBefore="来源 URL" />
+              <Input value={geoProvider?.countries.join(',') ?? defaultGeoProvider().countries.join(',')} onChange={(value) => setGeoProvider((current) => ({ ...(current ?? defaultGeoProvider()), countries: value.split(',').map((item) => item.trim().toUpperCase()).filter(Boolean) }))} addBefore="国家码" />
+              <Input type="number" value={String(geoProvider?.refresh_interval_seconds ?? 86400)} onChange={(value) => setGeoProvider((current) => ({ ...(current ?? defaultGeoProvider()), refresh_interval_seconds: Number(value) || 86400 }))} addBefore="刷新秒数" />
+              <Switch checked={geoProvider?.enabled ?? true} onChange={(checked) => setGeoProvider((current) => ({ ...(current ?? defaultGeoProvider()), enabled: checked }))} />
+              {session.membership?.role === 'PLATFORM_ADMIN' ? <Button loading={geoSaving} disabled={geoReadFailed} onClick={async () => { const value = geoProvider ?? defaultGeoProvider(); if (!value.source_url.startsWith('https://') || value.countries.length === 0 || new Set(value.countries).size !== value.countries.length || value.countries.some((country) => !/^[A-Z]{2}$/.test(country))) { setGeoError('请输入 HTTPS 来源和不重复的两位国家码'); return; } setGeoSaving(true); setGeoError(null); try { const saved = await saveGeoProvider(session.token, { ...value, generation: value.generation + 1 }); setGeoProvider(saved); } catch (error) { setGeoError(error instanceof Error ? error.message : 'Geo 数据源保存失败'); } finally { setGeoSaving(false); } }}>保存平台数据源</Button> : <Typography.Text type="secondary">仅平台管理员可修改平台数据源</Typography.Text>}
+            </div>
+            {geoProvider && <Typography.Text type="secondary">Provider {geoProvider.provider} · 版本 {geoProvider.version ?? '等待刷新'} · 摘要 {geoProvider.digest ?? '未生成'} · 第 {geoProvider.generation} 代</Typography.Text>}
+          </section>}
         </Spin> : <>
           <div className="log-toolbar"><div><Typography.Text bold>运行日志</Typography.Text><Typography.Text type="secondary">点击任意记录查看完整内容 · 最近 {events.length} 条</Typography.Text></div><Typography.Text type="secondary">{filtered.length} / {events.length} 条</Typography.Text></div>
           <div className="log-filters">

@@ -10,6 +10,12 @@ use uuid::Uuid;
 
 const SIGNING_KEY_ID: &str = "cloud-client-grant-2026-01";
 
+/// The device public key of the shared fixed-vector device
+/// (`device_id=4444…4444`, `device_key_id=5555…5555`). The Client registration
+/// fixture and the Core contract fixture bind the same device, so all three
+/// must spell one key or a reviewer cannot tell which spelling is authoritative.
+const DEVICE_PUBLIC_KEY: &str = "PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw";
+
 fn seed() -> [u8; 32] {
     // RFC 8032 Ed25519 test key 1, matching the Client fixed vector.
     let mut seed = [0_u8; 32];
@@ -67,6 +73,7 @@ fn payload() -> ClientGrantPayloadV1 {
         user_id,
         device_id,
         device_key_id,
+        device_public_key: DEVICE_PUBLIC_KEY.into(),
         audience: ClientGrantAudience {
             tenant_id,
             user_id,
@@ -78,7 +85,10 @@ fn payload() -> ClientGrantPayloadV1 {
         issued_at: 1_899_996_400,
         not_before: 1_899_996_400,
         expires_at: 1_900_000_000,
-        mode_capabilities: vec![ClientGrantTrafficMode::Policy, ClientGrantTrafficMode::Global],
+        mode_capabilities: vec![
+            ClientGrantTrafficMode::Policy,
+            ClientGrantTrafficMode::Global,
+        ],
         policy: ClientGrantPolicyBinding {
             policy_id: Uuid::from_u128(0x7777_7777_7777_4777_8777_7777_7777_7777),
             generation: 9,
@@ -91,6 +101,8 @@ fn payload() -> ClientGrantPayloadV1 {
                 priority: 1,
                 node_key_id: Uuid::from_u128(0x9999_9999_9999_4999_8999_9999_9999_9999),
                 transport: "quic".into(),
+                server_name: "edge-a.example.test".into(),
+                server_cert_sha256: "33".repeat(32),
                 assignment_lease_until: 1_899_999_800,
             },
             ClientGrantNodeAssignment {
@@ -99,6 +111,8 @@ fn payload() -> ClientGrantPayloadV1 {
                 priority: 2,
                 node_key_id: Uuid::from_u128(0xbbbb_bbbb_bbbb_4bbb_8bbb_bbbb_bbbb_bbbb),
                 transport: "quic".into(),
+                server_name: "edge-b.example.test".into(),
+                server_cert_sha256: "44".repeat(32),
                 assignment_lease_until: 1_899_999_800,
             },
         ],
@@ -170,6 +184,40 @@ fn tampering_with_an_authorized_resource_breaks_verification() {
         rescoped.verify(&signer.verifying_key()),
         Err(ClientGrantError::AudienceMismatch)
     );
+
+    // Re-pointing the endpoint or the pinned certificate is the highest-value
+    // Grant attack: either one alone decides which server the client trusts.
+    let mut repointed = envelope.clone();
+    repointed.payload.nodes[0].endpoint = "attacker.example.test:443".into();
+    assert_eq!(
+        repointed.verify(&signer.verifying_key()),
+        Err(ClientGrantError::ContentHashMismatch)
+    );
+
+    let mut repinned = envelope.clone();
+    repinned.payload.nodes[0].server_cert_sha256 = "55".repeat(32);
+    assert_eq!(
+        repinned.verify(&signer.verifying_key()),
+        Err(ClientGrantError::ContentHashMismatch)
+    );
+
+    let mut renamed = envelope.clone();
+    renamed.payload.nodes[1].server_name = "attacker.example.test".into();
+    assert_eq!(
+        renamed.verify(&signer.verifying_key()),
+        Err(ClientGrantError::ContentHashMismatch)
+    );
+
+    // Swapping the signed device key for another device's key is the attack the
+    // field exists to stop: it would let one enrolled device present another's
+    // Grant, or a Node trust a proof it cannot attribute.
+    let mut swapped_key = envelope.clone();
+    swapped_key.payload.device_public_key =
+        cloud_client_grant::format_device_public_key(&[8_u8; 32]);
+    assert_eq!(
+        swapped_key.verify(&signer.verifying_key()),
+        Err(ClientGrantError::ContentHashMismatch)
+    );
 }
 
 #[test]
@@ -215,6 +263,93 @@ fn grant_rejects_unauthorized_shapes_before_signing() {
     bad_hash.policy.content_hash = "sha256:nothex".into();
     assert_eq!(
         signer.issue(bad_hash),
+        Err(ClientGrantError::InvalidPayload)
+    );
+
+    // The signed device key is what a Node verifies the device proof against, so
+    // Cloud must refuse anything that is not exactly one bare Ed25519 key rather
+    // than sign a string the Node-side decoder would reject.
+    let mut empty_key = payload();
+    empty_key.device_public_key = String::new();
+    assert_eq!(
+        signer.issue(empty_key),
+        Err(ClientGrantError::InvalidPayload)
+    );
+
+    let mut short_key = payload();
+    short_key.device_public_key =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7_u8; 31]);
+    assert_eq!(
+        signer.issue(short_key),
+        Err(ClientGrantError::InvalidPayload)
+    );
+
+    // Padded base64url is a different spelling of the same bytes; accepting it
+    // would make the signed string and the decoded key two sources of truth.
+    let mut padded_key = payload();
+    padded_key.device_public_key = format!("{DEVICE_PUBLIC_KEY}=");
+    assert_eq!(
+        signer.issue(padded_key),
+        Err(ClientGrantError::InvalidPayload)
+    );
+
+    // Positive control: the frozen spelling itself must sign, so a validator that
+    // rejects every key cannot make the rules above look enforced.
+    let mut accepted_key = payload();
+    accepted_key.device_public_key = cloud_client_grant::format_device_public_key(&[7_u8; 32]);
+    assert!(signer.issue(accepted_key).is_ok());
+
+    // The node's TLS identity is signed data: Cloud is the only party that can
+    // state it, so a malformed name or pin must be refused at signing time and
+    // never reach a client that would then have to guess.
+    let mut prefixed_pin = payload();
+    prefixed_pin.nodes[0].server_cert_sha256 = format!("sha256:{}", "33".repeat(32));
+    assert_eq!(
+        signer.issue(prefixed_pin),
+        Err(ClientGrantError::InvalidPayload)
+    );
+
+    let mut short_pin = payload();
+    short_pin.nodes[1].server_cert_sha256 = "33".repeat(31);
+    assert_eq!(
+        signer.issue(short_pin),
+        Err(ClientGrantError::InvalidPayload)
+    );
+
+    let mut upper_pin = payload();
+    // Uppercase hex, not `"33"` repeated: the frozen spelling is lowercase-only,
+    // so a case difference must be refused rather than normalized.
+    upper_pin.nodes[0].server_cert_sha256 = "AB".repeat(32);
+    assert_eq!(
+        signer.issue(upper_pin),
+        Err(ClientGrantError::InvalidPayload)
+    );
+
+    // Positive control for the check above: the same string in the frozen
+    // spelling must be accepted, so a validator that simply rejects every pin
+    // cannot make the case rule look enforced.
+    let mut lower_pin = payload();
+    lower_pin.nodes[0].server_cert_sha256 = "ab".repeat(32);
+    assert!(signer.issue(lower_pin).is_ok());
+
+    let mut ported_name = payload();
+    ported_name.nodes[0].server_name = "edge-a.example.test:443".into();
+    assert_eq!(
+        signer.issue(ported_name),
+        Err(ClientGrantError::InvalidPayload)
+    );
+
+    let mut empty_name = payload();
+    empty_name.nodes[1].server_name = String::new();
+    assert_eq!(
+        signer.issue(empty_name),
+        Err(ClientGrantError::InvalidPayload)
+    );
+
+    let mut malformed_name = payload();
+    malformed_name.nodes[0].server_name = "edge-a..example.test".into();
+    assert_eq!(
+        signer.issue(malformed_name),
         Err(ClientGrantError::InvalidPayload)
     );
 }

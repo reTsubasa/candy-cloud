@@ -1,7 +1,10 @@
 use chrono::{Duration, Utc};
+use cloud_db::client_access::ClientTrafficMode;
 use cloud_db::client_control::{
-    ClientControlError, ClientDeviceLookup, ClientDeviceRecord, ClientDeviceRegistration,
-    ClientDeviceStatus, ClientGrantRecord, ClientGrantWrite, ClientPlatform,
+    ClientControlError, ClientControlRepository, ClientDeviceKeyRotation,
+    ClientDeviceKeyRotationOutcome, ClientDeviceLookup, ClientDeviceRecord,
+    ClientDeviceRegistration, ClientDeviceStatus, ClientDeviceStatusOutcome, ClientGrantRecord,
+    ClientGrantWrite, ClientPlatform, SetDeviceStatus,
 };
 use uuid::Uuid;
 
@@ -66,7 +69,10 @@ fn client_platform_maps_only_the_three_contracted_database_values() {
         assert_eq!(ClientPlatform::from_database_value(stored), Some(platform));
         // The database stores upper case and the wire uses lower case; neither
         // form may leak across the boundary by accident.
-        assert_eq!(ClientPlatform::from_database_value(&stored.to_lowercase()), None);
+        assert_eq!(
+            ClientPlatform::from_database_value(&stored.to_lowercase()),
+            None
+        );
     }
     assert_eq!(ClientPlatform::from_database_value("LINUX"), None);
     assert_eq!(ClientPlatform::from_database_value(""), None);
@@ -92,6 +98,235 @@ fn device_status_unknown_values_are_not_silently_treated_as_active() {
     assert_eq!(ClientDeviceStatus::from_database_value("DELETED"), None);
 }
 
+#[test]
+fn device_status_wire_and_database_spellings_never_bleed_into_each_other() {
+    // The column stores upper case and the management contract speaks lower case.
+    // Parsing one spelling with the other's parser must fail rather than return a
+    // plausible-looking state, because a device silently read as `ACTIVE` is the
+    // exact failure this split exists to prevent.
+    for (status, database, wire) in [
+        (ClientDeviceStatus::Active, "ACTIVE", "active"),
+        (ClientDeviceStatus::Suspended, "SUSPENDED", "suspended"),
+        (ClientDeviceStatus::Revoked, "REVOKED", "revoked"),
+    ] {
+        assert_eq!(status.to_database_value(), database);
+        assert_eq!(status.to_wire_value(), wire);
+        assert_eq!(
+            ClientDeviceStatus::from_database_value(database),
+            Some(status)
+        );
+        assert_eq!(ClientDeviceStatus::from_wire_value(wire), Some(status));
+        // Crossed over on purpose: neither parser may accept the other's form.
+        assert_eq!(ClientDeviceStatus::from_wire_value(database), None);
+        assert_eq!(ClientDeviceStatus::from_database_value(wire), None);
+    }
+    assert_eq!(ClientDeviceStatus::from_wire_value(""), None);
+    assert_eq!(ClientDeviceStatus::from_wire_value("suspended "), None);
+}
+
+#[test]
+fn only_revocation_is_terminal() {
+    assert!(ClientDeviceStatus::Revoked.is_terminal());
+    assert!(!ClientDeviceStatus::Active.is_terminal());
+    assert!(!ClientDeviceStatus::Suspended.is_terminal());
+}
+
+#[test]
+fn device_status_plan_allows_suspend_and_activate_but_refuses_revocation() {
+    use cloud_db::client_control::plan_device_status_change;
+    use ClientDeviceStatus::{Active, Revoked, Suspended};
+
+    // Both directions of the supported transition are allowed.
+    assert_eq!(
+        plan_device_status_change(Active, Suspended),
+        Ok(Some(Suspended))
+    );
+    assert_eq!(
+        plan_device_status_change(Suspended, Active),
+        Ok(Some(Active))
+    );
+
+    // Asking for the state the device is already in is an idempotent replay:
+    // `None` means "write nothing", which is what stops a retried operator action
+    // from emitting a second audit event.
+    assert_eq!(plan_device_status_change(Active, Active), Ok(None));
+    assert_eq!(plan_device_status_change(Suspended, Suspended), Ok(None));
+
+    // Revocation is terminal in *both* directions. A revoked device is never
+    // resurrected by a status call, and revocation itself is performed by the
+    // dedicated revoke path -- never as a side effect of this one.
+    for (current, requested) in [
+        (Revoked, Revoked),
+        (Revoked, Active),
+        (Revoked, Suspended),
+        (Active, Revoked),
+        (Suspended, Revoked),
+    ] {
+        assert_eq!(
+            plan_device_status_change(current, requested),
+            Err(ClientControlError::InvalidTransition),
+            "{current:?} -> {requested:?} must be refused"
+        );
+    }
+}
+
+#[test]
+fn device_status_outcome_reports_state_identity_and_replay_separately() {
+    let device_id = Uuid::new_v4();
+    let applied = ClientDeviceStatusOutcome::Suspended {
+        device_id,
+        replayed: false,
+    };
+    let replayed = ClientDeviceStatusOutcome::Suspended {
+        device_id,
+        replayed: true,
+    };
+    let activated = ClientDeviceStatusOutcome::Activated {
+        device_id,
+        replayed: false,
+    };
+
+    // `replayed` must be readable from the outcome rather than inferred by the
+    // HTTP layer, and the two directions must not compare equal.
+    assert!(!applied.replayed());
+    assert!(replayed.replayed());
+    assert_ne!(applied, replayed);
+    assert_ne!(applied, activated);
+    assert_eq!(applied.device_id(), device_id);
+    assert_eq!(applied.status(), ClientDeviceStatus::Suspended);
+    assert_eq!(activated.status(), ClientDeviceStatus::Active);
+}
+
+fn valid_rotation() -> ClientDeviceKeyRotation {
+    ClientDeviceKeyRotation {
+        organization_id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        device_id: Uuid::new_v4(),
+        device_key_id: Uuid::new_v4(),
+        public_key: vec![7; 32],
+    }
+}
+
+#[test]
+fn key_rotation_requires_a_complete_scope_and_usable_key() {
+    assert_eq!(valid_rotation().validate(), Ok(()));
+
+    for nil_field in 0..4 {
+        let mut rotation = valid_rotation();
+        match nil_field {
+            0 => rotation.organization_id = Uuid::nil(),
+            1 => rotation.tenant_id = Uuid::nil(),
+            2 => rotation.device_id = Uuid::nil(),
+            _ => rotation.device_key_id = Uuid::nil(),
+        }
+        assert_eq!(rotation.validate(), Err(ClientControlError::InvalidScope));
+    }
+
+    // The window mirrors the `OCTET_LENGTH(public_key) BETWEEN 32 AND 64` CHECK
+    // in 0038, so both edges are accepted and both neighbours are refused.
+    for len in [32_usize, 33, 64] {
+        let mut rotation = valid_rotation();
+        rotation.public_key = vec![7; len];
+        assert_eq!(rotation.validate(), Ok(()), "len {len} must be accepted");
+    }
+    for len in [0_usize, 31, 65] {
+        let mut rotation = valid_rotation();
+        rotation.public_key = vec![7; len];
+        assert_eq!(
+            rotation.validate(),
+            Err(ClientControlError::InvalidPublicKey),
+            "len {len} must be refused"
+        );
+    }
+
+    // An all-zero key is structurally in range but is not a public key any client
+    // can prove possession of, so storing it would brick the device.
+    let mut zeroed = valid_rotation();
+    zeroed.public_key = vec![0; 32];
+    assert_eq!(zeroed.validate(), Err(ClientControlError::InvalidPublicKey));
+}
+
+#[test]
+fn key_rotation_plan_refuses_non_active_devices_and_reused_key_identities() {
+    use cloud_db::client_control::plan_device_key_rotation;
+    use ClientDeviceStatus::{Active, Revoked, Suspended};
+
+    assert_eq!(plan_device_key_rotation(Active, false), Ok(()));
+
+    // A suspended device must be activated before its key is rotated, and a
+    // revoked one is never rotated back into service.
+    assert_eq!(
+        plan_device_key_rotation(Suspended, false),
+        Err(ClientControlError::InvalidTransition)
+    );
+    assert_eq!(
+        plan_device_key_rotation(Revoked, false),
+        Err(ClientControlError::InvalidTransition)
+    );
+
+    // A `device_key_id` is unique per tenant because it names a Projection
+    // audience. Reusing one would make two keys indistinguishable, so it is a
+    // conflict even when the caller believes it is retrying a rotation.
+    assert_eq!(
+        plan_device_key_rotation(Active, true),
+        Err(ClientControlError::BindingConflict)
+    );
+    // The non-active case is decided first: a rotation against a suspended device
+    // is a state conflict regardless of the key identity.
+    assert_eq!(
+        plan_device_key_rotation(Suspended, true),
+        Err(ClientControlError::InvalidTransition)
+    );
+}
+
+#[test]
+fn key_rotation_is_never_reported_as_replayed() {
+    let outcome = ClientDeviceKeyRotationOutcome::Rotated {
+        device_id: Uuid::new_v4(),
+        previous_device_key_id: Uuid::new_v4(),
+        device_key_id: Uuid::new_v4(),
+        revoked_grants: 2,
+        revoked_projections: 1,
+        replayed: false,
+    };
+    assert!(!outcome.replayed());
+    let ClientDeviceKeyRotationOutcome::Rotated {
+        previous_device_key_id,
+        device_key_id,
+        revoked_grants,
+        revoked_projections,
+        replayed,
+        ..
+    } = outcome;
+    // The counters exist so an operator (and a test) can prove the old key's
+    // authorization really was retired rather than left verifiable.
+    assert_ne!(previous_device_key_id, device_key_id);
+    assert_eq!(revoked_grants, 2);
+    assert_eq!(revoked_projections, 1);
+    assert!(!replayed);
+}
+
+#[test]
+fn device_status_scope_has_no_user_dimension() {
+    let scope = SetDeviceStatus {
+        organization_id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        device_id: Uuid::new_v4(),
+        new_status: ClientDeviceStatus::Suspended,
+    };
+    assert_eq!(scope.validate(), Ok(()));
+
+    for nil_field in 0..3 {
+        let mut scope = scope;
+        match nil_field {
+            0 => scope.organization_id = Uuid::nil(),
+            1 => scope.tenant_id = Uuid::nil(),
+            _ => scope.device_id = Uuid::nil(),
+        }
+        assert_eq!(scope.validate(), Err(ClientControlError::InvalidScope));
+    }
+}
+
 fn active_device() -> ClientDeviceRecord {
     ClientDeviceRecord {
         record_id: Uuid::new_v4(),
@@ -102,6 +337,7 @@ fn active_device() -> ClientDeviceRecord {
         device_key_id: Uuid::new_v4(),
         platform: ClientPlatform::Windows,
         generation: 1,
+        traffic_mode: ClientTrafficMode::Policy,
     }
 }
 
@@ -166,6 +402,7 @@ fn valid_grant_write() -> ClientGrantWrite {
         grant_envelope: vec![1, 2, 3],
         issued_at,
         expires_at: issued_at + Duration::hours(1),
+        assignment_lease_until: issued_at + Duration::minutes(5),
     }
 }
 
@@ -225,14 +462,45 @@ fn grant_write_rejects_an_unusable_fingerprint_envelope_or_window() {
     // A nonpositive validity window is never a usable Grant.
     let mut inverted = valid_grant_write();
     inverted.expires_at = inverted.issued_at - Duration::seconds(1);
-    assert_eq!(
-        inverted.validate(),
-        Err(ClientControlError::InvalidRecord)
-    );
+    assert_eq!(inverted.validate(), Err(ClientControlError::InvalidRecord));
 
     let mut zero_width = valid_grant_write();
     zero_width.expires_at = zero_width.issued_at;
-    assert_eq!(zero_width.validate(), Err(ClientControlError::InvalidRecord));
+    assert_eq!(
+        zero_width.validate(),
+        Err(ClientControlError::InvalidRecord)
+    );
+
+    // The recorded assignment lease has to describe the same window the signed
+    // payload validator accepts: strictly after `issued_at`, never past
+    // `expires_at`. A zero-width or inverted lease is refused here so Cloud can
+    // never store a Grant whose own validator would reject the envelope.
+    let mut lease_at_issue = valid_grant_write();
+    lease_at_issue.assignment_lease_until = lease_at_issue.issued_at;
+    assert_eq!(
+        lease_at_issue.validate(),
+        Err(ClientControlError::InvalidRecord)
+    );
+
+    let mut lease_before_issue = valid_grant_write();
+    lease_before_issue.assignment_lease_until = lease_before_issue.issued_at - Duration::seconds(1);
+    assert_eq!(
+        lease_before_issue.validate(),
+        Err(ClientControlError::InvalidRecord)
+    );
+
+    let mut lease_past_expiry = valid_grant_write();
+    lease_past_expiry.assignment_lease_until = lease_past_expiry.expires_at + Duration::seconds(1);
+    assert_eq!(
+        lease_past_expiry.validate(),
+        Err(ClientControlError::InvalidRecord)
+    );
+
+    // The lease may equal `expires_at`: that is the clamped window Cloud signs
+    // when the configured lease is longer than the Grant it fits inside.
+    let mut lease_at_expiry = valid_grant_write();
+    lease_at_expiry.assignment_lease_until = lease_at_expiry.expires_at;
+    assert_eq!(lease_at_expiry.validate(), Ok(()));
 }
 
 fn valid_grant_record() -> ClientGrantRecord {
@@ -250,6 +518,7 @@ fn valid_grant_record() -> ClientGrantRecord {
         grant_envelope: write.grant_envelope,
         issued_at: write.issued_at,
         expires_at: write.expires_at,
+        assignment_lease_until: Some(write.assignment_lease_until),
     }
 }
 
@@ -281,6 +550,27 @@ fn a_stored_grant_must_satisfy_the_same_invariants_as_a_written_one() {
         expired_window.validate(),
         Err(ClientControlError::InvalidRecord)
     );
+
+    // `None` is the pre-`0047` row: no recorded lease, still a readable record.
+    let mut no_lease = valid_grant_record();
+    no_lease.assignment_lease_until = None;
+    assert_eq!(no_lease.validate(), Ok(()));
+
+    // A recorded lease must not describe a window the payload validator forbids.
+    let mut lease_at_issue = valid_grant_record();
+    lease_at_issue.assignment_lease_until = Some(lease_at_issue.issued_at);
+    assert_eq!(
+        lease_at_issue.validate(),
+        Err(ClientControlError::InvalidRecord)
+    );
+
+    let mut lease_past_expiry = valid_grant_record();
+    lease_past_expiry.assignment_lease_until =
+        Some(lease_past_expiry.expires_at + Duration::seconds(1));
+    assert_eq!(
+        lease_past_expiry.validate(),
+        Err(ClientControlError::InvalidRecord)
+    );
 }
 /// Repository reads validate their scope before building a query, so a caller
 /// with an incomplete identity tuple is refused without any database round trip.
@@ -288,7 +578,6 @@ fn a_stored_grant_must_satisfy_the_same_invariants_as_a_written_one() {
 /// fail, which is exactly what proves the check happens first.
 mod scope_checks {
     use super::*;
-    use cloud_db::client_control::ClientControlRepository;
 
     fn repository() -> ClientControlRepository {
         let pool: cloud_db::DbPool =
@@ -337,12 +626,7 @@ mod scope_checks {
         );
         assert_eq!(
             repository
-                .active_grant(
-                    Uuid::nil(),
-                    Uuid::new_v4(),
-                    Uuid::new_v4(),
-                    Utc::now()
-                )
+                .active_grant(Uuid::nil(), Uuid::new_v4(), Uuid::new_v4(), Utc::now())
                 .await,
             Err(ClientControlError::InvalidScope)
         );
@@ -360,4 +644,168 @@ mod scope_checks {
             Err(ClientControlError::InvalidRecord)
         );
     }
+
+    #[tokio::test]
+    async fn device_status_change_refuses_an_incomplete_scope() {
+        let repository = repository();
+        for (organization, tenant, device) in [
+            (Uuid::nil(), Uuid::new_v4(), Uuid::new_v4()),
+            (Uuid::new_v4(), Uuid::nil(), Uuid::new_v4()),
+            (Uuid::new_v4(), Uuid::new_v4(), Uuid::nil()),
+        ] {
+            assert_eq!(
+                repository
+                    .set_device_status(organization, tenant, device, ClientDeviceStatus::Suspended)
+                    .await,
+                Err(ClientControlError::InvalidScope)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn key_rotation_refuses_an_incomplete_scope_and_an_unusable_key() {
+        let repository = repository();
+        for nil_field in 0..3 {
+            let mut rotation = valid_rotation();
+            match nil_field {
+                0 => rotation.organization_id = Uuid::nil(),
+                1 => rotation.tenant_id = Uuid::nil(),
+                _ => rotation.device_id = Uuid::nil(),
+            }
+            assert_eq!(
+                repository.rotate_device_key(&rotation).await,
+                Err(ClientControlError::InvalidScope)
+            );
+        }
+
+        // The key check precedes the scope check inside `validate`, so an
+        // oversized key on a *complete* scope is still refused without storage.
+        let mut oversized = valid_rotation();
+        oversized.public_key = vec![7; 65];
+        assert_eq!(
+            repository.rotate_device_key(&oversized).await,
+            Err(ClientControlError::InvalidPublicKey)
+        );
+    }
+}
+
+/// Live-database round trip for the recorded assignment lease (migration `0047`).
+///
+/// Skipped entirely when `DATABASE_URL` is unset, which is the case on a machine
+/// with no MySQL runtime: the pure-logic coverage above is what the default
+/// `cargo test` run actually exercises, and nothing here claims otherwise. CI
+/// provides MySQL 8.4 and a `DATABASE_URL`, so this is the run that proves the
+/// column is written and read back rather than only type-checked.
+#[tokio::test]
+async fn a_written_grant_records_and_reads_back_its_assignment_lease() {
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        return;
+    };
+    let pool = cloud_db::connect(&url).await.unwrap();
+    cloud_db::migrate(&pool).await.unwrap();
+    let repository = ClientControlRepository::new(pool.clone());
+
+    let organization_id = Uuid::new_v4();
+    let tenant_id = Uuid::new_v4();
+    let user_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO organizations (id, name) VALUES (?, ?)")
+        .bind(organization_id)
+        .bind(format!("lease-org-{organization_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO human_users (id, email_normalized, display_name, password_hash, status) VALUES (?, ?, ?, 'unused', 'ACTIVE')")
+        .bind(user_id)
+        .bind(format!("{user_id}@lease.example.test"))
+        .bind("Lease Tester")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO organization_memberships (organization_id, user_id, role, status) VALUES (?, ?, 'ORGANIZATION_OWNER', 'ACTIVE')")
+        .bind(organization_id)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tenants (id, organization_id, name) VALUES (?, ?, ?)")
+        .bind(tenant_id)
+        .bind(organization_id)
+        .bind(format!("lease-tenant-{tenant_id}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // `write_grant` requires an ACTIVE key row for the exact binding, so the
+    // device goes through the real registration path rather than raw inserts.
+    let mut registration = valid_request();
+    registration.organization_id = organization_id;
+    registration.tenant_id = tenant_id;
+    registration.user_id = user_id;
+    registration.actor_id = user_id;
+    registration.install_id = format!("lease-install-{tenant_id}");
+    repository.register_device(&registration).await.unwrap();
+
+    let issued_at = Utc::now();
+    let expires_at = issued_at + Duration::hours(24);
+    let lease_until = issued_at + Duration::hours(1);
+    let mut write = valid_grant_write();
+    write.organization_id = organization_id;
+    write.tenant_id = tenant_id;
+    write.user_id = user_id;
+    write.client_device_id = registration.record_id;
+    write.device_key_id = registration.device_key_id;
+    write.issued_at = issued_at;
+    write.expires_at = expires_at;
+    write.assignment_lease_until = lease_until;
+    repository.write_grant(&write).await.unwrap();
+
+    // The read path the reuse decision uses must see the recorded deadline.
+    let active = repository
+        .active_grant(
+            tenant_id,
+            registration.record_id,
+            registration.device_key_id,
+            issued_at,
+        )
+        .await
+        .unwrap()
+        .expect("the just-written Grant is active");
+    assert_eq!(active.assignment_lease_until, Some(lease_until));
+
+    // And the idempotent read path used for replay must agree byte for byte.
+    let by_request = repository
+        .grant_by_request(tenant_id, registration.record_id, write.request_id)
+        .await
+        .unwrap()
+        .expect("the just-written Grant is readable by request");
+    assert_eq!(by_request.assignment_lease_until, Some(lease_until));
+    assert_eq!(by_request.grant_envelope, active.grant_envelope);
+
+    // A historical row written before `0047` has no lease value; inserting one
+    // directly is how the "no evidence" path is reproduced without rewriting the
+    // migration. The read must surface `None`, not an error or a guessed value.
+    let legacy_request = Uuid::new_v4();
+    sqlx::query("INSERT INTO client_grants (id, organization_id, tenant_id, user_id, client_device_id, device_key_id, generation, request_id, request_hash, signing_key_id, grant_digest, grant_envelope, issued_at, expires_at, status, assignment_lease_until) VALUES (?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NULL)")
+        .bind(Uuid::new_v4())
+        .bind(organization_id)
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(registration.record_id)
+        .bind(registration.device_key_id)
+        .bind(legacy_request)
+        .bind([9_u8; 32].as_slice())
+        .bind("cloud-client-grant-2026-01")
+        .bind([10_u8; 32].as_slice())
+        .bind(vec![4_u8, 5, 6])
+        .bind(issued_at)
+        .bind(expires_at)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let legacy = repository
+        .grant_by_request(tenant_id, registration.record_id, legacy_request)
+        .await
+        .unwrap()
+        .expect("the legacy row is readable");
+    assert_eq!(legacy.assignment_lease_until, None);
 }

@@ -20,11 +20,15 @@
 
 use chrono::{DateTime, Utc};
 use cloud_client_grant::{
-    format_content_hash, ClientGrantAudience, ClientGrantNodeAssignment, ClientGrantPayloadV1,
-    ClientGrantPolicyBinding, ClientGrantSigner, ClientGrantTrafficMode, CLIENT_GRANT_SCHEMA_VERSION,
-    CLIENT_GRANT_MAX_TTL_SECS, CLIENT_GRANT_TTL_SECS,
+    format_content_hash, ClientGrantAudience, ClientGrantEnvelopeV1, ClientGrantNodeAssignment,
+    ClientGrantPayloadV1, ClientGrantPolicyBinding, ClientGrantSigner, ClientGrantTrafficMode,
+    CLIENT_GRANT_MAX_TTL_SECS, CLIENT_GRANT_SCHEMA_VERSION, CLIENT_GRANT_TTL_SECS,
 };
 use cloud_db::client_access::ClientAccessPolicyRepository;
+use cloud_db::client_assignment_lease::{
+    assignment_lease_deadline, assignment_lease_state, plan_assignment, AssignedNode,
+    AssignmentPlan, PreviousAssignment,
+};
 use cloud_db::client_control::{
     ClientControlRepository, ClientDeviceRecord, ClientGrantRecord, ClientGrantWrite,
     ClientGrantWriteOutcome,
@@ -133,15 +137,19 @@ impl<'a> ClientIssuance<'a> {
             // Envelope would be addressed to a key the client no longer holds.
             return Err(ClientIssuanceError::IdempotencyConflict);
         }
-        let nodes = self.select_nodes(device.tenant_id).await?;
-        let issued_at = u64::try_from(now.timestamp()).map_err(|_| ClientIssuanceError::Unavailable)?;
+        let issued_at =
+            u64::try_from(now.timestamp()).map_err(|_| ClientIssuanceError::Unavailable)?;
         let expires_at = issued_at
             .checked_add(CLIENT_GRANT_TTL_SECS)
             .ok_or(ClientIssuanceError::Unavailable)?;
-        let lease_until = issued_at
-            .checked_add(CLIENT_GRANT_NODE_LEASE_SECS)
-            .ok_or(ClientIssuanceError::Unavailable)?
-            .min(expires_at);
+        // The node set is chosen against the assignment the device already holds,
+        // so a refresh inside a live lease window keeps the same primary and the
+        // same failover order. Selection only re-runs once that window is over.
+        let nodes = self.select_nodes_for(device, issued_at).await?;
+        let lease_until =
+            assignment_lease_deadline(issued_at, CLIENT_GRANT_NODE_LEASE_SECS, expires_at)
+                .ok_or(ClientIssuanceError::Unavailable)?;
+        let lease_until_time = timestamp(lease_until)?;
         let issues_at = timestamp(issued_at)?;
         let expires_at_time = timestamp(expires_at)?;
 
@@ -160,6 +168,9 @@ impl<'a> ClientIssuance<'a> {
                 user_id: device.user_id,
                 device_id: device.device_id,
                 device_key_id: device.device_key_id,
+                device_public_key: cloud_client_grant::format_device_public_key(
+                    &snapshot.public_key,
+                ),
                 audience: ClientGrantAudience {
                     tenant_id: device.tenant_id,
                     user_id: device.user_id,
@@ -191,6 +202,10 @@ impl<'a> ClientIssuance<'a> {
                         priority: u8::try_from(index + 1).unwrap_or(u8::MAX),
                         node_key_id: node.node_key_id,
                         transport: "quic".to_owned(),
+                        server_name: node.server_name.clone(),
+                        server_cert_sha256: cloud_client_grant::format_cert_pin(
+                            &node.server_cert_sha256,
+                        ),
                         assignment_lease_until: lease_until,
                     })
                     .collect(),
@@ -217,6 +232,7 @@ impl<'a> ClientIssuance<'a> {
                 grant_envelope: envelope_bytes,
                 issued_at: issues_at,
                 expires_at: expires_at_time,
+                assignment_lease_until: lease_until_time,
             };
             match self.control.write_grant(&write).await {
                 Ok(ClientGrantWriteOutcome::Issued { replayed, .. }) => {
@@ -271,21 +287,59 @@ impl<'a> ClientIssuance<'a> {
         Ok(stored)
     }
 
-    async fn select_nodes(
+    /// Chooses the node set for a Grant that is about to be signed.
+    ///
+    /// The device's previous assignment is consulted first. While its lease is
+    /// still live the same nodes are reused in the same failover order, so a
+    /// refresh does not silently move a working device onto a different edge. The
+    /// reuse is *not* blind: every reused node must still be an active candidate
+    /// right now, so a node that left service still forces fresh selection.
+    ///
+    /// Re-selection is the fallback for every case the lease cannot answer -- no
+    /// previous assignment, a lease with no recorded deadline (a row written
+    /// before migration `0047`), an elapsed window, or a node that is no longer
+    /// offered.
+    async fn select_nodes_for(
         &self,
-        tenant_id: Uuid,
+        device: &ClientDeviceRecord,
+        issued_at: u64,
     ) -> Result<Vec<cloud_db::client_routing::ClientNodeCandidate>, ClientIssuanceError> {
         let candidates = self
             .routing
-            .active_candidates(tenant_id)
+            .active_candidates(device.tenant_id)
             .await
             .map_err(|_| ClientIssuanceError::Unavailable)?;
         if candidates.is_empty() {
             return Err(ClientIssuanceError::NoActiveNode);
         }
-        // Ask for as many backups as Cloud actually has. Requesting a fixed two
-        // would turn a healthy single-node tenant into a permanent "no node"
-        // error, which is worse than a shorter failover list.
+        let previous = self.previous_assignment(device, issued_at).await?;
+        if let AssignmentPlan::Reuse { nodes } =
+            plan_assignment(issued_at, previous.as_ref(), &candidates)
+        {
+            // A reused assignment still has to fit the frozen node ceiling. It
+            // cannot fail for an assignment Cloud itself signed, but a stored blob
+            // is not evidence of its own validity, so a mismatch falls back to
+            // selection instead of producing an envelope the validator rejects.
+            if !nodes.is_empty() && nodes.len() <= MAX_CLIENT_NODE_BACKUPS + 1 {
+                // Reuse keeps the stored *identity and order*, but the values come
+                // from the freshly resolved candidates, so a repaired endpoint or a
+                // rotated node key is carried into the new Grant instead of the
+                // values frozen into the old envelope.
+                return Ok(nodes);
+            }
+        }
+        self.select_fresh_nodes(candidates)
+    }
+
+    /// Fresh selection when no live lease can be reused.
+    ///
+    /// Asks for as many backups as Cloud actually has: requesting a fixed two
+    /// would turn a healthy single-node tenant into a permanent "no node" error,
+    /// which is worse than a shorter failover list.
+    fn select_fresh_nodes(
+        &self,
+        candidates: Vec<cloud_db::client_routing::ClientNodeCandidate>,
+    ) -> Result<Vec<cloud_db::client_routing::ClientNodeCandidate>, ClientIssuanceError> {
         let backup_count = candidates
             .len()
             .saturating_sub(1)
@@ -304,6 +358,82 @@ impl<'a> ClientIssuance<'a> {
         nodes.push(selection.primary);
         nodes.extend(selection.backups);
         Ok(nodes)
+    }
+
+    /// The assignment the device's newest active Grant already holds.
+    ///
+    /// The recorded deadline answers "is this still live?" *before* the envelope
+    /// is decoded, which is what migration `0047` is for: an elapsed window needs
+    /// no parse at all. When the window is live the envelope is decoded to learn
+    /// which nodes were assigned, and its signed deadline is then compared against
+    /// the recorded one. A disagreement means the derived column is stale or was
+    /// written by something other than this path, so Cloud refuses to reuse and
+    /// re-selects rather than trusting either value.
+    async fn previous_assignment(
+        &self,
+        device: &ClientDeviceRecord,
+        now: u64,
+    ) -> Result<Option<PreviousAssignment>, ClientIssuanceError> {
+        let at = timestamp(now)?;
+        let Some(record) = self
+            .control
+            .active_grant(device.tenant_id, device.record_id, device.device_key_id, at)
+            .await
+            .map_err(|_| ClientIssuanceError::Unavailable)?
+        else {
+            return Ok(None);
+        };
+        // No recorded deadline is "no evidence", not "no lease": rows written
+        // before `0047` must re-select rather than have Cloud invent a window.
+        let Some(recorded_until) = record.assignment_lease_until else {
+            return Ok(None);
+        };
+        let recorded_until = u64::try_from(recorded_until.timestamp())
+            .map_err(|_| ClientIssuanceError::Unavailable)?;
+        if !assignment_lease_state(now, recorded_until).is_reusable() {
+            return Ok(None);
+        }
+        let envelope = ClientGrantEnvelopeV1::from_envelope_bytes(&record.grant_envelope)
+            .map_err(|_| ClientIssuanceError::Unavailable)?;
+        let Some(first) = envelope.payload.nodes.first() else {
+            return Ok(None);
+        };
+        // Every node in one Grant carries the same lease instant; a Grant whose
+        // nodes disagree was not produced by this path, so it is not reusable.
+        let signed_until = first.assignment_lease_until;
+        if envelope
+            .payload
+            .nodes
+            .iter()
+            .any(|node| node.assignment_lease_until != signed_until)
+            || signed_until != recorded_until
+        {
+            tracing::warn!(
+                event = "client_grant_assignment_lease_mismatch",
+                tenant_id = %device.tenant_id,
+                client_device_id = %device.record_id,
+                grant_id = %record.grant_id,
+                recorded_assignment_lease_until = recorded_until,
+                signed_assignment_lease_until = signed_until,
+                "recorded assignment lease disagrees with the signed envelope; re-selecting"
+            );
+            return Ok(None);
+        }
+        // The envelope is decoded into the minimal identity pair, so the planner
+        // never handles the wire type and cannot accidentally re-interpret it.
+        let nodes: Vec<AssignedNode> = envelope
+            .payload
+            .nodes
+            .iter()
+            .map(|node| AssignedNode {
+                node_id: node.node_id,
+                node_key_id: node.node_key_id,
+            })
+            .collect();
+        Ok(Some(PreviousAssignment {
+            lease_until: signed_until,
+            nodes,
+        }))
     }
 }
 
@@ -389,6 +519,7 @@ mod tests {
             device_key_id: Uuid::from_u128(6),
             platform: ClientPlatform::Macos,
             generation: 7,
+            traffic_mode: cloud_db::client_access::ClientTrafficMode::Policy,
         }
     }
 
@@ -445,12 +576,22 @@ mod tests {
         published.policy.generation = 8;
         assert_ne!(
             base,
-            issuance_fingerprint(&device, request_id, &published, &[node(10, "edge-a.example.test:443")])
+            issuance_fingerprint(
+                &device,
+                request_id,
+                &published,
+                &[node(10, "edge-a.example.test:443")]
+            )
         );
 
         assert_ne!(
             base,
-            issuance_fingerprint(&device, request_id, &snapshot(), &[node(11, "edge-b.example.test:443")])
+            issuance_fingerprint(
+                &device,
+                request_id,
+                &snapshot(),
+                &[node(11, "edge-b.example.test:443")]
+            )
         );
     }
 
@@ -458,14 +599,21 @@ mod tests {
     fn node_lease_never_exceeds_the_grant_lifetime() {
         let issued_at = 1_900_000_000_u64;
         let expires_at = issued_at + CLIENT_GRANT_TTL_SECS;
-        let lease = issued_at
-            .checked_add(CLIENT_GRANT_NODE_LEASE_SECS)
-            .unwrap()
-            .min(expires_at);
+        // The deadline comes from the same pure planner the issuance path uses,
+        // so this test fails if the two ever disagree about the window shape.
+        let lease = assignment_lease_deadline(issued_at, CLIENT_GRANT_NODE_LEASE_SECS, expires_at)
+            .expect("the default lease window is signable");
         assert!(lease > issued_at && lease <= expires_at);
         // The lease is intentionally well inside the Grant window so a node that
         // leaves service is dropped by refresh instead of lingering until expiry.
         assert_eq!(lease, issued_at + CLIENT_GRANT_NODE_LEASE_SECS);
+
+        // A lease longer than the Grant is clamped rather than refused, because
+        // running out of Grant would otherwise make issuance fail outright.
+        assert_eq!(
+            assignment_lease_deadline(issued_at, CLIENT_GRANT_TTL_SECS * 2, expires_at),
+            Some(expires_at)
+        );
     }
 
     fn snapshot() -> cloud_db::client_access::ClientAuthorizationSnapshot {

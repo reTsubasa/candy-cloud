@@ -59,7 +59,6 @@ export function collapseDefaultRouteSlices(cidrs: string[]): string[] {
 
 export function normalizeSpecForEditor(resource: ResourceSpec): Spec {
   const spec = structuredClone(resource.spec);
-  if (resource.kind === 'SERVICE_POLICY') spec.enabled = spec.enabled !== false;
   if (resource.kind === 'DNS_INTENT') {
     const legacySiteId = typeof spec.site_id === 'string' ? spec.site_id : '';
     const siteIds = Array.isArray(spec.site_ids) ? spec.site_ids : legacySiteId ? [legacySiteId] : [];
@@ -107,11 +106,7 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
     spec.relay_id = editor.kind === 'RELAY' ? cleanText(editor.relay_id) : null;
   }
   if (kind === 'SERVICE_POLICY') {
-    const name = cleanText(editor.name);
-    if (name) spec.name = name;
-    else delete spec.name;
     spec.generation = positiveInteger(editor.generation);
-    spec.enabled = editor.enabled !== false;
     spec.rules = ((editor.rules as Spec[]) ?? []).map((rule) => {
       const cidrs = (rule.destination_cidrs as string[]) ?? [];
       const geoCountries = ((rule.geo_countries as string[]) ?? []).map(cleanText).filter(Boolean);
@@ -153,16 +148,6 @@ export function buildResourceSpec(kind: string, editor: Spec): ResourceSpec {
     }));
   }
   return { kind, spec };
-}
-
-export function policyDataPlaneChanged(previous: ResourceSpec, current: ResourceSpec): boolean {
-  if (previous.kind !== 'SERVICE_POLICY' || current.kind !== 'SERVICE_POLICY') return true;
-  const effective = (spec: Spec) => ({
-    segment_id: spec.segment_id,
-    enabled: spec.enabled !== false,
-    rules: spec.rules ?? [],
-  });
-  return JSON.stringify(effective(previous.spec)) !== JSON.stringify(effective(current.spec));
 }
 
 function required(spec: Spec, fields: string[], errors: string[]) {
@@ -211,7 +196,6 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
   }
   if (kind === 'SERVICE_POLICY') {
     const rules = (spec.rules as Spec[]) ?? [];
-    if (Array.from(cleanText(spec.name)).length > 120) errors.push('name:length');
     if (!Number.isInteger(Number(spec.generation)) || Number(spec.generation) < 1) errors.push('generation:positive');
     const priorities = new Set<number>();
     rules.forEach((rule, index) => {
@@ -222,6 +206,9 @@ export function validateResourceEditor(kind: string, spec: Spec): string[] {
       const geoCountries = ((rule.geo_countries as string[]) ?? []).map(cleanText).filter(Boolean);
       geoCountries.forEach((country) => { if (!/^[A-Z]{2}$/.test(country.toUpperCase())) errors.push(`rules.${index}.geo_countries:country`); });
       if (geoCountries.length > 256) errors.push(`rules.${index}.geo_countries:range`);
+      if (geoCountries.length > 0 && cleanText(rule.geo_provider) !== 'openwrt-cidr-v1') errors.push(`rules.${index}.geo_provider:unsupported`);
+      if (geoCountries.length > 0 && new Set(geoCountries.map((country) => country.toUpperCase())).size !== geoCountries.length) errors.push(`rules.${index}.geo_countries:unique`);
+      if (cleanText(rule.geo_version).length > 120) errors.push(`rules.${index}.geo_version:length`);
       const geoDigest = cleanText(rule.geo_digest);
       if (geoDigest && !/^[0-9a-f]{64}$/i.test(geoDigest)) errors.push(`rules.${index}.geo_digest:digest`);
       ((rule.domains as string[]) ?? []).forEach((domain) => { if (!hostnamePattern.test(domain)) errors.push(`rules.${index}.domains:domain`); });

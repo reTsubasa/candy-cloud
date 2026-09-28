@@ -19,11 +19,15 @@ use uuid::Uuid;
 
 use cloud_api::domain::{Role, TenantContext};
 use cloud_api::management::AuthenticatedPrincipal;
-use cloud_api::{app, app_with_principal, app_with_terminal_client_plane_and_principal};
+use cloud_api::{
+    app, app_with_principal, app_with_terminal_client_plane_and_principal, TerminalClientPlane,
+};
 use cloud_client_grant::ClientGrantSigner;
+use cloud_client_projection::PolicyProjectionSigner;
 use cloud_db::DbPool;
 
 const SIGNING_KEY_ID: &str = "cloud-client-grant-test";
+const PROJECTION_SIGNING_KEY_ID: &str = "cloud-client-projection-test";
 
 fn lazy_pool() -> DbPool {
     sqlx::MySqlPool::connect_lazy("mysql://invalid/invalid").unwrap()
@@ -48,20 +52,40 @@ fn signer() -> ClientGrantSigner {
     ClientGrantSigner::new(SIGNING_KEY_ID, SigningKey::from_bytes(&[9_u8; 32])).unwrap()
 }
 
+fn projection_signer() -> PolicyProjectionSigner {
+    PolicyProjectionSigner::new(
+        PROJECTION_SIGNING_KEY_ID,
+        SigningKey::from_bytes(&[11_u8; 32]),
+    )
+    .unwrap()
+}
+
 /// The full terminal plane with a lazy (never-connected) database, so anything
 /// that passes validation fails on storage instead of silently succeeding.
 fn terminal_app(principal: AuthenticatedPrincipal) -> axum::Router {
     let pool = lazy_pool();
     app_with_terminal_client_plane_and_principal(
         cloud_db::control::ControlRepository::new(pool.clone()),
-        Some(cloud_db::client_access::ClientAccessPolicyRepository::new(
-            pool.clone(),
-        )),
-        Some(cloud_db::client_control::ClientControlRepository::new(
-            pool.clone(),
-        )),
-        Some(cloud_db::client_routing::ClientNodeRepository::new(pool)),
-        Some(signer()),
+        TerminalClientPlane {
+            access: Some(cloud_db::client_access::ClientAccessPolicyRepository::new(
+                pool.clone(),
+            )),
+            control: Some(cloud_db::client_control::ClientControlRepository::new(
+                pool.clone(),
+            )),
+            routing: Some(cloud_db::client_routing::ClientNodeRepository::new(
+                pool.clone(),
+            )),
+            grant: Some(signer()),
+            projection: Some(
+                cloud_db::client_projection::ClientProjectionRepository::new(pool.clone()),
+            ),
+            settings: Some(
+                cloud_db::client_settings::ClientProjectionSettingsRepository::new(pool),
+            ),
+            projection_signer: Some(projection_signer()),
+            geo_provider: None,
+        },
         principal,
     )
 }
@@ -344,4 +368,405 @@ async fn grant_route_validates_the_envelope_before_touching_storage() {
     let (status, response) = post(app, uri, serde_json::to_vec(&body).unwrap()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(response.contains("INVALID_MESSAGE_TYPE"), "{response}");
+}
+
+/// A request body for one of the device-scoped projection-plane routes. They all
+/// share the same two payload fields, so they share one builder.
+fn device_body(message_type: &str, device_id: Uuid, device_key_id: Uuid) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "api_version": 1,
+        "message_type": message_type,
+        "request_id": Uuid::new_v4().to_string(),
+        "payload": {
+            "device_id": device_id.to_string(),
+            "device_key_id": device_key_id.to_string()
+        }
+    }))
+    .unwrap()
+}
+
+/// Every device-scoped route on the projection plane, so a new route cannot be
+/// added to the router without being covered by the fail-closed tests below.
+fn projection_plane_routes(device: Uuid) -> Vec<(&'static str, String, Vec<u8>)> {
+    let key = Uuid::new_v4();
+    vec![
+        (
+            "POST",
+            format!("/v1/client/devices/{device}/projection"),
+            device_body("projection_request", device, key),
+        ),
+        (
+            "POST",
+            format!("/v1/client/devices/{device}/heartbeat"),
+            device_body("heartbeat_request", device, key),
+        ),
+        (
+            "POST",
+            format!("/v1/client/devices/{device}/revoke"),
+            device_body("revoke_request", device, key),
+        ),
+        (
+            "PUT",
+            format!("/v1/client/devices/{device}/projection/receipt"),
+            serde_json::to_vec(&serde_json::json!({
+                "api_version": 1,
+                "message_type": "receipt_request",
+                "request_id": Uuid::new_v4().to_string(),
+                "payload": {
+                    "device_id": device.to_string(),
+                    "device_key_id": key.to_string(),
+                    "projection_id": Uuid::new_v4().to_string(),
+                    "generation": 1,
+                    "content_hash": format!("sha256:{}", "a".repeat(64)),
+                    "state": "received"
+                }
+            }))
+            .unwrap(),
+        ),
+        (
+            "POST",
+            format!("/v1/client/devices/{device}/traffic-mode"),
+            serde_json::to_vec(&serde_json::json!({
+                "api_version": 1,
+                "message_type": "traffic_mode_request",
+                "request_id": Uuid::new_v4().to_string(),
+                "payload": {
+                    "device_id": device.to_string(),
+                    "device_key_id": key.to_string(),
+                    "traffic_mode": "policy"
+                }
+            }))
+            .unwrap(),
+        ),
+    ]
+}
+
+async fn send(app: axum::Router, method: &str, uri: String, body: Vec<u8>) -> (StatusCode, String) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tokio::test]
+async fn every_projection_route_requires_a_session_before_reading_the_body() {
+    // The session is extracted before the body on every route, so an
+    // unauthenticated caller learns nothing about which fields Cloud validates.
+    for (method, uri, _) in projection_plane_routes(Uuid::new_v4()) {
+        let (status, body) = send(app(), method, uri.clone(), b"{".to_vec()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
+        assert!(
+            body.contains("AUTHENTICATION_REQUIRED"),
+            "{method} {uri}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_projection_route_rejects_a_device_id_that_does_not_match_the_path() {
+    let app = terminal_app(principal(Uuid::new_v4(), Uuid::new_v4().to_string()));
+    let path_device = Uuid::new_v4();
+    for (method, uri, body) in projection_plane_routes(path_device) {
+        // A body naming a *different* device than the path must be refused before
+        // any ownership lookup, so a caller cannot probe another device's state.
+        let mut mismatched: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        mismatched["payload"]["device_id"] = serde_json::json!(Uuid::new_v4().to_string());
+        let (status, response) = send(
+            app.clone(),
+            method,
+            uri.clone(),
+            serde_json::to_vec(&mismatched).unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{method} {uri}: {response}"
+        );
+        assert!(
+            response.contains("DEVICE_BINDING_MISMATCH"),
+            "{method} {uri}: {response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn projection_routes_validate_the_envelope_before_touching_storage() {
+    let device = Uuid::new_v4();
+    for (method, uri, body) in projection_plane_routes(device) {
+        let app = terminal_app(principal(Uuid::new_v4(), Uuid::new_v4().to_string()));
+        let mut wrong: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        wrong["message_type"] = serde_json::json!("register_device_request");
+        let (status, response) = send(
+            app,
+            method,
+            uri.clone(),
+            serde_json::to_vec(&wrong).unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{method} {uri}: {response}"
+        );
+        assert!(
+            response.contains("INVALID_MESSAGE_TYPE"),
+            "{method} {uri}: {response}"
+        );
+
+        let app = terminal_app(principal(Uuid::new_v4(), Uuid::new_v4().to_string()));
+        let mut old: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        old["api_version"] = serde_json::json!(2);
+        let (status, response) =
+            send(app, method, uri.clone(), serde_json::to_vec(&old).unwrap()).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{method} {uri}: {response}"
+        );
+        assert!(
+            response.contains("INVALID_API_VERSION"),
+            "{method} {uri}: {response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn projection_routes_reject_unknown_payload_fields() {
+    // `deny_unknown_fields` on every payload, so a caller cannot smuggle its own
+    // tenant, user, or traffic mode past Cloud's resolution.
+    let device = Uuid::new_v4();
+    let app = terminal_app(principal(Uuid::new_v4(), Uuid::new_v4().to_string()));
+    for (method, uri, body) in projection_plane_routes(device) {
+        let mut smuggled: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        smuggled["payload"]["tenant_id"] = serde_json::json!(Uuid::new_v4().to_string());
+        let (status, response) = send(
+            app.clone(),
+            method,
+            uri.clone(),
+            serde_json::to_vec(&smuggled).unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{method} {uri}: {response}"
+        );
+        assert!(
+            response.contains("INVALID_REQUEST"),
+            "{method} {uri}: {response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_malformed_projection_body_never_becomes_a_plain_text_error() {
+    let device = Uuid::new_v4();
+    let app = terminal_app(principal(Uuid::new_v4(), Uuid::new_v4().to_string()));
+    for (method, uri, _) in projection_plane_routes(device) {
+        let (status, response) = send(app.clone(), method, uri.clone(), b"{".to_vec()).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{method} {uri}: {response}"
+        );
+        assert!(
+            response.contains("INVALID_JSON"),
+            "{method} {uri}: {response}"
+        );
+
+        let (status, response) = send(app.clone(), method, uri.clone(), b"null".to_vec()).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{method} {uri}: {response}"
+        );
+        assert!(
+            response.contains("INVALID_REQUEST") || response.contains("INVALID_JSON"),
+            "{method} {uri}: {response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn traffic_mode_is_validated_before_storage_and_before_any_policy_lookup() {
+    let device = Uuid::new_v4();
+    let uri = format!("/v1/client/devices/{device}/traffic-mode");
+    // Both database spellings and a mode the Client contract does not define must
+    // be refused with the contracted code rather than reaching the policy lookup.
+    for mode in ["POLICY", "GLOBAL", "split", "bypass", "global ", ""] {
+        let app = terminal_app(principal(Uuid::new_v4(), Uuid::new_v4().to_string()));
+        let body = serde_json::to_vec(&serde_json::json!({
+            "api_version": 1,
+            "message_type": "traffic_mode_request",
+            "request_id": Uuid::new_v4().to_string(),
+            "payload": {
+                "device_id": device.to_string(),
+                "device_key_id": Uuid::new_v4().to_string(),
+                "traffic_mode": mode
+            }
+        }))
+        .unwrap();
+        let (status, response) = send(app, "POST", uri.clone(), body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "mode={mode}: {response}");
+        assert!(
+            response.contains("INVALID_TRAFFIC_MODE"),
+            "mode={mode}: {response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn receipt_state_and_content_hash_are_validated_before_storage() {
+    let device = Uuid::new_v4();
+    let key = Uuid::new_v4();
+    let uri = format!("/v1/client/devices/{device}/projection/receipt");
+
+    let receipt = |state: &str, content_hash: String| {
+        serde_json::to_vec(&serde_json::json!({
+            "api_version": 1,
+            "message_type": "receipt_request",
+            "request_id": Uuid::new_v4().to_string(),
+            "payload": {
+                "device_id": device.to_string(),
+                "device_key_id": key.to_string(),
+                "projection_id": Uuid::new_v4().to_string(),
+                "generation": 1,
+                "content_hash": content_hash,
+                "state": state
+            }
+        }))
+        .unwrap()
+    };
+
+    for state in ["RECEIVED", "installed", "done", ""] {
+        let app = terminal_app(principal(Uuid::new_v4(), Uuid::new_v4().to_string()));
+        let (status, response) = send(
+            app,
+            "PUT",
+            uri.clone(),
+            receipt(state, format!("sha256:{}", "a".repeat(64))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "state={state}: {response}");
+        assert!(
+            response.contains("INVALID_RECEIPT"),
+            "state={state}: {response}"
+        );
+    }
+
+    // The content hash is what ties a receipt to a document Cloud actually
+    // signed, so a truncated or unprefixed digest must be refused the same way.
+    for hash in [
+        "a".repeat(64),
+        "sha256:abcd".to_string(),
+        format!("sha256:{}", "z".repeat(64)),
+        format!("sha256:{}", "A".repeat(64)),
+        String::new(),
+    ] {
+        let app = terminal_app(principal(Uuid::new_v4(), Uuid::new_v4().to_string()));
+        let (status, response) =
+            send(app, "PUT", uri.clone(), receipt("received", hash.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "hash={hash}: {response}");
+        assert!(
+            response.contains("INVALID_RECEIPT"),
+            "hash={hash}: {response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_valid_projection_request_without_the_plane_is_a_retryable_503() {
+    // Fail closed, never fail open. With no projection capability Cloud must not
+    // invent a document and must not blame the client either.
+    let device = Uuid::new_v4();
+    let app = app_with_principal(
+        lazy_repository(),
+        principal(Uuid::new_v4(), Uuid::new_v4().to_string()),
+    );
+    for (method, uri, body) in projection_plane_routes(device) {
+        let (status, response) = send(app.clone(), method, uri.clone(), body).await;
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{method} {uri}: {response}"
+        );
+        assert!(
+            response.contains("CONTROL_PLANE_UNAVAILABLE"),
+            "{method} {uri}: {response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_partially_configured_plane_is_still_a_retryable_503() {
+    // A deployment may have storage but no signing key, or the reverse. Either
+    // way Cloud refuses to serve rather than signing with a key it does not have
+    // or serving a document it cannot produce.
+    let pool = lazy_pool();
+    let device = Uuid::new_v4();
+    let incomplete = TerminalClientPlane {
+        control: Some(cloud_db::client_control::ClientControlRepository::new(
+            pool.clone(),
+        )),
+        projection: Some(cloud_db::client_projection::ClientProjectionRepository::new(pool)),
+        ..TerminalClientPlane::default()
+    };
+    let app = app_with_terminal_client_plane_and_principal(
+        lazy_repository(),
+        incomplete,
+        principal(Uuid::new_v4(), Uuid::new_v4().to_string()),
+    );
+
+    for (method, uri, body) in projection_plane_routes(device) {
+        let (status, response) = send(app.clone(), method, uri.clone(), body).await;
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{method} {uri}: {response}"
+        );
+        assert!(
+            response.contains("CONTROL_PLANE_UNAVAILABLE"),
+            "{method} {uri}: {response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn projection_if_none_match_is_only_honoured_for_the_matching_document() {
+    // `If-None-Match` compares against the content hash of the *stored*
+    // document. With no reachable storage Cloud can never confirm a match, so a
+    // conditional request must not be answered `304` on the strength of the
+    // header alone -- doing so would let a client assert its own cache is valid.
+    let device = Uuid::new_v4();
+    let app = terminal_app(principal(Uuid::new_v4(), Uuid::new_v4().to_string()));
+    let expected = format!("sha256:{}", "8b".repeat(32));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/client/devices/{device}/projection"))
+                .header("content-type", "application/json")
+                .header("if-none-match", format!("\"{expected}\""))
+                .body(Body::from(device_body(
+                    "projection_request",
+                    device,
+                    Uuid::new_v4(),
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }

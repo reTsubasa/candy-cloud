@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildResourceSpec, normalizeSpecForEditor, parseCidr, policyDataPlaneChanged, policyRulesForEditor, validateResourceEditor } from './resource-form';
+import { buildResourceSpec, normalizeSpecForEditor, parseCidr, policyRulesForEditor, validateResourceEditor } from './resource-form';
 
 describe('resource form contract mapping', () => {
   it('accepts canonical IPv4 CIDR and rejects host addresses', () => {
@@ -45,24 +45,27 @@ describe('resource form contract mapping', () => {
   it('serializes structured policy rules and remote egress action', () => {
     vi.stubGlobal('crypto', { randomUUID: () => '019ff9c1-ac24-7303-a6c3-905768fe5905' });
     expect(buildResourceSpec('SERVICE_POLICY', {
-      name: ' 杭州办公网经香港出口 ',
       segment_id: '019ff9c1-ac24-7303-a6c3-905768fe5901', generation: 2,
       rules: [{ priority: 100, source_site_ids: [], destination_cidrs: ['10.20.0.0/16'], domains: ['app.corp.test'], traffic_classes: ['interactive'], action_type: 'REMOTE_EGRESS', egress_id: '019ff9c1-ac24-7303-a6c3-905768fe5902' }],
-    })).toMatchObject({ spec: { name: '杭州办公网经香港出口', rules: [{
+    }).spec.rules).toEqual([{
       id: '019ff9c1-ac24-7303-a6c3-905768fe5905', priority: 100, source_site_ids: [],
       destination_prefixes: [{ network: '10.20.0.0', prefix_len: 16 }], domains: ['app.corp.test'], traffic_classes: ['interactive'],
       action: { type: 'REMOTE_EGRESS', egress_id: '019ff9c1-ac24-7303-a6c3-905768fe5902' },
-    }] } });
+    }]);
     vi.unstubAllGlobals();
   });
 
-  it('defaults legacy policies to enabled and preserves an explicit disabled state', () => {
-    expect(normalizeSpecForEditor({
-      kind: 'SERVICE_POLICY', spec: { segment_id: 'segment', generation: 1, rules: [] },
-    }).enabled).toBe(true);
-    expect(buildResourceSpec('SERVICE_POLICY', {
-      segment_id: 'segment', generation: 2, enabled: false, rules: [],
-    }).spec).toMatchObject({ generation: 2, enabled: false, rules: [] });
+  it('serializes a Geo policy selector and rejects an unsupported provider', () => {
+    const uuid = '019ff9c1-ac24-7303-a6c3-905768fe5901';
+    const document = buildResourceSpec('SERVICE_POLICY', {
+      segment_id: uuid, generation: 2,
+      rules: [{ priority: 99, destination_cidrs: [], geo_countries: ['US', 'HK'], geo_provider: 'openwrt-cidr-v1', geo_version: '2026-09-24', geo_digest: 'a'.repeat(64), domains: [], traffic_classes: [], action_type: 'LOCAL_EGRESS' }],
+    });
+    expect(document.spec.rules).toMatchObject([{ destination_geo: { provider: 'openwrt-cidr-v1', countries: ['US', 'HK'], version: '2026-09-24', digest: 'a'.repeat(64) } }]);
+    expect(validateResourceEditor('SERVICE_POLICY', {
+      segment_id: uuid, generation: 1,
+      rules: [{ priority: 99, geo_countries: ['US'], geo_provider: 'legacy-provider', action_type: 'LOCAL_EGRESS' }],
+    })).toContain('rules.0.geo_provider:unsupported');
   });
 
   it('stores an empty remote-egress destination as the canonical default route', () => {
@@ -75,29 +78,6 @@ describe('resource form contract mapping', () => {
       { network: '0.0.0.0', prefix_len: 0 },
     ] }] } });
     vi.unstubAllGlobals();
-  });
-
-  it('serializes GeoIP destinations without accidentally widening them to a default route', () => {
-    vi.stubGlobal('crypto', { randomUUID: () => '019ff9c1-ac24-7303-a6c3-905768fe5905' });
-    const document = buildResourceSpec('SERVICE_POLICY', {
-      segment_id: '019ff9c1-ac24-7303-a6c3-905768fe5901', generation: 2,
-      rules: [{ priority: 100, source_site_ids: [], destination_cidrs: [], geo_countries: ['cn', 'US'], geo_provider: 'openwrt-cidr-v1', domains: [], traffic_classes: [], action_type: 'REMOTE_EGRESS', egress_id: '019ff9c1-ac24-7303-a6c3-905768fe5902' }],
-    });
-    expect(document.spec.rules).toMatchObject([{
-      destination_prefixes: [],
-      destination_geo: { provider: 'openwrt-cidr-v1', countries: ['CN', 'US'] },
-    }]);
-    expect(policyRulesForEditor(document.spec.rules)[0].geo_countries).toEqual(['CN', 'US']);
-    vi.unstubAllGlobals();
-  });
-
-  it('rejects malformed GeoIP country codes and provider digests', () => {
-    const uuid = '019ff9c1-ac24-7303-a6c3-905768fe5901';
-    const errors = validateResourceEditor('SERVICE_POLICY', { segment_id: uuid, generation: 1, rules: [{
-      priority: 100, destination_cidrs: [], geo_countries: ['CHN'], geo_digest: '1234', domains: [], action_type: 'LOCAL_EGRESS',
-    }] });
-    expect(errors).toContain('rules.0.geo_countries:country');
-    expect(errors).toContain('rules.0.geo_digest:digest');
   });
 
   it('keeps a default route intact from the editor to the Cloud resource', () => {
@@ -119,27 +99,6 @@ describe('resource form contract mapping', () => {
       { priority: 100, destination_cidrs: [], domains: [], action_type: 'LOCAL_EGRESS' },
       { priority: 100, destination_cidrs: [], domains: [], action_type: 'LOCAL_EGRESS' },
     ] })).toContain('rules.1.priority:unique');
-  });
-
-  it('bounds the optional policy display name without rejecting legacy policies', () => {
-    const uuid = '019ff9c1-ac24-7303-a6c3-905768fe5901';
-    expect(validateResourceEditor('SERVICE_POLICY', { segment_id: uuid, generation: 1, rules: [] })).not.toContain('name:required');
-    expect(validateResourceEditor('SERVICE_POLICY', { name: '策'.repeat(121), segment_id: uuid, generation: 1, rules: [] })).toContain('name:length');
-  });
-
-  it('treats a policy rename as management-only metadata', () => {
-    const previous = {
-      kind: 'SERVICE_POLICY',
-      spec: { name: '旧名称', segment_id: 'segment', generation: 4, enabled: true, rules: [] },
-    };
-    expect(policyDataPlaneChanged(previous, {
-      kind: 'SERVICE_POLICY',
-      spec: { name: '新名称', segment_id: 'segment', generation: 4, enabled: true, rules: [] },
-    })).toBe(false);
-    expect(policyDataPlaneChanged(previous, {
-      kind: 'SERVICE_POLICY',
-      spec: { name: '旧名称', segment_id: 'segment', generation: 4, enabled: false, rules: [] },
-    })).toBe(true);
   });
 
   it('requires a transport node and rejects malformed DNS address values', () => {

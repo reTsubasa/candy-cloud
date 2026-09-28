@@ -140,6 +140,7 @@ pub async fn require_management_principal(
 fn identity_role(role: Role) -> cloud_db::identity::MembershipRole {
     use cloud_db::identity::MembershipRole;
     match role {
+        Role::PlatformAdmin => MembershipRole::PlatformAdmin,
         Role::OrganizationOwner => MembershipRole::OrganizationOwner,
         Role::TenantAdmin => MembershipRole::TenantAdmin,
         Role::Operator => MembershipRole::Operator,

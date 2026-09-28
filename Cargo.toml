@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/cloud-client-projection",
     "crates/cloud-client-grant",
     "crates/cloud-control",
     "crates/cloud-core-module",

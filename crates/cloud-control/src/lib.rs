@@ -268,8 +268,6 @@ pub struct PolicyGeoSelectorV1 {
 pub struct ServicePolicyV1 {
     pub segment_id: Uuid,
     pub generation: u64,
-    /// Human-readable operator label. It is deliberately separate from the
-    /// immutable resource UUID used by the API and signed projections.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     #[serde(
@@ -281,8 +279,7 @@ pub struct ServicePolicyV1 {
 }
 
 impl ServicePolicyV1 {
-    /// Hash only fields consumed by the data plane. Operator-facing metadata
-    /// must not invalidate signed policy references or trigger runtime reloads.
+    /// Operator-facing names must not invalidate the signed data-plane policy.
     pub fn data_plane_hash(&self) -> Result<[u8; 32], ContractError> {
         let mut canonical = self.clone();
         canonical.name.clear();
@@ -829,7 +826,7 @@ mod tests {
         let policy = ResourceSpecV1::ServicePolicy(ServicePolicyV1 {
             segment_id: id(1),
             generation: 1,
-            name: "杭州默认出口".into(),
+            name: String::new(),
             enabled: true,
             rules: vec![ServicePolicyRuleV1 {
                 id: id(2),
@@ -864,7 +861,7 @@ mod tests {
             ResourceSpecV1::ServicePolicy(ServicePolicyV1 {
                 segment_id: id(1),
                 generation: 1,
-                name: "杭州默认出口".into(),
+                name: String::new(),
                 enabled: true,
                 rules: vec![rule],
             })

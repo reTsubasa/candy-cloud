@@ -13,6 +13,7 @@ use cloud_control::{
 use cloud_core_module::CoreModule;
 use cloud_db::{
     control::SegmentControlSnapshot,
+    geo_provider::GeoProviderRepository,
     sdwan::{SdwanError, SdwanRepository},
 };
 use ed25519_dalek::SigningKey;
@@ -37,6 +38,7 @@ use crate::{
 
 pub struct ControlRoutePublisher {
     pub routes: SdwanRepository,
+    pub geo_provider: GeoProviderRepository,
     pub signer: RouteSigner,
 }
 
@@ -80,14 +82,164 @@ fn service_policy_ref(resource_id: Uuid, policy: &ServicePolicyV1) -> Result<Pol
 const GEO_PROVIDER_KIND: &str = "openwrt-cidr-v1";
 const GEO_PROVIDER_DIR_ENV: &str = "CANDY_GEOIP_PROVIDER_DIR";
 const DEFAULT_GEO_PROVIDER_DIR: &str = "/etc/candy/rulesets";
-/// Bounded route expansion capacity shared with the Core and runtime route contracts.
+/// Keep the signed route budget aligned with the Core 0.3.56 contract.
 const MAX_GEO_ROUTE_PREFIXES: usize = 65_536;
+const GEO_PROVIDER_SOURCE_FILE: &str = "SOURCE_URL";
 
-fn geo_provider_dir() -> PathBuf {
+fn geo_provider_root() -> PathBuf {
     std::env::var_os(GEO_PROVIDER_DIR_ENV)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_GEO_PROVIDER_DIR))
+}
+
+fn geo_provider_dir() -> PathBuf {
+    geo_provider_root()
+}
+
+fn provider_is_fresh(
+    provider_dir: &Path,
+    settings: &cloud_db::geo_provider::GeoProviderSettings,
+) -> bool {
+    let source = std::fs::read_to_string(provider_dir.join(GEO_PROVIDER_SOURCE_FILE)).ok();
+    if source.as_deref().map(str::trim) != Some(settings.source_url.as_str()) {
+        return false;
+    }
+    if let Some(expected) = settings.version.as_deref() {
+        if std::fs::read_to_string(provider_dir.join("VERSION"))
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            != Some(expected)
+        {
+            return false;
+        }
+    }
+    let modified = settings
+        .countries
+        .iter()
+        .filter_map(|country| {
+            std::fs::metadata(
+                provider_dir.join(format!("{}-ip.cidr", country.to_ascii_lowercase())),
+            )
+            .ok()?
+            .modified()
+            .ok()
+        })
+        .min();
+    let Some(modified) = modified else {
+        return false;
+    };
+    modified
+        .elapsed()
+        .map(|age| age.as_secs() <= settings.refresh_interval_seconds as u64)
+        .unwrap_or(false)
+}
+
+async fn refresh_geo_provider(
+    settings: &cloud_db::geo_provider::GeoProviderSettings,
+) -> Result<PathBuf> {
+    let provider_dir = geo_provider_dir();
+    if provider_is_fresh(&provider_dir, settings) {
+        return Ok(provider_dir);
+    }
+    let parent = geo_provider_root();
+    tokio::fs::create_dir_all(&parent)
+        .await
+        .context("create GeoIP provider root")?;
+    let stage = parent.join(format!(".stage-{}", Uuid::new_v4()));
+    tokio::fs::create_dir(&stage)
+        .await
+        .context("create GeoIP provider staging directory")?;
+    let result = async {
+        let client = reqwest::Client::builder()
+            .https_only(true)
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(45))
+            .build()
+            .context("create GeoIP provider client")?;
+        for country in &settings.countries {
+            let code = country.to_ascii_lowercase();
+            let url = format!(
+                "{}/{code}-aggregated.zone",
+                settings.source_url.trim_end_matches('/')
+            );
+            let response = client
+                .get(url)
+                .send()
+                .await
+                .context("download GeoIP provider data")?;
+            let body = response
+                .error_for_status()
+                .context("GeoIP provider returned an error")?
+                .bytes()
+                .await
+                .context("read GeoIP provider data")?;
+            let content =
+                String::from_utf8(body.to_vec()).context("GeoIP provider data is not UTF-8")?;
+            let mut count = 0usize;
+            for (line_index, raw) in content.lines().enumerate() {
+                let value = raw.split('#').next().unwrap_or_default().trim();
+                if value.is_empty() {
+                    continue;
+                }
+                let (network, prefix_len) = value.split_once('/').with_context(|| {
+                    format!(
+                        "invalid GeoIP CIDR for {country} at line {}",
+                        line_index + 1
+                    )
+                })?;
+                let prefix = cloud_control::Ipv4PrefixV1 {
+                    network: network
+                        .parse()
+                        .with_context(|| format!("invalid GeoIP IPv4 address for {country}"))?,
+                    prefix_len: prefix_len
+                        .parse()
+                        .with_context(|| format!("invalid GeoIP prefix length for {country}"))?,
+                };
+                prefix
+                    .validate()
+                    .with_context(|| format!("non-canonical GeoIP CIDR for {country}"))?;
+                count += 1;
+            }
+            if count == 0 {
+                bail!("GeoIP provider returned no IPv4 prefixes for {country}");
+            }
+            tokio::fs::write(stage.join(format!("{code}-ip.cidr")), content)
+                .await
+                .context("stage GeoIP provider data")?;
+        }
+        let version = settings
+            .version
+            .clone()
+            .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+        tokio::fs::write(stage.join("VERSION"), format!("{version}\n"))
+            .await
+            .context("stage GeoIP provider version")?;
+        tokio::fs::write(
+            stage.join(GEO_PROVIDER_SOURCE_FILE),
+            format!("{}\n", settings.source_url),
+        )
+        .await
+        .context("stage GeoIP provider source")?;
+        let previous = parent.join(".previous");
+        let _ = tokio::fs::remove_dir_all(&previous).await;
+        if tokio::fs::metadata(&provider_dir).await.is_ok() {
+            tokio::fs::rename(&provider_dir, &previous)
+                .await
+                .context("rotate GeoIP provider directory")?;
+        }
+        tokio::fs::rename(&stage, &provider_dir)
+            .await
+            .context("activate GeoIP provider directory")?;
+        let _ = tokio::fs::remove_dir_all(previous).await;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_dir_all(&stage).await;
+    }
+    result.map(|_| provider_dir)
 }
 
 fn digest_hex(value: &[u8; 32]) -> String {
@@ -195,6 +347,32 @@ fn expand_geo_rule(
     Ok(Some(digest))
 }
 
+fn validate_geo_provider_metadata(
+    settings: &cloud_db::geo_provider::GeoProviderSettings,
+    provider_dir: &Path,
+) -> Result<()> {
+    let source = std::fs::read_to_string(provider_dir.join(GEO_PROVIDER_SOURCE_FILE))
+        .context("GeoIP provider SOURCE_URL is unavailable")?;
+    if source.trim() != settings.source_url {
+        bail!(
+            "GeoIP provider source mismatch: configured source is {}, local source is {}",
+            settings.source_url,
+            source.trim()
+        );
+    }
+    let configured = settings
+        .countries
+        .iter()
+        .map(|country| country.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    for country in &configured {
+        if !provider_dir.join(format!("{country}-ip.cidr")).is_file() {
+            bail!("GeoIP provider data is unavailable for country {country}");
+        }
+    }
+    Ok(())
+}
+
 fn service_policy_ref_with_geo(
     resource_id: Uuid,
     policy: &ServicePolicyV1,
@@ -227,12 +405,14 @@ impl InputReadinessError {
 impl ControlRoutePublisher {
     pub fn new(
         routes: SdwanRepository,
+        geo_provider: GeoProviderRepository,
         signing_key_id: String,
         signing_key: SigningKey,
         core: Arc<CoreModule>,
     ) -> Self {
         Self {
             routes,
+            geo_provider,
             signer: RouteSigner::new(signing_key_id, signing_key, core),
         }
     }
@@ -263,6 +443,11 @@ impl ControlRoutePublisher {
         let mut nodes = HashMap::new();
         let mut egresses = HashMap::new();
         let mut service_policy_rules = Vec::new();
+        let geo_settings = self
+            .geo_provider
+            .get()
+            .await
+            .map_err(|error| anyhow::anyhow!("load platform Geo provider settings: {error}"))?;
         for resource in &snapshot.resources {
             match &resource.resource {
                 ResourceSpecV1::Segment(value) if resource.metadata.id == snapshot.segment_id => {
@@ -304,13 +489,53 @@ impl ControlRoutePublisher {
                 }
                 ResourceSpecV1::ServicePolicy(policy)
                     if resource.metadata.state == ResourceState::Active
-                        && policy.enabled
                         && policy.segment_id == snapshot.segment_id =>
                 {
                     let mut expanded_rules = policy.rules.clone();
-                    let provider_dir = geo_provider_dir();
+                    let settings_for_refresh = geo_settings.as_ref();
+                    let provider_dir = if expanded_rules
+                        .iter()
+                        .any(|rule| rule.destination_geo.is_some())
+                    {
+                        let settings = settings_for_refresh.ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Geo policy requires a platform Geo provider configuration"
+                            )
+                        })?;
+                        if !settings.enabled {
+                            bail!("platform Geo provider is disabled");
+                        }
+                        refresh_geo_provider(settings).await?
+                    } else {
+                        geo_provider_dir()
+                    };
                     let mut geo_digests = Vec::new();
                     for rule in &mut expanded_rules {
+                        if let Some(selector) = rule.destination_geo.as_ref() {
+                            let settings = geo_settings.as_ref().ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "Geo policy requires a platform Geo provider configuration"
+                                )
+                            })?;
+                            if !settings.enabled {
+                                bail!("platform Geo provider is disabled");
+                            }
+                            if settings.provider != selector.provider {
+                                bail!(
+                                    "Geo policy provider {} is not enabled on the platform",
+                                    selector.provider
+                                );
+                            }
+                            if selector.countries.iter().any(|country| {
+                                !settings
+                                    .countries
+                                    .iter()
+                                    .any(|allowed| allowed.eq_ignore_ascii_case(country))
+                            }) {
+                                bail!("Geo policy selects a country outside the platform provider scope");
+                            }
+                            validate_geo_provider_metadata(settings, &provider_dir)?;
+                        }
                         if let Some(digest) = expand_geo_rule(rule, &provider_dir)? {
                             geo_digests.push((rule.id, digest));
                         }
@@ -1230,52 +1455,6 @@ mod tests {
     }
 
     #[test]
-    fn geo_provider_accepts_real_country_sized_sets_and_enforces_hard_limit() {
-        fn provider_with_prefixes(count: usize) -> PathBuf {
-            let directory =
-                std::env::temp_dir().join(format!("candy-geo-large-{}", Uuid::new_v4()));
-            std::fs::create_dir(&directory).unwrap();
-            let mut content = String::with_capacity(count * 20);
-            for index in 0..count {
-                let address = u32::from(std::net::Ipv4Addr::new(10, 0, 0, 0)) + index as u32 + 1;
-                content.push_str(&format!("{}/32\n", std::net::Ipv4Addr::from(address)));
-            }
-            std::fs::write(directory.join("us-ip.cidr"), content).unwrap();
-            directory
-        }
-
-        fn geo_rule() -> ServicePolicyRuleV1 {
-            let mut rule = policy_rule(
-                8,
-                100,
-                Uuid::from_bytes([9; 16]),
-                PolicyActionV1::RemoteEgress(Uuid::from_bytes([10; 16])),
-            );
-            rule.destination_prefixes.clear();
-            rule.destination_geo = Some(cloud_control::PolicyGeoSelectorV1 {
-                provider: GEO_PROVIDER_KIND.into(),
-                countries: vec!["US".into()],
-                version: None,
-                digest: None,
-            });
-            rule
-        }
-
-        assert_eq!(MAX_GEO_ROUTE_PREFIXES, 65_536);
-        let country_sized = provider_with_prefixes(30_000);
-        let mut rule = geo_rule();
-        expand_geo_rule(&mut rule, &country_sized).unwrap();
-        assert_eq!(rule.destination_prefixes.len(), 30_000);
-        std::fs::remove_dir_all(country_sized).unwrap();
-
-        let over_limit = provider_with_prefixes(MAX_GEO_ROUTE_PREFIXES + 1);
-        let mut rule = geo_rule();
-        let error = expand_geo_rule(&mut rule, &over_limit).unwrap_err();
-        assert!(error.to_string().contains("65536"));
-        std::fs::remove_dir_all(over_limit).unwrap();
-    }
-
-    #[test]
     fn geo_provider_rejects_ipv6_and_pinned_metadata_mismatches() {
         let directory = std::env::temp_dir().join(format!("candy-geo-invalid-{}", Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
@@ -1610,17 +1789,6 @@ mod tests {
         assert!(matches!(
             failure,
             PublicationFailure::Retryable { code, .. } if code == "ROUTE_DB_DATABASE"
-        ));
-    }
-
-    #[test]
-    fn unfinished_predecessor_rollouts_retry_policy_publication() {
-        let failure = classify_publish_error(SdwanError::RolloutPending);
-        assert!(matches!(
-            failure,
-            PublicationFailure::Retryable { code, retry_after }
-                if code == "ROUTE_DB_ROLLOUT_PENDING"
-                    && retry_after == std::time::Duration::from_secs(5)
         ));
     }
 

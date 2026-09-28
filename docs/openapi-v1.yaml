@@ -28,6 +28,7 @@ tags:
   - name: Health
   - name: Identity
   - name: Management
+  - name: Terminal client
   - name: Enrollment
   - name: Grants
   - name: Runtime synchronization
@@ -521,6 +522,42 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/RuntimeTelemetryInventory" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/platform/geo-provider:
+    get:
+      tags: [Platform management]
+      operationId: getPlatformGeoProvider
+      summary: Read the single platform GeoIP provider configuration (PLATFORM_ADMIN required)
+      security: [{ managementBearer: [] }]
+      responses:
+        "200":
+          description: Platform-wide GeoIP source and verified publication metadata shared by all tenants.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/GeoProviderSettings"
+                  - type: "null"
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+    put:
+      tags: [Platform management]
+      operationId: putPlatformGeoProvider
+      summary: Replace the single platform GeoIP provider configuration (PLATFORM_ADMIN required)
+      security: [{ managementBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GeoProviderSettingsRequest" }
+      responses:
+        "200":
+          description: The accepted platform GeoIP provider configuration.
+          content: { application/json: { schema: { $ref: "#/components/schemas/GeoProviderSettings" } } }
+        "400": { $ref: "#/components/responses/ManagementBadRequest" }
         "401": { $ref: "#/components/responses/ManagementUnauthorized" }
         "403": { $ref: "#/components/responses/ManagementForbidden" }
         "503": { $ref: "#/components/responses/ManagementUnavailable" }
@@ -1047,6 +1084,488 @@ paths:
         "409": { description: The authenticated device identity is no longer active. }
         "422": { $ref: "#/components/responses/UnprocessableJson" }
         "503": { $ref: "#/components/responses/DeviceUnavailable" }
+  /v1/client/devices:
+    post:
+      tags: [Terminal client]
+      operationId: registerClientDevice
+      summary: Register, or idempotently replay, one terminal device public key
+      description: |-
+        Session-scoped: the device is bound to the authenticated human user, and
+        organization and tenant come from the session, never the body. The device
+        row must exist before a policy can be bound to it, so `grant` is null for a
+        device Cloud has not yet authorized. That is not an error: the client stays
+        disconnected and retries. A revoked device is answered `410` with
+        `status: revoked`, so a client that reads only the status code and one that
+        reads only the body agree.
+      security: [{ managementBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientDeviceRegistrationRequest" }
+      responses:
+        "201":
+          description: Device registered. `grant` is present once a policy is bound.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientDeviceRegistrationResponse" }
+        "200":
+          description: Exact registration replay; the same envelope is returned with `status` set to `already_registered`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientDeviceRegistrationResponse" }
+        "400": { $ref: "#/components/responses/TerminalBadRequest" }
+        "401": { $ref: "#/components/responses/TerminalUnauthorized" }
+        "403": { $ref: "#/components/responses/TerminalForbidden" }
+        "410":
+          description: The device is revoked. Revocation is terminal and never silent.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientDeviceRegistrationResponse" }
+        "503": { $ref: "#/components/responses/TerminalUnavailable" }
+  /v1/client/devices/{device_id}/grant:
+    post:
+      tags: [Terminal client]
+      operationId: issueClientGrant
+      summary: Issue, or byte-identically replay, the signed Grant for one owned device
+      description: |-
+        The path scopes the lookup to the session; `payload.device_id` is the
+        identifier the client signed over, and a mismatch is refused. The
+        `device_key_id` presented must match the device's active key. The Grant is a
+        precondition for a Projection, so a device with no bound policy, no active
+        node, or a suspended key is a retryable `409` or `503`, never a Grant backed
+        by transport Cloud cannot authorize.
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TerminalDeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientGrantRequest" }
+      responses:
+        "201":
+          description: Grant issued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientGrantResponse" }
+        "200":
+          description: Exact replay; the stored envelope is re-encoded, never re-signed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientGrantResponse" }
+        "400": { $ref: "#/components/responses/TerminalBadRequest" }
+        "401": { $ref: "#/components/responses/TerminalUnauthorized" }
+        "403": { $ref: "#/components/responses/TerminalForbidden" }
+        "404":
+          description: No terminal device is registered for this session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+              example: { schema_version: 1, code: CLIENT_DEVICE_NOT_FOUND, message: no terminal device is registered for this session }
+        "409":
+          description: Retryable state conflict (`CLIENT_ACCESS_POLICY_NOT_BOUND`, `IDEMPOTENCY_CONFLICT`, `CLIENT_GRANT_CONFLICT`, `CLIENT_DEVICE_SUSPENDED`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "410":
+          description: The terminal device is revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+              example: { schema_version: 1, code: CLIENT_DEVICE_REVOKED, message: the terminal device is revoked }
+        "503": { $ref: "#/components/responses/TerminalUnavailable" }
+  /v1/client/devices/{device_id}/projection:
+    post:
+      tags: [Terminal client]
+      operationId: fetchClientProjection
+      summary: Issue, replay, or re-answer the signed policy Projection for one owned device
+      description: |-
+        `If-None-Match` is compared against the content hash of the *stored*
+        Projection. A match is answered `304` with no body, so a polling client that
+        is already current costs one round trip and no re-signing. A Projection is
+        always anchored to an active Grant; a stale Grant is a retryable conflict
+        rather than a document that describes resources the Grant does not
+        authorize.
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TerminalDeviceId"
+        - $ref: "#/components/parameters/ProjectionIfNoneMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientProjectionRequest" }
+      responses:
+        "200":
+          description: Signed Projection document.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientProjectionResponse" }
+        "304":
+          description: The client's cached document matches the stored content hash; no body.
+        "400": { $ref: "#/components/responses/TerminalBadRequest" }
+        "401": { $ref: "#/components/responses/TerminalUnauthorized" }
+        "403": { $ref: "#/components/responses/TerminalForbidden" }
+        "404":
+          description: No terminal device is registered for this session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "409":
+          description: Retryable conflict (`CLIENT_ACCESS_POLICY_NOT_BOUND`, `CLIENT_PROJECTION_SETTINGS_NOT_PUBLISHED`, `CLIENT_PROJECTION_GRANT_NOT_ISSUED`, `CLIENT_TRAFFIC_MODE_NOT_PERMITTED`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "410":
+          description: The terminal device is revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "503": { $ref: "#/components/responses/TerminalUnavailable" }
+  /v1/client/devices/{device_id}/projection/receipt:
+    put:
+      tags: [Terminal client]
+      operationId: recordClientProjectionReceipt
+      summary: Record one step of a device's Projection install progression
+      description: |-
+        Installation progression is the only signal Cloud has that a document it
+        signed was actually installed and verified rather than merely received, so a
+        report that moves backwards is refused (`400`) rather than quietly accepted.
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TerminalDeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientProjectionReceiptRequest" }
+      responses:
+        "200":
+          description: Receipt accepted; `state` is the state Cloud now records.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientProjectionReceiptResponse" }
+        "400": { $ref: "#/components/responses/TerminalBadRequest" }
+        "401": { $ref: "#/components/responses/TerminalUnauthorized" }
+        "403": { $ref: "#/components/responses/TerminalForbidden" }
+        "404":
+          description: No terminal device is registered for this session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "409":
+          description: The projection binding or generation conflicts with current state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "410":
+          description: The terminal device is revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "503": { $ref: "#/components/responses/TerminalUnavailable" }
+  /v1/client/devices/{device_id}/heartbeat:
+    post:
+      tags: [Terminal client]
+      operationId: clientDeviceHeartbeat
+      summary: Record liveness for one owned device
+      description: |-
+        The liveness write only matches a device Cloud still considers issuable. A
+        zero-row result means the device left `ACTIVE` between the lookup and the
+        write, which is a `409` rather than a `404`: the caller's identity is still
+        valid, the device state moved underneath it.
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TerminalDeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientHeartbeatRequest" }
+      responses:
+        "200":
+          description: Liveness recorded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientHeartbeatResponse" }
+        "400": { $ref: "#/components/responses/TerminalBadRequest" }
+        "401": { $ref: "#/components/responses/TerminalUnauthorized" }
+        "403": { $ref: "#/components/responses/TerminalForbidden" }
+        "404":
+          description: No terminal device is registered for this session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "409":
+          description: The terminal device stopped being active (`CLIENT_DEVICE_SUSPENDED`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+              example: { schema_version: 1, code: CLIENT_DEVICE_SUSPENDED, message: the terminal device stopped being active }
+        "410":
+          description: The terminal device is revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "503": { $ref: "#/components/responses/TerminalUnavailable" }
+  /v1/client/devices/{device_id}/traffic-mode:
+    post:
+      tags: [Terminal client]
+      operationId: setClientTrafficMode
+      summary: Apply the client-visible policy/global switch
+      description: |-
+        The permission decision is Cloud's: the requested mode is checked against the
+        `mode_capabilities` of the device's *bound* policy, so a client cannot widen
+        its own traffic scope by asking. Global is refused unless the bound policy
+        both lists `global` and enables global egress. The switch does not re-sign a
+        Projection here; the next Projection poll sees the changed mode and signs a
+        document that describes it.
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TerminalDeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientTrafficModeRequest" }
+      responses:
+        "200":
+          description: Traffic mode applied or idempotently replayed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientTrafficModeResponse" }
+        "400": { $ref: "#/components/responses/TerminalBadRequest" }
+        "401": { $ref: "#/components/responses/TerminalUnauthorized" }
+        "403": { $ref: "#/components/responses/TerminalForbidden" }
+        "404":
+          description: No terminal device is registered for this session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "409":
+          description: The requested mode is not permitted (`CLIENT_TRAFFIC_MODE_NOT_PERMITTED`), or the device stopped being active.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "410":
+          description: The terminal device is revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "503": { $ref: "#/components/responses/TerminalUnavailable" }
+  /v1/client/devices/{device_id}/revoke:
+    post:
+      tags: [Terminal client]
+      operationId: revokeClientDevice
+      summary: Retire one device and everything Cloud issued to it, at the device's own request
+      description: |-
+        The device is resolved *without* the `ACTIVE` requirement, so revoking an
+        already-revoked or suspended device is an idempotent success: a client that
+        retries after a dropped response must not be told its own revocation failed.
+        A device that never existed, or belongs to another session, is still a `404`,
+        so no cross-session probe can confirm a device exists.
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TerminalDeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientRevokeRequest" }
+      responses:
+        "200":
+          description: Device revoked, or the revocation replayed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientRevokeResponse" }
+        "400": { $ref: "#/components/responses/TerminalBadRequest" }
+        "401": { $ref: "#/components/responses/TerminalUnauthorized" }
+        "403": { $ref: "#/components/responses/TerminalForbidden" }
+        "404":
+          description: No terminal device is registered for this session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "503": { $ref: "#/components/responses/TerminalUnavailable" }
+  /v1/tenants/{tenant_id}/client-access-policies:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    post:
+      tags: [Management]
+      operationId: createClientAccessPolicy
+      summary: Publish a terminal client access policy for one tenant
+      description: |-
+        The body carries the full policy and must name the path tenant. Publication
+        is idempotent by `Idempotency-Key`.
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientAccessPolicy" }
+      responses:
+        "201":
+          description: Policy published.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientAccessPolicyResponse" }
+        "200":
+          description: Exact idempotent replay.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientAccessPolicyResponse" }
+        "400": { $ref: "#/components/responses/ManagementBadRequest" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "409": { $ref: "#/components/responses/ManagementConflict" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/tenants/{tenant_id}/client-access-policy-bindings:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    post:
+      tags: [Management]
+      operationId: bindClientAccessPolicy
+      summary: Bind a published policy to one user's terminal device
+      description: |-
+        The binding is the management act that turns a published policy into an
+        authorization snapshot the Grant and Projection paths consume.
+      security: [{ managementBearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientAccessPolicyBindingRequest" }
+      responses:
+        "201":
+          description: Policy bound to the device.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientAccessPolicyBindingResponse" }
+        "200":
+          description: Exact idempotent replay.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientAccessPolicyBindingResponse" }
+        "400": { $ref: "#/components/responses/ManagementBadRequest" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "409": { $ref: "#/components/responses/ManagementConflict" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/tenants/{tenant_id}/client-devices/{device_id}/status:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+      - $ref: "#/components/parameters/TerminalDeviceId"
+    put:
+      tags: [Management]
+      operationId: setClientDeviceStatus
+      summary: Suspend or re-activate one terminal device
+      description: |-
+        A lifecycle decision about a device, so it takes `WriteConfiguration` like
+        every other management mutation. Only `active` and `suspended` are accepted:
+        revocation has its own route and is terminal, so a status call asking for
+        `revoked` is refused rather than quietly satisfied. Suspending also revokes
+        the device's live Grants and Projections but keeps its key rows, so
+        re-activating restores service without re-registering a key. Repeating a
+        status is an idempotent replay.
+      security: [{ managementBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientDeviceStatusRequest" }
+      responses:
+        "200":
+          description: Status applied, or already in the requested state (`replayed` is true).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientDeviceStatusResponse" }
+        "400": { $ref: "#/components/responses/ManagementBadRequest" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "404":
+          description: No terminal device matches this identifier in the caller's own scope.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+              example: { schema_version: 1, code: CLIENT_DEVICE_NOT_FOUND, message: no terminal device matches this identifier }
+        "409":
+          description: The device lifecycle state does not allow this change (a revoked device is terminal).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+              example: { schema_version: 1, code: CLIENT_DEVICE_STATE_CONFLICT, message: the device lifecycle state does not allow this change }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/tenants/{tenant_id}/client-devices/{device_id}/key-rotation:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+      - $ref: "#/components/parameters/TerminalDeviceId"
+    post:
+      tags: [Management]
+      operationId: rotateClientDeviceKey
+      summary: Rotate one terminal device's key and retire what the old key authorized
+      description: |-
+        The caller supplies only the key identity and public key it minted; Cloud
+        binds them to the device named in the path under the principal's own
+        organization. In one transaction the previous active key is retired, the new
+        key is stored, and the device's active Grants and published Projections are
+        revoked, because a Grant and Projection are bound to the old `device_key_id`
+        and would otherwise stay verifiable. The device must be `ACTIVE`; a rotation
+        of a suspended or revoked device is refused. `public_key` must decode to
+        32..=64 bytes.
+      security: [{ managementBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientDeviceKeyRotationRequest" }
+      responses:
+        "200":
+          description: Key rotated; the response reports what was retired.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientDeviceKeyRotationResponse" }
+        "400": { $ref: "#/components/responses/ManagementBadRequest" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "404":
+          description: No terminal device matches this identifier in the caller's own scope.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "409":
+          description: The device is not active, or the supplied `device_key_id` already exists.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
+  /v1/tenants/{tenant_id}/client-users/{user_id}/client-devices/{client_device_id}/access-policy:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    get:
+      tags: [Management]
+      operationId: getClientAccessPolicy
+      summary: Read the active policy bound to one user's terminal device
+      security: [{ managementBearer: [] }]
+      responses:
+        "200":
+          description: The bound policy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientAccessPolicy" }
+        "401": { $ref: "#/components/responses/ManagementUnauthorized" }
+        "403": { $ref: "#/components/responses/ManagementForbidden" }
+        "404":
+          description: No active client access policy is bound to the device.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagementProblem" }
+              example: { schema_version: 1, code: CLIENT_ACCESS_POLICY_NOT_FOUND, message: no active client access policy is bound to the device }
+        "503": { $ref: "#/components/responses/ManagementUnavailable" }
 components:
   securitySchemes:
     managementBearer:
@@ -1103,6 +1622,19 @@ components:
       required: true
       description: Exact replays are accepted for 24 hours; divergent reuse is rejected.
       schema: { type: string, minLength: 1, maxLength: 160 }
+    TerminalDeviceId:
+      name: device_id
+      in: path
+      required: true
+      description: Device identity the terminal client minted and registered. Scopes the lookup to the session.
+      schema: { $ref: "#/components/schemas/Uuid" }
+    ProjectionIfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: Content hash of the Projection the client already holds. A match against the *stored* document is answered `304` with no body.
+      schema: { type: string, minLength: 1 }
+      example: '"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"'
     IfMatch:
       name: If-Match
       in: header
@@ -1134,7 +1666,7 @@ components:
     Sha256Hex: { type: string, pattern: '^[0-9a-f]{64}$' }
     Base64Url32: { type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$' }
     Base64Url64: { type: string, minLength: 86, maxLength: 86, pattern: '^[A-Za-z0-9_-]{86}$' }
-    IdentityRole: { type: string, enum: [ORGANIZATION_OWNER, TENANT_ADMIN, OPERATOR, BILLING_VIEWER, AUDITOR] }
+    IdentityRole: { type: string, enum: [PLATFORM_ADMIN, ORGANIZATION_OWNER, TENANT_ADMIN, OPERATOR, BILLING_VIEWER, AUDITOR] }
     RegisterAccountRequest:
       type: object
       additionalProperties: false
@@ -1471,10 +2003,7 @@ components:
         priority: { type: integer, minimum: 0 }
         source_site_ids: { type: array, maxItems: 256, items: { $ref: "#/components/schemas/Uuid" } }
         destination_prefixes: { type: array, maxItems: 256, items: { $ref: "#/components/schemas/Ipv4Prefix" } }
-        destination_geo:
-          oneOf:
-            - $ref: "#/components/schemas/PolicyGeoSelector"
-            - type: "null"
+        destination_geo: { $ref: "#/components/schemas/PolicyGeoSelector" }
         domains: { type: array, maxItems: 256, items: { type: string, maxLength: 253 } }
         traffic_classes: { type: array, maxItems: 32, items: { type: string, minLength: 1, maxLength: 40 } }
         action: { $ref: "#/components/schemas/PolicyAction" }
@@ -1483,23 +2012,45 @@ components:
       additionalProperties: false
       required: [provider, countries]
       properties:
-        provider: { type: string, minLength: 1, maxLength: 80, example: openwrt-cidr-v1 }
+        provider: { type: string, const: openwrt-cidr-v1 }
         countries: { type: array, minItems: 1, maxItems: 256, items: { type: string, pattern: '^[A-Z]{2}$' } }
         version: { type: string, maxLength: 120 }
-        digest: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+        digest: { type: string, pattern: '^[0-9A-Fa-f]{64}$' }
     ServicePolicySpec:
       type: object
       additionalProperties: false
       required: [segment_id, generation, rules]
       properties:
-        name: { type: string, maxLength: 120, description: Human-readable operator label; omitted for legacy resources. }
         segment_id: { $ref: "#/components/schemas/Uuid" }
         generation: { $ref: "#/components/schemas/PositiveInteger" }
-        enabled:
-          type: boolean
-          default: true
-          description: Disabled policies remain editable but contribute no rules to Runtime policy publications.
         rules: { type: array, maxItems: 512, items: { $ref: "#/components/schemas/ServicePolicyRule" } }
+    GeoProviderSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [provider, source_url, countries, refresh_interval_seconds, enabled, generation]
+      properties:
+        provider: { type: string, const: openwrt-cidr-v1 }
+        source_url: { type: string, format: uri, pattern: '^https://' }
+        countries: { type: array, minItems: 1, maxItems: 256, items: { type: string, pattern: '^[A-Z]{2}$' } }
+        refresh_interval_seconds: { type: integer, minimum: 300, maximum: 2592000 }
+        enabled: { type: boolean }
+        version: { oneOf: [{ type: string, maxLength: 64 }, { type: 'null' }] }
+        digest: { oneOf: [{ type: string, pattern: '^[0-9A-Fa-f]{64}$' }, { type: 'null' }] }
+        generation: { type: integer, minimum: 1 }
+    GeoProviderSettings:
+      type: object
+      additionalProperties: false
+      required: [provider, source_url, countries, refresh_interval_seconds, enabled, version, digest, generation, updated_at]
+      properties:
+        provider: { type: string, const: openwrt-cidr-v1 }
+        source_url: { type: string, format: uri, pattern: '^https://' }
+        countries: { type: array, minItems: 1, maxItems: 256, items: { type: string, pattern: '^[A-Z]{2}$' } }
+        refresh_interval_seconds: { type: integer, minimum: 300, maximum: 2592000 }
+        enabled: { type: boolean }
+        version: { oneOf: [{ type: string, maxLength: 64 }, { type: 'null' }] }
+        digest: { oneOf: [{ type: string, pattern: '^[0-9A-Fa-f]{64}$' }, { type: 'null' }] }
+        generation: { type: integer, minimum: 1 }
+        updated_at: { type: string, format: date-time }
     DnsRecordData:
       oneOf:
         - type: object
@@ -2253,6 +2804,433 @@ components:
       required: [code]
       properties:
         code: { type: string }
+    ClientDeviceRegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: register_device_request }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id, platform, display_name, public_key, install_id]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+            platform: { type: string, enum: [windows, macos, android] }
+            display_name: { type: string, minLength: 1, maxLength: 200 }
+            public_key: { $ref: "#/components/schemas/Base64Url32" }
+            install_id: { type: string, minLength: 8, maxLength: 128 }
+            client_version: { oneOf: [{ type: string, minLength: 1, maxLength: 64 }, { type: "null" }] }
+    ClientDeviceRegistrationResponse:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: register_device_response }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id, status, grant, replayed]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+            status: { type: string, enum: [registered, already_registered, revoked] }
+            grant: { oneOf: [{ $ref: "#/components/schemas/ClientGrantBody" }, { type: "null" }] }
+            replayed: { type: boolean }
+    ClientGrantBody:
+      type: object
+      additionalProperties: false
+      required: [grant_id, tenant_id, user_id, device_id, device_key_id, issued_at, expires_at, generation, grant_token, signing_key_id]
+      properties:
+        grant_id: { $ref: "#/components/schemas/Uuid" }
+        tenant_id: { $ref: "#/components/schemas/Uuid" }
+        user_id: { $ref: "#/components/schemas/Uuid" }
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        device_key_id: { $ref: "#/components/schemas/Uuid" }
+        issued_at: { type: integer, minimum: 0 }
+        expires_at: { type: integer, minimum: 0 }
+        generation: { type: integer, minimum: 0 }
+        grant_token: { type: string, minLength: 1 }
+        signing_key_id: { type: string, minLength: 1 }
+    ClientGrantRequest:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: grant_request }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+    ClientGrantResponse:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: grant_response }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id, grant_id, issued_at, expires_at, generation, grant_token, signing_key_id, replayed]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+            grant_id: { $ref: "#/components/schemas/Uuid" }
+            issued_at: { type: integer, minimum: 0 }
+            expires_at: { type: integer, minimum: 0 }
+            generation: { type: integer, minimum: 0 }
+            grant_token: { type: string, minLength: 1 }
+            signing_key_id: { type: string, minLength: 1 }
+            replayed: { type: boolean }
+    ClientPolicyProjection:
+      type: object
+      additionalProperties: false
+      required: [schema_version, projection_id, projection_type, tenant_id, user_id, device_id, device_key_id, audience, grant_id, grant_expires_at, generation, content_hash, not_before, stale_until, issued_at, traffic_mode, mode_capabilities, selected_node, standby_nodes, allowed_resources, dns_projection, underlay_exclusions, degraded_behavior, global_egress, signing_key_id, signature]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        projection_id: { $ref: "#/components/schemas/Uuid" }
+        projection_type: { type: string, const: device_client }
+        tenant_id: { $ref: "#/components/schemas/Uuid" }
+        user_id: { $ref: "#/components/schemas/Uuid" }
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        device_key_id: { $ref: "#/components/schemas/Uuid" }
+        audience:
+          type: object
+          additionalProperties: false
+          required: [tenant_id, user_id, device_id, device_key_id]
+          properties:
+            tenant_id: { $ref: "#/components/schemas/Uuid" }
+            user_id: { $ref: "#/components/schemas/Uuid" }
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+        grant_id: { $ref: "#/components/schemas/Uuid" }
+        grant_expires_at: { type: integer, minimum: 0 }
+        generation: { type: integer, minimum: 0 }
+        content_hash: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        not_before: { type: integer, minimum: 0 }
+        stale_until: { type: integer, minimum: 0 }
+        issued_at: { type: integer, minimum: 0 }
+        traffic_mode: { type: string, enum: [policy, global] }
+        mode_capabilities:
+          type: array
+          minItems: 1
+          items: { type: string, enum: [policy, global] }
+        selected_node: { $ref: "#/components/schemas/ClientProjectionNodeAssignment" }
+        standby_nodes:
+          type: array
+          items: { $ref: "#/components/schemas/ClientProjectionNodeAssignment" }
+        allowed_resources:
+          type: array
+          items: { $ref: "#/components/schemas/ClientAllowedResource" }
+        dns_projection:
+          type: object
+          additionalProperties: false
+          required: [mode, servers, leak_protection]
+          properties:
+            mode: { type: string, enum: [cloud_split, cloud_global, system, disabled] }
+            servers:
+              type: array
+              items: { type: string }
+            search_domains: { oneOf: [{ type: array, items: { type: string } }, { type: "null" }] }
+            leak_protection: { type: boolean }
+        underlay_exclusions:
+          type: array
+          items: { type: string }
+        degraded_behavior: { type: string, enum: [protected_fail_closed, protected_fail_closed_direct_nonprotected, stop_all] }
+        global_egress:
+          type: object
+          additionalProperties: false
+          required: [enabled, node_id, dns_egress]
+          properties:
+            enabled: { type: boolean }
+            node_id: { $ref: "#/components/schemas/Uuid" }
+            dns_egress: { type: string, enum: [selected_node, cloud_resolver, none] }
+        signing_key_id: { type: string, minLength: 1 }
+        signature: { type: string, minLength: 1 }
+    ClientProjectionNodeAssignment:
+      type: object
+      additionalProperties: false
+      required: [node_id, endpoint, priority, node_key_id, transport, assignment_lease_until]
+      properties:
+        node_id: { $ref: "#/components/schemas/Uuid" }
+        endpoint: { type: string, minLength: 1 }
+        priority: { type: integer, minimum: 0, maximum: 255 }
+        node_key_id: { $ref: "#/components/schemas/Uuid" }
+        transport: { type: string, minLength: 1 }
+        assignment_lease_until: { type: integer, minimum: 0 }
+    ClientProjectionRequest:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: projection_request }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+    ClientProjectionResponse:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: projection_response }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id, grant_id, projection, replayed]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+            grant_id: { $ref: "#/components/schemas/Uuid" }
+            projection: { $ref: "#/components/schemas/ClientPolicyProjection" }
+            replayed: { type: boolean }
+    ClientProjectionReceiptRequest:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: receipt_request }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id, projection_id, generation, content_hash, state]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+            projection_id: { $ref: "#/components/schemas/Uuid" }
+            generation: { type: integer, minimum: 0 }
+            content_hash: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+            state: { type: string, enum: [received, verified, staged, committed, rejected] }
+            error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80 }, { type: "null" }] }
+    ClientProjectionReceiptResponse:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: receipt_response }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [accepted, state]
+          properties:
+            accepted: { type: boolean }
+            state: { type: string, enum: [received, verified, staged, committed, rejected] }
+    ClientHeartbeatRequest:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: heartbeat_request }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+    ClientHeartbeatResponse:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: heartbeat_response }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id, revoked, server_time]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+            revoked: { type: boolean }
+            server_time: { type: integer, minimum: 0 }
+    ClientTrafficModeRequest:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: traffic_mode_request }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id, traffic_mode]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+            traffic_mode: { type: string, enum: [policy, global] }
+    ClientTrafficModeResponse:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: traffic_mode_response }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id, previous_mode, traffic_mode, replayed]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+            previous_mode: { type: string, enum: [policy, global] }
+            traffic_mode: { type: string, enum: [policy, global] }
+            replayed: { type: boolean }
+    ClientRevokeRequest:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: revoke_request }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+    ClientRevokeResponse:
+      type: object
+      additionalProperties: false
+      required: [api_version, message_type, request_id, payload]
+      properties:
+        api_version: { type: integer, const: 1 }
+        message_type: { type: string, const: revoke_response }
+        request_id: { $ref: "#/components/schemas/Uuid" }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [device_id, device_key_id, revoked, effective_at]
+          properties:
+            device_id: { $ref: "#/components/schemas/Uuid" }
+            device_key_id: { $ref: "#/components/schemas/Uuid" }
+            revoked: { type: boolean }
+            effective_at: { type: integer, minimum: 0 }
+    ClientAllowedResource:
+      type: object
+      additionalProperties: false
+      required: [name, domains, cidrs, ports]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        domains:
+          type: array
+          maxItems: 1024
+          items: { type: string, minLength: 1, maxLength: 253 }
+        cidrs:
+          type: array
+          maxItems: 1024
+          items: { type: string, minLength: 1, maxLength: 64 }
+        ports:
+          type: array
+          maxItems: 128
+          items: { type: integer, minimum: 1, maximum: 65535 }
+    ClientAccessPolicy:
+      type: object
+      additionalProperties: false
+      required: [schema_version, policy_id, tenant_id, generation, mode_capabilities, global_egress_enabled, allowed_resources]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        policy_id: { $ref: "#/components/schemas/Uuid" }
+        tenant_id: { $ref: "#/components/schemas/Uuid" }
+        generation: { type: integer, minimum: 1 }
+        mode_capabilities:
+          type: array
+          minItems: 1
+          items: { type: string, enum: [policy, global] }
+        global_egress_enabled: { type: boolean }
+        allowed_resources:
+          type: array
+          maxItems: 4096
+          items: { $ref: "#/components/schemas/ClientAllowedResource" }
+    ClientAccessPolicyResponse:
+      type: object
+      additionalProperties: false
+      required: [policy_id, tenant_id, generation, replayed]
+      properties:
+        policy_id: { $ref: "#/components/schemas/Uuid" }
+        tenant_id: { $ref: "#/components/schemas/Uuid" }
+        generation: { type: integer, minimum: 1 }
+        replayed: { type: boolean }
+    ClientAccessPolicyBindingRequest:
+      type: object
+      additionalProperties: false
+      required: [policy_id, user_id, client_device_id]
+      properties:
+        policy_id: { $ref: "#/components/schemas/Uuid" }
+        user_id: { $ref: "#/components/schemas/Uuid" }
+        client_device_id: { $ref: "#/components/schemas/Uuid" }
+    ClientAccessPolicyBindingResponse:
+      type: object
+      additionalProperties: false
+      required: [binding_id, policy_id, user_id, client_device_id, replayed]
+      properties:
+        binding_id: { $ref: "#/components/schemas/Uuid" }
+        policy_id: { $ref: "#/components/schemas/Uuid" }
+        user_id: { $ref: "#/components/schemas/Uuid" }
+        client_device_id: { $ref: "#/components/schemas/Uuid" }
+        replayed: { type: boolean }
+    ClientDeviceStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [active, suspended] }
+    ClientDeviceStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [device_id, status, replayed]
+      properties:
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        status: { type: string, enum: [active, suspended] }
+        replayed: { type: boolean }
+    ClientDeviceKeyRotationRequest:
+      type: object
+      additionalProperties: false
+      required: [device_key_id, public_key]
+      properties:
+        device_key_id: { $ref: "#/components/schemas/Uuid" }
+        public_key: { type: string, minLength: 43, maxLength: 86, pattern: '^[A-Za-z0-9_-]+$' }
+    ClientDeviceKeyRotationResponse:
+      type: object
+      additionalProperties: false
+      required: [device_id, device_key_id, previous_device_key_id, revoked_grants, revoked_projections, replayed]
+      properties:
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        device_key_id: { $ref: "#/components/schemas/Uuid" }
+        previous_device_key_id: { $ref: "#/components/schemas/Uuid" }
+        revoked_grants: { type: integer, minimum: 0 }
+        revoked_projections: { type: integer, minimum: 0 }
+        replayed: { type: boolean }
   responses:
     IdentityBadRequest:
       description: Invalid or unsupported identity request.
@@ -2330,6 +3308,18 @@ components:
     DeviceInternal:
       description: Grant assembly failed after validation.
       content: { application/json: { schema: { $ref: "#/components/schemas/DeviceProblem" } } }
+    TerminalBadRequest:
+      description: Malformed envelope, bad api_version/message_type, or an invalid domain field (for example an unknown platform or a public key outside its accepted length).
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    TerminalUnauthorized:
+      description: Missing or invalid human session behind the terminal request.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    TerminalForbidden:
+      description: The device or key is not owned by the authenticated session.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
+    TerminalUnavailable:
+      description: A required dependency (storage, signing key, or active node) is unavailable; the operation fails closed.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ManagementProblem" } } }
     UnprocessableJson:
       description: JSON contains missing, unknown, or incorrectly typed fields.
       content: { text/plain: { schema: { type: string } } }

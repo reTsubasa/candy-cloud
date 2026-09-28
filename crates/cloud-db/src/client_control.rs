@@ -3,12 +3,19 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::client_access::ClientTrafficMode;
 use crate::DbPool;
 
 const MAX_DISPLAY_NAME_LEN: usize = 200;
 const MAX_INSTALL_ID_LEN: usize = 128;
 const MAX_CLIENT_VERSION_LEN: usize = 64;
 const MAX_GRANT_ENVELOPE_LEN: usize = 1024 * 1024;
+/// Bounds for a terminal device public key. These mirror the
+/// `client_device_keys_public_key_bounded` CHECK in
+/// `0038_terminal_client_control.sql`, so Cloud refuses a key the schema would
+/// reject anyway instead of letting a duplicate-key error surface as a 503.
+const MIN_DEVICE_PUBLIC_KEY_LEN: usize = 32;
+const MAX_DEVICE_PUBLIC_KEY_LEN: usize = 64;
 /// Upper bound for Cloud-allocated Grant generations. The column is
 /// `BIGINT UNSIGNED`; refusing to allocate past this keeps the value safely
 /// inside every downstream representation instead of silently wrapping.
@@ -118,6 +125,18 @@ pub enum ClientControlError {
     BindingConflict,
     #[error("terminal client grant generation changed concurrently")]
     GenerationConflict,
+    /// A lifecycle change Cloud refuses to make. Revocation is terminal, so any
+    /// transition that would leave or re-enter `REVOKED` is an error rather than
+    /// a silent success: an operator who asked for the wrong thing must be told,
+    /// not handed a `200` that describes a state the device is not in.
+    #[error("terminal client status transition is not allowed")]
+    InvalidTransition,
+    /// The scope named a device Cloud has no record of. Kept separate from
+    /// `InvalidScope`, which means "this caller may not act here": reporting a
+    /// missing device as an authorization failure would be a lie, and reporting
+    /// it as a state conflict would be a different one.
+    #[error("terminal client device not found")]
+    NotFound,
     #[error("terminal client database record is invalid")]
     InvalidRecord,
 }
@@ -143,6 +162,10 @@ pub enum ClientDeviceStatus {
 }
 
 impl ClientDeviceStatus {
+    /// The `client_devices.status` column value. Kept separate from the wire
+    /// form for the same reason `ClientTrafficMode` keeps them separate: the
+    /// frozen Client contract spells this lower case, and a handler that
+    /// answered in the storage spelling would be rejected by every client.
     pub fn from_database_value(value: &str) -> Option<Self> {
         match value {
             "ACTIVE" => Some(Self::Active),
@@ -150,6 +173,226 @@ impl ClientDeviceStatus {
             "REVOKED" => Some(Self::Revoked),
             _ => None,
         }
+    }
+
+    pub fn to_database_value(self) -> &'static str {
+        match self {
+            Self::Active => "ACTIVE",
+            Self::Suspended => "SUSPENDED",
+            Self::Revoked => "REVOKED",
+        }
+    }
+
+    /// The lowercase spelling the management contract accepts and answers in.
+    pub fn to_wire_value(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Suspended => "suspended",
+            Self::Revoked => "revoked",
+        }
+    }
+
+    /// Wire parsing is deliberately strict and case-sensitive: a caller that
+    /// sends `ACTIVE` is refused rather than guessed at, so the two spellings
+    /// can never be confused for one another by accident.
+    pub fn from_wire_value(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "suspended" => Some(Self::Suspended),
+            "revoked" => Some(Self::Revoked),
+            _ => None,
+        }
+    }
+
+    /// Revocation is a terminal lifecycle state. Everything that mutates a
+    /// device has to agree on that, so the predicate lives with the enum.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Revoked)
+    }
+}
+
+/// Decides what a management-plane status request should actually do.
+///
+/// Extracted from `set_device_status` so the lifecycle rules are a pure function
+/// that can be pinned without a database, the same way `validate` pins the
+/// structural invariants.
+///
+/// * `Ok(None)` means the device is already in the requested state and the call
+///   is an idempotent replay: nothing is written, no audit event is emitted.
+/// * `Ok(Some(status))` is the state Cloud should write.
+/// * `Err(InvalidTransition)` covers every request that involves `REVOKED`,
+///   in either direction, because a revoked device is never resurrected and
+///   revocation is performed by the dedicated revoke path, not here.
+pub fn plan_device_status_change(
+    current: ClientDeviceStatus,
+    requested: ClientDeviceStatus,
+) -> Result<Option<ClientDeviceStatus>, ClientControlError> {
+    if current.is_terminal() || requested.is_terminal() {
+        return Err(ClientControlError::InvalidTransition);
+    }
+    if current == requested {
+        return Ok(None);
+    }
+    Ok(Some(requested))
+}
+
+/// Result of a management-plane suspend/activate request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientDeviceStatusOutcome {
+    Suspended { device_id: Uuid, replayed: bool },
+    Activated { device_id: Uuid, replayed: bool },
+}
+
+impl ClientDeviceStatusOutcome {
+    pub fn device_id(self) -> Uuid {
+        match self {
+            Self::Suspended { device_id, .. } | Self::Activated { device_id, .. } => device_id,
+        }
+    }
+
+    pub fn status(self) -> ClientDeviceStatus {
+        match self {
+            Self::Suspended { .. } => ClientDeviceStatus::Suspended,
+            Self::Activated { .. } => ClientDeviceStatus::Active,
+        }
+    }
+
+    /// `true` when the device was already in the requested state and Cloud wrote
+    /// nothing, so an HTTP caller can distinguish "applied" from "already true".
+    pub fn replayed(self) -> bool {
+        match self {
+            Self::Suspended { replayed, .. } | Self::Activated { replayed, .. } => replayed,
+        }
+    }
+}
+
+/// One management-plane key rotation request.
+///
+/// Kept as a value rather than five positional arguments so the validation rules
+/// that must hold *before* Cloud opens a transaction are in one place, and so the
+/// repository method reads as an auditable unit the way
+/// `ClientDeviceRegistration` does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientDeviceKeyRotation {
+    pub organization_id: Uuid,
+    pub tenant_id: Uuid,
+    pub device_id: Uuid,
+    /// The key identity the *client* mints for its new key. Cloud never picks it,
+    /// because the client is the only party that holds the matching secret.
+    pub device_key_id: Uuid,
+    pub public_key: Vec<u8>,
+}
+
+impl ClientDeviceKeyRotation {
+    /// Public so the boundary rules can be pinned without a database, exactly
+    /// like `ClientDeviceRegistration::validate`.
+    pub fn validate(&self) -> Result<(), ClientControlError> {
+        if [
+            self.organization_id,
+            self.tenant_id,
+            self.device_id,
+            self.device_key_id,
+        ]
+        .into_iter()
+        .any(|id| id.is_nil())
+        {
+            return Err(ClientControlError::InvalidScope);
+        }
+        // The length window is the same one the `client_device_keys` CHECK
+        // enforces, so a key the schema would reject is a `400` here instead of a
+        // duplicate-key storage fault surfacing as a `503`.
+        //
+        // An all-zero key is refused for the same reason registration refuses
+        // one: it is not a public key any client can prove possession of, so
+        // storing it would silently brick the device.
+        if self.public_key.len() < MIN_DEVICE_PUBLIC_KEY_LEN
+            || self.public_key.len() > MAX_DEVICE_PUBLIC_KEY_LEN
+            || self.public_key.iter().all(|byte| *byte == 0)
+        {
+            return Err(ClientControlError::InvalidPublicKey);
+        }
+        Ok(())
+    }
+}
+
+/// Pure preconditions of a key rotation, extracted so the rules an operator can
+/// trip are testable without MySQL.
+///
+/// * `Err(InvalidTransition)` when the device is not `ACTIVE`. A suspended device
+///   must be activated first, and a revoked one is never rotated back into
+///   service; both are operator-visible state conflicts rather than silent
+///   successes.
+/// * `Err(BindingConflict)` when the requested `device_key_id` is already in use
+///   in this tenant. Reusing a key identity would make two different public keys
+///   claim the same audience, so it is refused even when the caller believes it
+///   is retrying: rotation is never replayed.
+pub fn plan_device_key_rotation(
+    current: ClientDeviceStatus,
+    device_key_id_exists: bool,
+) -> Result<(), ClientControlError> {
+    if current != ClientDeviceStatus::Active {
+        return Err(ClientControlError::InvalidTransition);
+    }
+    if device_key_id_exists {
+        return Err(ClientControlError::BindingConflict);
+    }
+    Ok(())
+}
+
+/// Result of a management-plane key rotation.
+///
+/// `replayed` is always `false`: a rotation that produced a new key is by
+/// definition new work, and a retry of an already-applied rotation is refused as
+/// a conflict rather than answered as a replay. The field exists so the wire
+/// response has the same shape as every other terminal-client mutation, and so a
+/// future idempotent rotation cannot silently change the contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientDeviceKeyRotationOutcome {
+    Rotated {
+        device_id: Uuid,
+        /// The key that was `ACTIVE` before this call and is now `RETIRED`.
+        previous_device_key_id: Uuid,
+        device_key_id: Uuid,
+        revoked_grants: u64,
+        revoked_projections: u64,
+        replayed: bool,
+    },
+}
+
+impl ClientDeviceKeyRotationOutcome {
+    pub fn replayed(self) -> bool {
+        match self {
+            Self::Rotated { replayed, .. } => replayed,
+        }
+    }
+}
+
+/// Scope of one management-plane status change.
+///
+/// Note the scope is `(organization_id, tenant_id, device_id)` with no
+/// `user_id`. The client plane is session-scoped, so every one of its queries
+/// carries a user; the management plane acts on a device *as an operator*, and
+/// the human who asked is recorded in the audit event's `actor_id` rather than
+/// being folded into the row scope. Requiring a user id here would force the
+/// handler to invent one and would make a device invisible to management whenever
+/// its owning user moved on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetDeviceStatus {
+    pub organization_id: Uuid,
+    pub tenant_id: Uuid,
+    pub device_id: Uuid,
+    pub new_status: ClientDeviceStatus,
+}
+
+impl SetDeviceStatus {
+    pub fn validate(&self) -> Result<(), ClientControlError> {
+        if [self.organization_id, self.tenant_id, self.device_id]
+            .into_iter()
+            .any(|id| id.is_nil())
+        {
+            return Err(ClientControlError::InvalidScope);
+        }
+        Ok(())
     }
 }
 
@@ -170,6 +413,9 @@ pub struct ClientDeviceRecord {
     pub device_key_id: Uuid,
     pub platform: ClientPlatform,
     pub generation: u64,
+    /// The device's effective traffic mode. Cloud owns this value: it is written
+    /// by the traffic-mode endpoint, never read from a Projection request body.
+    pub traffic_mode: ClientTrafficMode,
 }
 
 /// Result of resolving a wire `device_id` with the caller's session scope.
@@ -234,6 +480,13 @@ pub struct ClientGrantWrite {
     pub grant_envelope: Vec<u8>,
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    /// The instant the node assignment inside `grant_envelope` stops being valid.
+    ///
+    /// Redundant with the signed payload on purpose: it is recorded here so the
+    /// next issuance can ask "does this device still hold a live assignment?"
+    /// without decoding a blob. The envelope stays the authority -- this column is
+    /// only how the question is answered cheaply (see migration `0047`).
+    pub assignment_lease_until: DateTime<Utc>,
 }
 
 impl ClientGrantWrite {
@@ -260,6 +513,11 @@ impl ClientGrantWrite {
             || self.signing_key_id.is_empty()
             || self.signing_key_id.len() > 128
             || self.expires_at <= self.issued_at
+            // The lease window must be exactly the shape the signed envelope
+            // validator accepts: strictly after `issued_at` (otherwise the client
+            // is handed a Grant it must reject) and never past `expires_at`.
+            || self.assignment_lease_until <= self.issued_at
+            || self.assignment_lease_until > self.expires_at
         {
             return Err(ClientControlError::InvalidRecord);
         }
@@ -303,6 +561,12 @@ pub struct ClientGrantRecord {
     pub grant_envelope: Vec<u8>,
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    /// Derived copy of the `assignment_lease_until` signed into `grant_envelope`.
+    ///
+    /// `None` for rows written before migration `0047`, and that absence is
+    /// meaningful: Cloud has no evidence about the assignment, so it re-selects
+    /// rather than assuming the old lease still holds.
+    pub assignment_lease_until: Option<DateTime<Utc>>,
 }
 
 impl ClientGrantRecord {
@@ -330,6 +594,15 @@ impl ClientGrantRecord {
             || self.expires_at <= self.issued_at
         {
             return Err(ClientControlError::InvalidRecord);
+        }
+        // The column is nullable because rows written before `0047` have no
+        // recorded lease, and absence must stay readable. When it *is* present it
+        // has to describe the same window the signed payload accepts, so a record
+        // that drifted out of range is refused exactly like the write was.
+        if let Some(lease_until) = self.assignment_lease_until {
+            if lease_until <= self.issued_at || lease_until > self.expires_at {
+                return Err(ClientControlError::InvalidRecord);
+            }
         }
         Ok(())
     }
@@ -532,7 +805,7 @@ impl ClientControlRepository {
             return Err(ClientControlError::InvalidScope);
         }
         let row = sqlx::query(
-            "SELECT device.id AS record_id, device.organization_id, device.tenant_id, device.user_id, device.device_id, device.platform, device.status AS device_status, device.generation AS device_generation, device_key.device_key_id FROM client_devices device LEFT JOIN client_device_keys device_key ON device_key.client_device_id = device.id AND device_key.organization_id = device.organization_id AND device_key.tenant_id = device.tenant_id AND device_key.user_id = device.user_id AND device_key.status = 'ACTIVE' WHERE device.organization_id = ? AND device.tenant_id = ? AND device.user_id = ? AND device.device_id = ?",
+            "SELECT device.id AS record_id, device.organization_id, device.tenant_id, device.user_id, device.device_id, device.platform, device.status AS device_status, device.generation AS device_generation, device.traffic_mode AS traffic_mode, device_key.device_key_id FROM client_devices device LEFT JOIN client_device_keys device_key ON device_key.client_device_id = device.id AND device_key.organization_id = device.organization_id AND device_key.tenant_id = device.tenant_id AND device_key.user_id = device.user_id AND device_key.status = 'ACTIVE' WHERE device.organization_id = ? AND device.tenant_id = ? AND device.user_id = ? AND device.device_id = ?",
         )
         .bind(organization_id)
         .bind(tenant_id)
@@ -593,6 +866,11 @@ impl ClientControlRepository {
             generation: row
                 .try_get("device_generation")
                 .map_err(|_| ClientControlError::InvalidRecord)?,
+            traffic_mode: ClientTrafficMode::from_database_value(
+                &row.try_get::<String, _>("traffic_mode")
+                    .map_err(|_| ClientControlError::InvalidRecord)?,
+            )
+            .ok_or(ClientControlError::InvalidRecord)?,
         };
         record.validate()?;
         Ok(Some(match status {
@@ -630,6 +908,508 @@ impl ClientControlRepository {
         .await
         .map_err(|_| ClientControlError::InvalidRecord)?;
         Ok(result.rows_affected() == 1)
+    }
+
+    /// Retires one device and everything Cloud issued to it, on the device's own
+    /// request.
+    ///
+    /// Revocation is the one lifecycle change a client is allowed to make about
+    /// itself, and only ever downward: the device row, its keys, and its Grants
+    /// are all moved out of `ACTIVE` in a single transaction so no ordering can
+    /// leave a live key or a usable Grant behind. A projection is revoked by the
+    /// caller because its repository is a separate object.
+    ///
+    /// Idempotent: a device that is already revoked, or whose scope does not
+    /// match the session, affects zero rows and is reported as such rather than
+    /// as an error. That keeps a retry after a dropped response from failing, and
+    /// keeps a caller from learning whether some other user's device exists.
+    pub async fn revoke_device(
+        &self,
+        organization_id: Uuid,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        device_id: Uuid,
+        device_key_id: Uuid,
+    ) -> Result<u64, ClientControlError> {
+        if [
+            organization_id,
+            tenant_id,
+            user_id,
+            device_id,
+            device_key_id,
+        ]
+        .into_iter()
+        .any(|id| id.is_nil())
+        {
+            return Err(ClientControlError::InvalidScope);
+        }
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        let record_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM client_devices WHERE organization_id = ? AND tenant_id = ? AND user_id = ? AND device_id = ? AND status = 'ACTIVE' FOR UPDATE",
+        )
+        .bind(organization_id)
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(device_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        let Some(record_id) = record_id else {
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| ClientControlError::InvalidRecord)?;
+            return Ok(0);
+        };
+        // The key must be the one Cloud currently authorizes for this device, so
+        // a stale key held by someone else cannot switch off a device it no
+        // longer owns.
+        let key_matches: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM client_device_keys WHERE client_device_id = ? AND organization_id = ? AND tenant_id = ? AND user_id = ? AND device_key_id = ? AND status = 'ACTIVE')",
+        )
+        .bind(record_id)
+        .bind(organization_id)
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(device_key_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        if !key_matches {
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| ClientControlError::InvalidRecord)?;
+            return Ok(0);
+        }
+        sqlx::query(
+            "UPDATE client_devices SET status = 'REVOKED', revoked_at = CURRENT_TIMESTAMP(6) WHERE id = ? AND organization_id = ? AND tenant_id = ? AND user_id = ?",
+        )
+        .bind(record_id)
+        .bind(organization_id)
+        .bind(tenant_id)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        sqlx::query(
+            "UPDATE client_device_keys SET status = 'REVOKED', revoked_at = CURRENT_TIMESTAMP(6) WHERE client_device_id = ? AND organization_id = ? AND tenant_id = ? AND user_id = ? AND status IN ('ACTIVE','RETIRED')",
+        )
+        .bind(record_id)
+        .bind(organization_id)
+        .bind(tenant_id)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        // The Grant row goes first so a concurrent Projection read cannot see a
+        // still-active Grant while the device is already revoked.
+        sqlx::query(
+            "UPDATE client_grants SET status = 'REVOKED', revoked_at = CURRENT_TIMESTAMP(6) WHERE client_device_id = ? AND organization_id = ? AND tenant_id = ? AND user_id = ? AND status = 'ACTIVE'",
+        )
+        .bind(record_id)
+        .bind(organization_id)
+        .bind(tenant_id)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        sqlx::query(
+            "INSERT INTO audit_events (id, organization_id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, ?, 'HUMAN', ?, 'CLIENT_DEVICE_REVOKED', 'CLIENT_DEVICE', ?, JSON_OBJECT('device_key_id', ?))",
+        )
+        .bind(Uuid::now_v7())
+        .bind(organization_id)
+        .bind(tenant_id)
+        .bind(user_id.to_string())
+        .bind(device_id.to_string())
+        .bind(device_key_id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        Ok(1)
+    }
+
+    /// Suspends or re-activates one device, on an operator's instruction.
+    ///
+    /// This is the management-plane half of the lifecycle and it is deliberately
+    /// *not* reachable from a client session: a device can revoke itself, but it
+    /// can never switch itself back on. The two directions are not symmetric:
+    ///
+    /// * `SUSPENDED` makes the device unsafe immediately. The device row moves
+    ///   out of `ACTIVE`, and every Grant and Projection Cloud issued to it is
+    ///   revoked in the same transaction, because a device that keeps enforcing a
+    ///   policy Cloud no longer authorizes is exactly the state an operator
+    ///   suspends a device to prevent. The *key rows* are left `ACTIVE` on
+    ///   purpose: suspension is expected to be temporary and a client that keeps
+    ///   its key does not have to re-register to come back.
+    /// * `ACTIVE` restores the device row only. There is no implicit key change:
+    ///   a `RETIRED` key stays retired, because bringing a key back to life is a
+    ///   *key* decision that belongs to `rotate_device_key`, not to a status
+    ///   change. A device suspended after a rotation therefore comes back with
+    ///   its current `ACTIVE` key and re-issues Grants and Projections normally.
+    ///
+    /// Idempotent by state, not by request: asking for the state a device is
+    /// already in returns `replayed: true` and writes no audit event, so a
+    /// retried operator action does not fill the audit log with duplicates. The
+    /// caller's request identity is not recorded because the requested state *is*
+    /// the whole request, the same way it is for the traffic-mode switch.
+    ///
+    /// Revocation is terminal in both directions. Any request involving
+    /// `REVOKED` -- including one that asks for it -- is refused rather than
+    /// applied, so a revoked device can never be quietly brought back into
+    /// service by a status call; re-enrollment is a separate, deliberate act.
+    pub async fn set_device_status(
+        &self,
+        organization_id: Uuid,
+        tenant_id: Uuid,
+        device_id: Uuid,
+        new_status: ClientDeviceStatus,
+    ) -> Result<ClientDeviceStatusOutcome, ClientControlError> {
+        let scope = SetDeviceStatus {
+            organization_id,
+            tenant_id,
+            device_id,
+            new_status,
+        };
+        self.set_device_status_inner(&scope).await
+    }
+
+    async fn set_device_status_inner(
+        &self,
+        scope: &SetDeviceStatus,
+    ) -> Result<ClientDeviceStatusOutcome, ClientControlError> {
+        scope.validate()?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        // `FOR UPDATE` on the device row is what makes the read-decide-write
+        // sequence safe: two concurrent operator actions serialize here instead of
+        // both reading `ACTIVE` and both writing an audit event.
+        let row = sqlx::query(
+            "SELECT id, user_id, status, (SELECT device_key.device_key_id FROM client_device_keys device_key WHERE device_key.client_device_id = client_devices.id AND device_key.status = 'ACTIVE' ORDER BY device_key.created_at DESC, device_key.device_key_id DESC LIMIT 1) AS device_key_id FROM client_devices WHERE organization_id = ? AND tenant_id = ? AND device_id = ? FOR UPDATE",
+        )
+        .bind(scope.organization_id)
+        .bind(scope.tenant_id)
+        .bind(scope.device_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        let Some(row) = row else {
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| ClientControlError::InvalidRecord)?;
+            return Err(ClientControlError::NotFound);
+        };
+        let record_id: Uuid = row
+            .try_get("id")
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        let user_id: Uuid = row
+            .try_get("user_id")
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        let stored: String = row
+            .try_get("status")
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        let current = ClientDeviceStatus::from_database_value(&stored)
+            .ok_or(ClientControlError::InvalidRecord)?;
+        let active_key: Option<Uuid> = row
+            .try_get("device_key_id")
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        // Deciding here, inside the lock, is what keeps "already suspended" from
+        // racing with another operator's suspension: the second caller sees the
+        // committed state and correctly reports a replay.
+        let planned = match plan_device_status_change(current, scope.new_status) {
+            Ok(planned) => planned,
+            Err(error) => {
+                transaction
+                    .rollback()
+                    .await
+                    .map_err(|_| ClientControlError::InvalidRecord)?;
+                return Err(error);
+            }
+        };
+        let Some(planned) = planned else {
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| ClientControlError::InvalidRecord)?;
+            return Ok(match scope.new_status {
+                ClientDeviceStatus::Suspended => ClientDeviceStatusOutcome::Suspended {
+                    device_id: scope.device_id,
+                    replayed: true,
+                },
+                _ => ClientDeviceStatusOutcome::Activated {
+                    device_id: scope.device_id,
+                    replayed: true,
+                },
+            });
+        };
+        sqlx::query(
+            "UPDATE client_devices SET status = ? WHERE id = ? AND organization_id = ? AND tenant_id = ?",
+        )
+        .bind(planned.to_database_value())
+        .bind(record_id)
+        .bind(scope.organization_id)
+        .bind(scope.tenant_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        if planned == ClientDeviceStatus::Suspended {
+            // Grant first, then Projection, in that order. A Projection is derived
+            // from a Grant, so an observer that sees a revoked Grant while a
+            // Projection is briefly still PUBLISHED can never be looking at the
+            // reverse, and the window in which a client could still fetch a
+            // Projection backing a dead Grant is the shorter one.
+            sqlx::query(
+                "UPDATE client_grants SET status = 'REVOKED', revoked_at = CURRENT_TIMESTAMP(6) WHERE client_device_id = ? AND organization_id = ? AND tenant_id = ? AND status = 'ACTIVE'",
+            )
+            .bind(record_id)
+            .bind(scope.organization_id)
+            .bind(scope.tenant_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+            // Deliberately *not* filtered by `device_key_id`: suspension is about
+            // the device, so every Projection it holds has to go, including any
+            // still-PUBLISHED row under a key that was retired by an earlier
+            // rotation.
+            sqlx::query(
+                "UPDATE client_projections SET status = 'REVOKED', revoked_at = CURRENT_TIMESTAMP(6) WHERE client_device_id = ? AND organization_id = ? AND tenant_id = ? AND status = 'PUBLISHED'",
+            )
+            .bind(record_id)
+            .bind(scope.organization_id)
+            .bind(scope.tenant_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        }
+        let action = match planned {
+            ClientDeviceStatus::Suspended => "CLIENT_DEVICE_SUSPENDED",
+            _ => "CLIENT_DEVICE_ACTIVATED",
+        };
+        // The actor is the management-plane human, never the device: this path is
+        // unreachable from a client session, and an audit trail that named the
+        // device as its own suspender would be misleading.
+        sqlx::query(
+            "INSERT INTO audit_events (id, organization_id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, ?, 'HUMAN', ?, ?, 'CLIENT_DEVICE', ?, JSON_OBJECT('device_key_id', ?, 'status', ?))",
+        )
+        .bind(Uuid::now_v7())
+        .bind(scope.organization_id)
+        .bind(scope.tenant_id)
+        .bind(user_id.to_string())
+        .bind(action)
+        .bind(scope.device_id.to_string())
+        .bind(
+            active_key
+                .map(|key| key.to_string())
+                .unwrap_or_default(),
+        )
+        .bind(planned.to_wire_value())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        Ok(match planned {
+            ClientDeviceStatus::Suspended => ClientDeviceStatusOutcome::Suspended {
+                device_id: scope.device_id,
+                replayed: false,
+            },
+            _ => ClientDeviceStatusOutcome::Activated {
+                device_id: scope.device_id,
+                replayed: false,
+            },
+        })
+    }
+
+    /// Rotates one device's key and retires everything that was bound to the old
+    /// one.
+    ///
+    /// Rotation is not just a new key row. A terminal Grant and Projection are
+    /// bound to the *old* `device_key_id` -- the audience is part of what Cloud
+    /// signed -- so a rotation that only inserted a new key would leave the old
+    /// Grant verifiable and the old Projection enforceable, which would make the
+    /// rotation cosmetic. Everything the old key authorized is therefore retired
+    /// in the same transaction, in this order:
+    ///
+    /// 1. the old key row becomes `RETIRED` (never `REVOKED`: retired means
+    ///    "superseded", and keeping the distinction lets an operator read the
+    ///    history of a device that rotated cleanly apart from one that was
+    ///    revoked;
+    /// 2. the new key row is inserted `ACTIVE`;
+    /// 3. `ACTIVE` Grants for the device are revoked;
+    /// 4. `PUBLISHED` Projections for the device are revoked.
+    ///
+    /// The device's `generation` is left monotonic and *untouched* here. It is the
+    /// device's own identity generation, allocated by registration, not a
+    /// rotation counter: bumping it inside this transaction would both re-sign
+    /// nothing and risk colliding with the generation-serialized Grant and
+    /// Projection allocators. Grant and Projection generations restart from the
+    /// stored maximum, so the next issuance is strictly newer than anything the
+    /// old key ever held.
+    ///
+    /// Not idempotent, by design. A retried rotation is refused as a conflict
+    /// rather than replayed: replaying would mean answering `rotated` for a key
+    /// Cloud did not just create, and the caller could no longer tell whether its
+    /// new key is actually in service. The counts returned let an operator verify
+    /// that the old authorization really was retired.
+    pub async fn rotate_device_key(
+        &self,
+        rotation: &ClientDeviceKeyRotation,
+    ) -> Result<ClientDeviceKeyRotationOutcome, ClientControlError> {
+        rotation.validate()?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        let row = sqlx::query(
+            "SELECT id, user_id, status FROM client_devices WHERE organization_id = ? AND tenant_id = ? AND device_id = ? FOR UPDATE",
+        )
+        .bind(rotation.organization_id)
+        .bind(rotation.tenant_id)
+        .bind(rotation.device_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        let Some(row) = row else {
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| ClientControlError::InvalidRecord)?;
+            return Err(ClientControlError::NotFound);
+        };
+        let record_id: Uuid = row
+            .try_get("id")
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        let user_id: Uuid = row
+            .try_get("user_id")
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        let stored: String = row
+            .try_get("status")
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        let current = ClientDeviceStatus::from_database_value(&stored)
+            .ok_or(ClientControlError::InvalidRecord)?;
+        // The key identity is unique per tenant rather than per device, because a
+        // `device_key_id` is what a Projection audience names. Reusing one would
+        // make two keys indistinguishable to every audience check, so it is
+        // refused here rather than left to a duplicate-key constraint.
+        let key_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM client_device_keys WHERE tenant_id = ? AND device_key_id = ?)",
+        )
+        .bind(rotation.tenant_id)
+        .bind(rotation.device_key_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        if let Err(error) = plan_device_key_rotation(current, key_exists) {
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| ClientControlError::InvalidRecord)?;
+            return Err(error);
+        }
+        let previous_key: Option<Uuid> = sqlx::query_scalar(
+            "SELECT device_key_id FROM client_device_keys WHERE client_device_id = ? AND organization_id = ? AND tenant_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC, device_key_id DESC LIMIT 1 FOR UPDATE",
+        )
+        .bind(record_id)
+        .bind(rotation.organization_id)
+        .bind(rotation.tenant_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        let Some(previous_key) = previous_key else {
+            // An `ACTIVE` device with no `ACTIVE` key is an inconsistent row, not
+            // a caller error: Cloud cannot say which key was replaced, so it must
+            // not claim a rotation happened.
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| ClientControlError::InvalidRecord)?;
+            return Err(ClientControlError::InvalidRecord);
+        };
+        sqlx::query(
+            "UPDATE client_device_keys SET status = 'RETIRED' WHERE client_device_id = ? AND organization_id = ? AND tenant_id = ? AND device_key_id = ? AND status = 'ACTIVE'",
+        )
+        .bind(record_id)
+        .bind(rotation.organization_id)
+        .bind(rotation.tenant_id)
+        .bind(previous_key)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        sqlx::query(
+            "INSERT INTO client_device_keys (id, organization_id, tenant_id, user_id, client_device_id, device_key_id, public_key, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(rotation.organization_id)
+        .bind(rotation.tenant_id)
+        .bind(user_id)
+        .bind(record_id)
+        .bind(rotation.device_key_id)
+        .bind(rotation.public_key.as_slice())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        let revoked_grants = sqlx::query(
+            "UPDATE client_grants SET status = 'REVOKED', revoked_at = CURRENT_TIMESTAMP(6) WHERE client_device_id = ? AND organization_id = ? AND tenant_id = ? AND status = 'ACTIVE'",
+        )
+        .bind(record_id)
+        .bind(rotation.organization_id)
+        .bind(rotation.tenant_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?
+        .rows_affected();
+        let revoked_projections = sqlx::query(
+            "UPDATE client_projections SET status = 'REVOKED', revoked_at = CURRENT_TIMESTAMP(6) WHERE client_device_id = ? AND organization_id = ? AND tenant_id = ? AND status = 'PUBLISHED'",
+        )
+        .bind(record_id)
+        .bind(rotation.organization_id)
+        .bind(rotation.tenant_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?
+        .rows_affected();
+        sqlx::query(
+            "INSERT INTO audit_events (id, organization_id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) VALUES (?, ?, ?, 'HUMAN', ?, 'CLIENT_DEVICE_KEY_ROTATED', 'CLIENT_DEVICE', ?, JSON_OBJECT('previous_device_key_id', ?, 'device_key_id', ?, 'revoked_grants', ?, 'revoked_projections', ?))",
+        )
+        .bind(Uuid::now_v7())
+        .bind(rotation.organization_id)
+        .bind(rotation.tenant_id)
+        .bind(user_id.to_string())
+        .bind(rotation.device_id.to_string())
+        .bind(previous_key.to_string())
+        .bind(rotation.device_key_id.to_string())
+        .bind(revoked_grants)
+        .bind(revoked_projections)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ClientControlError::InvalidRecord)?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ClientControlError::InvalidRecord)?;
+        Ok(ClientDeviceKeyRotationOutcome::Rotated {
+            device_id: rotation.device_id,
+            previous_device_key_id: previous_key,
+            device_key_id: rotation.device_key_id,
+            revoked_grants,
+            revoked_projections,
+            replayed: false,
+        })
     }
 
     pub async fn write_grant(
@@ -740,7 +1520,7 @@ impl ClientControlRepository {
 
         let digest: [u8; 32] = Sha256::digest(&grant.grant_envelope).into();
         sqlx::query(
-            "INSERT INTO client_grants (id, organization_id, tenant_id, user_id, client_device_id, device_key_id, generation, request_id, request_hash, signing_key_id, grant_digest, grant_envelope, issued_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')",
+            "INSERT INTO client_grants (id, organization_id, tenant_id, user_id, client_device_id, device_key_id, generation, request_id, request_hash, signing_key_id, grant_digest, grant_envelope, issued_at, expires_at, assignment_lease_until, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')",
         )
         .bind(grant.grant_id)
         .bind(grant.organization_id)
@@ -756,6 +1536,7 @@ impl ClientControlRepository {
         .bind(&grant.grant_envelope)
         .bind(grant.issued_at)
         .bind(grant.expires_at)
+        .bind(grant.assignment_lease_until)
         .execute(&mut *transaction)
         .await
         .map_err(|_| ClientControlError::InvalidRecord)?;
@@ -785,7 +1566,7 @@ impl ClientControlRepository {
             return Err(ClientControlError::InvalidScope);
         }
         let row = sqlx::query(
-            "SELECT id, organization_id, tenant_id, user_id, client_device_id, device_key_id, generation, request_hash, signing_key_id, grant_envelope, issued_at, expires_at FROM client_grants WHERE tenant_id = ? AND client_device_id = ? AND request_id = ?",
+            "SELECT id, organization_id, tenant_id, user_id, client_device_id, device_key_id, generation, request_hash, signing_key_id, grant_envelope, issued_at, expires_at, assignment_lease_until FROM client_grants WHERE tenant_id = ? AND client_device_id = ? AND request_id = ?",
         )
         .bind(tenant_id)
         .bind(client_device_id)
@@ -807,7 +1588,10 @@ impl ClientControlRepository {
         tenant_id: Uuid,
         client_device_id: Uuid,
     ) -> Result<u64, ClientControlError> {
-        if [tenant_id, client_device_id].into_iter().any(|id| id.is_nil()) {
+        if [tenant_id, client_device_id]
+            .into_iter()
+            .any(|id| id.is_nil())
+        {
             return Err(ClientControlError::InvalidScope);
         }
         let current: Option<u64> = sqlx::query_scalar(
@@ -848,7 +1632,7 @@ impl ClientControlRepository {
             return Err(ClientControlError::InvalidScope);
         }
         let row = sqlx::query(
-            "SELECT id, organization_id, tenant_id, user_id, client_device_id, device_key_id, generation, request_hash, signing_key_id, grant_envelope, issued_at, expires_at FROM client_grants WHERE tenant_id = ? AND client_device_id = ? AND device_key_id = ? AND status = 'ACTIVE' AND expires_at > ? ORDER BY generation DESC, issued_at DESC LIMIT 1",
+            "SELECT id, organization_id, tenant_id, user_id, client_device_id, device_key_id, generation, request_hash, signing_key_id, grant_envelope, issued_at, expires_at, assignment_lease_until FROM client_grants WHERE tenant_id = ? AND client_device_id = ? AND device_key_id = ? AND status = 'ACTIVE' AND expires_at > ? ORDER BY generation DESC, issued_at DESC LIMIT 1",
         )
         .bind(tenant_id)
         .bind(client_device_id)
@@ -917,6 +1701,9 @@ fn grant_record_from_row(
             .map_err(|_| ClientControlError::InvalidRecord)?,
         expires_at: row
             .try_get("expires_at")
+            .map_err(|_| ClientControlError::InvalidRecord)?,
+        assignment_lease_until: row
+            .try_get("assignment_lease_until")
             .map_err(|_| ClientControlError::InvalidRecord)?,
     };
     record.validate()?;

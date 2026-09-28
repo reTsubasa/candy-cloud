@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "projection_id": "11111111-1111-4111-8111-111111111111",
+  "projection_type": "device_client",
+  "tenant_id": "22222222-2222-4222-8222-222222222222",
+  "user_id": "33333333-3333-4333-8333-333333333333",
+  "device_id": "44444444-4444-4444-8444-444444444444",
+  "device_key_id": "55555555-5555-4555-8555-555555555555",
+  "audience": {
+    "tenant_id": "22222222-2222-4222-8222-222222222222",
+    "user_id": "33333333-3333-4333-8333-333333333333",
+    "device_id": "44444444-4444-4444-8444-444444444444",
+    "device_key_id": "55555555-5555-4555-8555-555555555555"
+  },
+  "grant_id": "66666666-6666-4666-8666-666666666666",
+  "grant_expires_at": 1900000000,
+  "generation": 42,
+  "content_hash": "sha256:8b0b0b3d81cd7cc8934315312d712a7a2d534c91f37a7d48ef8621748b6be393",
+  "not_before": 1899996400,
+  "stale_until": 1899999900,
+  "issued_at": 1899996400,
+  "traffic_mode": "policy",
+  "mode_capabilities": ["policy", "global"],
+  "selected_node": {
+    "node_id": "77777777-7777-4777-8777-777777777777",
+    "endpoint": "edge-a.example.test:443",
+    "priority": 1,
+    "node_key_id": "88888888-8888-4888-8888-888888888888",
+    "transport": "quic",
+    "assignment_lease_until": 1899999800
+  },
+  "standby_nodes": [
+    {
+      "node_id": "99999999-9999-4999-8999-999999999999",
+      "endpoint": "edge-b.example.test:443",
+      "priority": 2,
+      "node_key_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "transport": "quic",
+      "assignment_lease_until": 1899999800
+    }
+  ],
+  "allowed_resources": [
+    {
+      "name": "internal-git",
+      "domains": ["git.example.test"],
+      "cidrs": ["10.20.0.0/16"],
+      "ports": [443, 22]
+    }
+  ],
+  "dns_projection": {
+    "mode": "cloud_split",
+    "servers": ["10.20.0.53"],
+    "search_domains": ["example.test"],
+    "leak_protection": true
+  },
+  "underlay_exclusions": ["192.0.2.10/32", "198.51.100.20/32"],
+  "degraded_behavior": "protected_fail_closed_direct_nonprotected",
+  "global_egress": {
+    "enabled": false,
+    "node_id": "77777777-7777-4777-8777-777777777777",
+    "dns_egress": "none"
+  },
+  "signing_key_id": "cloud-policy-2026-01",
+  "signature": "og2GE5Y3FJmvMQJ4FOlbeECR7Ckkp+TGXizbung6SB43TlHaCq0IEE3F0m13CfaPNqGNHNNAAcmzrFtAFQJRAA=="
+}

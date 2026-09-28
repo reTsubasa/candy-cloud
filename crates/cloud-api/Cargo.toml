@@ -10,6 +10,7 @@ base64.workspace = true
 chrono.workspace = true
 cloud-control = { path = "../cloud-control" }
 cloud-client-grant = { path = "../cloud-client-grant" }
+cloud-client-projection = { path = "../cloud-client-projection" }
 cloud-db = { path = "../cloud-db" }
 ed25519-dalek.workspace = true
 jsonwebtoken.workspace = true

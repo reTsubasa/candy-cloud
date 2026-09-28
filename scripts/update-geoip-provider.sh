@@ -37,10 +37,12 @@ done
 IFS=$old_ifs
 
 date -u +%Y-%m-%d > "$stage/VERSION"
+printf '%s\n' "$base_url" > "$stage/SOURCE_URL"
 for file in "$stage"/*-ip.cidr; do
   install -m 0444 "$file" "$provider_dir/$(basename "$file").new"
 done
 install -m 0444 "$stage/VERSION" "$provider_dir/VERSION.new"
+install -m 0444 "$stage/SOURCE_URL" "$provider_dir/SOURCE_URL.new"
 for file in "$provider_dir"/*.new; do
   mv "$file" "${file%.new}"
 done

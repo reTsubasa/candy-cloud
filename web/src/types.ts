@@ -16,6 +16,18 @@ export type Session = {
   membership?: IdentityMembership;
 };
 
+export type GeoProviderSettings = {
+  provider: string;
+  source_url: string;
+  countries: string[];
+  refresh_interval_seconds: number;
+  enabled: boolean;
+  version: string | null;
+  digest: string | null;
+  generation: number;
+  updated_at: string;
+};
+
 export type IdentityUser = {
   id: string;
   email: string;

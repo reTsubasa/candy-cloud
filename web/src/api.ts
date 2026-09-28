@@ -20,6 +20,7 @@ import type {
   RuntimeTelemetryResponse,
   CloudVersionInfo,
   ResourceReferenceListResponse,
+  GeoProviderSettings,
 } from './types';
 
 export class CloudApiError extends Error {
@@ -377,6 +378,16 @@ export async function fetchRuntimeTelemetry(
       local_networks: item.local_networks ?? [],
     })),
   };
+}
+
+export function getGeoProvider(token: string): Promise<GeoProviderSettings | null> {
+  return requestJson('/v1/platform/geo-provider', token);
+}
+
+export function saveGeoProvider(token: string, settings: Omit<GeoProviderSettings, 'updated_at'>): Promise<GeoProviderSettings> {
+  return requestJson('/v1/platform/geo-provider', token, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, generation: settings.generation || 1 }),
+  });
 }
 
 export function listAuditEvents(token: string, tenantId: string, limit = 500): Promise<AuditEventResponse> {

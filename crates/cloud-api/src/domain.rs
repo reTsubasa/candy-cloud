@@ -13,6 +13,7 @@ pub enum ServiceClass {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Role {
+    PlatformAdmin,
     OrganizationOwner,
     TenantAdmin,
     Operator,
@@ -63,6 +64,10 @@ pub fn authorize(
         return Err("cross-tenant access denied");
     }
     let permitted = match context.role {
+        // Platform administration is a separate deployment scope. It must not
+        // implicitly become tenant administration merely because the current
+        // session carries the legacy organization/tenant anchor fields.
+        Role::PlatformAdmin => false,
         Role::OrganizationOwner | Role::TenantAdmin => true,
         Role::Operator => matches!(
             action,
@@ -108,5 +113,21 @@ mod tests {
         };
         assert!(authorize(&context, organization, tenant, Action::ReadAudit).is_ok());
         assert!(authorize(&context, organization, tenant, Action::WriteConfiguration).is_err());
+    }
+
+    #[test]
+    fn platform_admin_cannot_use_tenant_authorization() {
+        let context = TenantContext {
+            organization_id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            role: Role::PlatformAdmin,
+        };
+        assert!(authorize(
+            &context,
+            context.organization_id,
+            context.tenant_id,
+            Action::ReadConfiguration,
+        )
+        .is_err());
     }
 }

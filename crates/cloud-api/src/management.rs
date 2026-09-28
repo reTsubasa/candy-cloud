@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Extension, Path, Query, State},
+    extract::{rejection::JsonRejection, Extension, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -37,8 +37,99 @@ pub struct ManagementState {
     pub client_control: Option<cloud_db::client_control::ClientControlRepository>,
     pub client_routing: Option<cloud_db::client_routing::ClientNodeRepository>,
     pub client_grant: Option<cloud_client_grant::ClientGrantSigner>,
+    pub client_projection: Option<cloud_db::client_projection::ClientProjectionRepository>,
+    pub client_settings: Option<cloud_db::client_settings::ClientProjectionSettingsRepository>,
+    pub client_projection_signer: Option<cloud_client_projection::PolicyProjectionSigner>,
+    pub geo_provider: Option<cloud_db::geo_provider::GeoProviderRepository>,
     pub enrollment: Option<cloud_db::enrollment::EnrollmentRepository>,
     pub authentication_ready: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeoProviderSettingsRequest {
+    pub provider: String,
+    pub source_url: String,
+    pub countries: Vec<String>,
+    pub refresh_interval_seconds: u32,
+    pub enabled: bool,
+    pub version: Option<String>,
+    pub digest: Option<String>,
+    pub generation: u64,
+}
+
+/// Geo data is a deployment-wide platform capability.  Keep the former
+/// tenant-shaped URL explicit so old clients receive a stable "not a tenant
+/// resource" response instead of falling through to tenant authorization.
+pub async fn tenant_geo_provider_removed() -> Result<(), ApiError> {
+    Err(ApiError::not_found(
+        "PLATFORM_GEO_PROVIDER_ONLY",
+        "Geo 数据源属于平台能力，请使用 /v1/platform/geo-provider",
+    ))
+}
+
+pub async fn get_platform_geo_provider(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+) -> Result<Json<Option<cloud_db::geo_provider::GeoProviderSettings>>, ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_platform_geo(&principal, false)?;
+    let repository = state
+        .geo_provider
+        .as_ref()
+        .ok_or_else(ApiError::control_plane_unavailable)?;
+    repository
+        .get()
+        .await
+        .map(Json)
+        .map_err(|_| ApiError::control_plane_unavailable())
+}
+
+pub async fn put_platform_geo_provider(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Json(body): Json<GeoProviderSettingsRequest>,
+) -> Result<Json<cloud_db::geo_provider::GeoProviderSettings>, ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_platform_geo(&principal, true)?;
+    let actor_id = Uuid::parse_str(&principal.actor_id).map_err(|_| ApiError::unauthorized())?;
+    let settings = cloud_db::geo_provider::GeoProviderSettings {
+        provider: body.provider,
+        source_url: body.source_url,
+        countries: body.countries,
+        refresh_interval_seconds: body.refresh_interval_seconds,
+        enabled: body.enabled,
+        version: body.version,
+        digest: body.digest,
+        generation: body.generation,
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    let repository = state
+        .geo_provider
+        .as_ref()
+        .ok_or_else(ApiError::control_plane_unavailable)?;
+    repository
+        .put(&settings, actor_id)
+        .await
+        .map_err(|error| match error {
+            cloud_db::geo_provider::GeoProviderError::Conflict => ApiError::bad_request(
+                "GEO_PROVIDER_GENERATION_CONFLICT",
+                "平台 Geo 数据源已被其他操作更新，请刷新后重试",
+            ),
+            cloud_db::geo_provider::GeoProviderError::Invalid => {
+                ApiError::bad_request("INVALID_GEO_PROVIDER_SETTINGS", "平台 Geo 数据源配置无效")
+            }
+            cloud_db::geo_provider::GeoProviderError::Scope => ApiError::forbidden(),
+            cloud_db::geo_provider::GeoProviderError::Storage => {
+                ApiError::control_plane_unavailable()
+            }
+        })?;
+    repository
+        .get()
+        .await
+        .map_err(|_| ApiError::control_plane_unavailable())?
+        .map(Json)
+        .ok_or_else(ApiError::control_plane_unavailable)
 }
 
 pub async fn create_client_access_policy(
@@ -197,6 +288,204 @@ pub async fn get_client_access_policy(
             code: "CLIENT_ACCESS_POLICY_NOT_FOUND",
             message: "no active client access policy is bound to the device",
         })
+}
+
+/// Wire value of the device lifecycle state an operator may ask for.
+///
+/// Parsed by hand into the storage enum rather than deserializing straight into
+/// it, so an unknown or wrong-case value is a contracted `400` instead of a `422`
+/// body the client cannot key off. `revoked` is deliberately not accepted here:
+/// revocation has its own route and is terminal, so a status call that asked for
+/// it would be a request Cloud must refuse rather than quietly satisfy.
+fn parse_device_status(
+    value: &str,
+) -> Result<cloud_db::client_control::ClientDeviceStatus, ApiError> {
+    // `from_wire_value` also understands `revoked`, because that spelling belongs
+    // to the storage/wire vocabulary the device row uses. This route's contract is
+    // narrower: it may only ask for `active` or `suspended`. A `revoked` request is
+    // therefore a payload problem (`400`) here and is rejected before storage, while
+    // `plan_device_status_change` keeps its own terminal guard so a revocation that
+    // races in between the check and the write is still refused as a `409` conflict
+    // rather than silently applied.
+    match cloud_db::client_control::ClientDeviceStatus::from_wire_value(value) {
+        Some(status) if !status.is_terminal() => Ok(status),
+        _ => Err(ApiError::bad_request(
+            "INVALID_DEVICE_STATUS",
+            "status must be active or suspended",
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientDeviceStatusRequest {
+    pub status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClientDeviceStatusResponse {
+    pub device_id: Uuid,
+    pub status: &'static str,
+    pub replayed: bool,
+}
+
+/// Suspends or re-activates one terminal device.
+///
+/// The ordering matches every other management route: session, then tenant
+/// authorization, then the body, and only then storage. A caller that is not
+/// allowed to write configuration in this tenant therefore never learns whether
+/// the `status` value it sent was acceptable.
+///
+/// `PUT` answers `200` in both the applied and replayed case. A status change has
+/// no created resource to point at with a `201` -- the device already existed and
+/// `replayed` is the field that distinguishes the two -- so a split
+/// `200`/`201` here would be a status code that carries no information.
+pub async fn set_client_device_status(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path((tenant_id, device_id)): Path<(Uuid, Uuid)>,
+    body: Result<Json<ClientDeviceStatusRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<ClientDeviceStatusResponse>), ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::WriteConfiguration)?;
+    // Parsed only after the session and the tenant check have passed. Reading the
+    // body first would let an unauthenticated or unauthorized caller learn which
+    // `status` values Cloud accepts, and would report a session problem as a
+    // request problem. axum defers a `Result<Json<_>, _>` extractor's rejection to
+    // the handler precisely so this ordering is expressible.
+    let Json(body) = body.map_err(|_| {
+        ApiError::bad_request(
+            "INVALID_REQUEST",
+            "request body does not satisfy the V1 contract",
+        )
+    })?;
+    let requested = parse_device_status(&body.status)?;
+    let repository = state
+        .client_control
+        .as_ref()
+        .ok_or_else(ApiError::authentication_unavailable)?;
+    let outcome = repository
+        .set_device_status(
+            principal.context.organization_id,
+            tenant_id,
+            device_id,
+            requested,
+        )
+        .await
+        .map_err(ApiError::from_client_control)?;
+    Ok((
+        StatusCode::OK,
+        Json(ClientDeviceStatusResponse {
+            device_id: outcome.device_id(),
+            status: outcome.status().to_wire_value(),
+            replayed: outcome.replayed(),
+        }),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientDeviceKeyRotationRequest {
+    pub device_key_id: Uuid,
+    pub public_key: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClientDeviceKeyRotationResponse {
+    pub device_id: Uuid,
+    pub device_key_id: Uuid,
+    pub previous_device_key_id: Uuid,
+    pub revoked_grants: u64,
+    pub revoked_projections: u64,
+    pub replayed: bool,
+}
+
+/// Rotates one terminal device's key and retires what the old key authorized.
+///
+/// Security comes from the session, not the body: the caller supplies only the
+/// key identity and public key it minted, and Cloud binds them to the device
+/// named in the path under the principal's own organization.
+///
+/// The `public_key` is decoded before storage is touched. Its accepted length
+/// window (32..=64) is the one the `client_device_keys` CHECK enforces; the
+/// registration route is deliberately stricter, because a *registration* must be
+/// exactly one raw Ed25519 key while a rotation may carry a key of a type Cloud
+/// is willing to store, so the two are not the same parser.
+pub async fn rotate_client_device_key(
+    State(state): State<Arc<ManagementState>>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
+    Path((tenant_id, device_id)): Path<(Uuid, Uuid)>,
+    body: Result<Json<ClientDeviceKeyRotationRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<ClientDeviceKeyRotationResponse>), ApiError> {
+    let principal = principal.ok_or(ApiError::unauthorized())?.0;
+    authorize_tenant(&principal, tenant_id, Action::WriteConfiguration)?;
+    let Json(body) = body.map_err(|_| {
+        ApiError::bad_request(
+            "INVALID_REQUEST",
+            "request body does not satisfy the V1 contract",
+        )
+    })?;
+    let public_key = parse_rotated_public_key(&body.public_key)?;
+    let repository = state
+        .client_control
+        .as_ref()
+        .ok_or_else(ApiError::authentication_unavailable)?;
+    let outcome = repository
+        .rotate_device_key(&cloud_db::client_control::ClientDeviceKeyRotation {
+            organization_id: principal.context.organization_id,
+            tenant_id,
+            device_id,
+            device_key_id: body.device_key_id,
+            public_key,
+        })
+        .await
+        .map_err(ApiError::from_client_control)?;
+    let cloud_db::client_control::ClientDeviceKeyRotationOutcome::Rotated {
+        device_id,
+        previous_device_key_id,
+        device_key_id,
+        revoked_grants,
+        revoked_projections,
+        replayed,
+    } = outcome;
+    Ok((
+        StatusCode::OK,
+        Json(ClientDeviceKeyRotationResponse {
+            device_id,
+            device_key_id,
+            previous_device_key_id,
+            revoked_grants,
+            revoked_projections,
+            replayed,
+        }),
+    ))
+}
+
+/// Decodes a rotated public key under the storage schema's own bounds.
+///
+/// Separate from the registration parser on purpose: registration requires
+/// *exactly* 32 bytes so a client cannot register a certificate or a secret key,
+/// while a rotation here accepts the 32..=64 window the column admits. Sharing
+/// one parser would either loosen registration or reject keys the schema accepts.
+fn parse_rotated_public_key(value: &str) -> Result<Vec<u8>, ApiError> {
+    // Base64url without padding encodes 32 bytes as 43 characters and 64 bytes as
+    // 86, so anything outside that window cannot be a key this route may store.
+    if value.len() < 43 || value.len() > 86 {
+        return Err(ApiError::bad_request(
+            "INVALID_PUBLIC_KEY",
+            "public_key must be base64url encoded",
+        ));
+    }
+    let raw = URL_SAFE_NO_PAD.decode(value).map_err(|_| {
+        ApiError::bad_request("INVALID_PUBLIC_KEY", "public_key must be base64url encoded")
+    })?;
+    if !(32..=64).contains(&raw.len()) || raw.iter().all(|byte| *byte == 0) {
+        return Err(ApiError::bad_request(
+            "INVALID_PUBLIC_KEY",
+            "public_key must decode to between 32 and 64 bytes",
+        ));
+    }
+    Ok(raw)
 }
 
 #[derive(Serialize)]
@@ -364,6 +653,26 @@ impl ApiError {
                 "CLIENT_GRANT_CONFLICT",
                 "client grant generation changed concurrently",
             ),
+            // A lifecycle request Cloud refuses to satisfy: the device is
+            // revoked (terminal), or a rotation was asked of a device that is not
+            // active. That is a state conflict -- the request is well formed and
+            // the caller is allowed, the device is simply not in a state where the
+            // change is meaningful -- so it is a `409` an operator can act on,
+            // never a `400` that blames the payload and never a `503` that hides
+            // it behind Cloud availability.
+            ClientControlError::InvalidTransition => Self::conflict(
+                "CLIENT_DEVICE_STATE_CONFLICT",
+                "the device lifecycle state does not allow this change",
+            ),
+            // Distinct from `InvalidScope` on purpose: `InvalidScope` means "this
+            // caller may not act here" (403), while this means "there is no such
+            // device in the caller's own scope" (404). Collapsing them would
+            // either leak that a device exists in another tenant or tell an
+            // operator that a missing device is a permissions problem.
+            ClientControlError::NotFound => Self::not_found(
+                "CLIENT_DEVICE_NOT_FOUND",
+                "no terminal device matches this identifier",
+            ),
             ClientControlError::InvalidRecord => Self::control_plane_unavailable(),
         }
     }
@@ -382,6 +691,102 @@ impl ApiError {
         }
     }
 
+    /// Projection issuance failures.
+    ///
+    /// The split mirrors the Grant path: a Projection Cloud *cannot* sign because
+    /// an input is missing or has moved on is a retryable client-visible state
+    /// (409/403), while a storage or signing fault is Cloud's problem and must be
+    /// a 503 so the client keeps retrying instead of tearing down its tunnel.
+    pub(crate) fn from_client_projection(
+        error: crate::client_projection::ClientProjectionError,
+    ) -> Self {
+        use crate::client_projection::ClientProjectionError;
+        match error {
+            ClientProjectionError::PolicyNotBound => Self::conflict(
+                "CLIENT_ACCESS_POLICY_NOT_BOUND",
+                "no active client access policy is bound to the device",
+            ),
+            ClientProjectionError::SettingsNotPublished => Self::conflict(
+                "CLIENT_PROJECTION_SETTINGS_NOT_PUBLISHED",
+                "no client projection settings are published for this tenant",
+            ),
+            // The Grant is a precondition, not a fault: the client refreshes its
+            // Grant and retries. A distinct code lets it tell the two apart.
+            ClientProjectionError::GrantNotIssued => Self::conflict(
+                "CLIENT_PROJECTION_GRANT_NOT_ISSUED",
+                "the device has no active client grant",
+            ),
+            ClientProjectionError::GrantStale => Self::conflict(
+                "CLIENT_PROJECTION_GRANT_STALE",
+                "the active client grant does not authorize the bound policy generation",
+            ),
+            ClientProjectionError::TrafficModeNotPermitted => Self::conflict(
+                "CLIENT_TRAFFIC_MODE_NOT_PERMITTED",
+                "the requested traffic mode is not permitted for this device",
+            ),
+            ClientProjectionError::IdempotencyConflict => Self::conflict(
+                "IDEMPOTENCY_CONFLICT",
+                "idempotency key was reused with a different request",
+            ),
+            ClientProjectionError::GenerationConflict => Self::conflict(
+                "CLIENT_PROJECTION_CONFLICT",
+                "projection generation changed concurrently",
+            ),
+            ClientProjectionError::NotOwned => Self::forbidden(),
+            // A missing or expired node assignment is retryable: Cloud will have
+            // a lease again after re-selection, so this is never a client error.
+            ClientProjectionError::NoActiveNode
+            | ClientProjectionError::NodeLeaseExpired
+            | ClientProjectionError::Unavailable => Self::control_plane_unavailable(),
+        }
+    }
+
+    /// Projection persistence failures. `InvalidReceipt` is the one case where
+    /// the caller sent something Cloud refuses on its merits, so it stays a 400
+    /// rather than being folded into the retryable 503 bucket.
+    pub(crate) fn from_client_projection_store(
+        error: cloud_db::client_projection::ClientProjectionError,
+    ) -> Self {
+        use cloud_db::client_projection::ClientProjectionError;
+        match error {
+            ClientProjectionError::InvalidReceipt => Self::bad_request(
+                "INVALID_RECEIPT",
+                "receipt does not satisfy the V1 contract",
+            ),
+            ClientProjectionError::InvalidScope => Self::forbidden(),
+            ClientProjectionError::BindingConflict | ClientProjectionError::GenerationConflict => {
+                Self::conflict(
+                    "CLIENT_PROJECTION_CONFLICT",
+                    "the projection binding or generation conflicts with current state",
+                )
+            }
+            ClientProjectionError::InvalidRecord => Self::control_plane_unavailable(),
+        }
+    }
+
+    /// Projection settings and traffic-mode failures.
+    pub(crate) fn from_client_settings(
+        error: cloud_db::client_settings::ClientProjectionSettingsError,
+    ) -> Self {
+        use cloud_db::client_settings::ClientProjectionSettingsError;
+        match error {
+            ClientProjectionSettingsError::InvalidSettings => Self::bad_request(
+                "INVALID_CLIENT_PROJECTION_SETTINGS",
+                "client projection settings do not satisfy the V1 contract",
+            ),
+            ClientProjectionSettingsError::InvalidScope => Self::forbidden(),
+            ClientProjectionSettingsError::Conflict => Self::conflict(
+                "CLIENT_PROJECTION_SETTINGS_CONFLICT",
+                "client projection settings conflict with current state",
+            ),
+            ClientProjectionSettingsError::ModeNotPermitted => Self::conflict(
+                "CLIENT_TRAFFIC_MODE_NOT_PERMITTED",
+                "the requested traffic mode is not permitted for this device",
+            ),
+            ClientProjectionSettingsError::InvalidRecord => Self::control_plane_unavailable(),
+        }
+    }
+
     pub(crate) fn forbidden() -> Self {
         Self {
             status: StatusCode::FORBIDDEN,
@@ -390,7 +795,9 @@ impl ApiError {
         }
     }
 
-    fn from_client_access(error: cloud_db::client_access::ClientAccessPolicyError) -> Self {
+    pub(crate) fn from_client_access(
+        error: cloud_db::client_access::ClientAccessPolicyError,
+    ) -> Self {
         match error {
             cloud_db::client_access::ClientAccessPolicyError::InvalidPolicy
             | cloud_db::client_access::ClientAccessPolicyError::InvalidResource => Self {
@@ -1521,6 +1928,22 @@ fn authorize_tenant(
     Ok(())
 }
 
+/// GeoIP data is a Cloud platform capability, not tenant configuration.  Keep
+/// the endpoint independent of the selected tenant. A platform administrator
+/// is deliberately a separate identity role: an organization owner must not
+/// be able to mutate a capability shared by every organization in the Cloud
+/// deployment.
+fn authorize_platform_geo(principal: &AuthenticatedPrincipal, write: bool) -> Result<(), ApiError> {
+    if principal.context.role != crate::domain::Role::PlatformAdmin {
+        return Err(ApiError::forbidden());
+    }
+    // The platform role is checked above. The tenant in the token is only the
+    // session anchor required by the existing identity schema; it is not part
+    // of Geo authorization and intentionally is never compared to a route.
+    let _ = write;
+    Ok(())
+}
+
 fn required_header(headers: &HeaderMap, name: &'static str) -> Result<String, ApiError> {
     headers
         .get(name)
@@ -1640,5 +2063,33 @@ mod tests {
             idempotent_resource_id(tenant, "actor-a", "request-1"),
             idempotent_resource_id(tenant, "actor-b", "request-1")
         );
+    }
+
+    #[test]
+    fn platform_geo_authorization_is_not_tenant_or_org_owner_scoped() {
+        let organization = Uuid::new_v4();
+        let first_tenant = Uuid::new_v4();
+        let second_tenant = Uuid::new_v4();
+        let platform = AuthenticatedPrincipal {
+            actor_id: Uuid::new_v4().to_string(),
+            context: TenantContext {
+                organization_id: organization,
+                tenant_id: first_tenant,
+                role: crate::domain::Role::PlatformAdmin,
+            },
+        };
+        assert!(authorize_platform_geo(&platform, false).is_ok());
+        assert!(authorize_platform_geo(&platform, true).is_ok());
+        assert_ne!(first_tenant, second_tenant);
+        let owner = AuthenticatedPrincipal {
+            actor_id: Uuid::new_v4().to_string(),
+            context: TenantContext {
+                organization_id: organization,
+                tenant_id: second_tenant,
+                role: crate::domain::Role::OrganizationOwner,
+            },
+        };
+        assert!(authorize_platform_geo(&owner, false).is_err());
+        assert!(authorize_platform_geo(&owner, true).is_err());
     }
 }

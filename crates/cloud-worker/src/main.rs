@@ -44,7 +44,8 @@ async fn main() -> anyhow::Result<()> {
         "Candy Core Cloud module is ready"
     );
     let publisher = ControlRoutePublisher::new(
-        SdwanRepository::new(pool),
+        SdwanRepository::new(pool.clone()),
+        cloud_db::geo_provider::GeoProviderRepository::new(pool),
         key_id,
         signing_key,
         Arc::new(core),

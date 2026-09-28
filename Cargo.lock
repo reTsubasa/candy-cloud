@@ -289,6 +289,7 @@ dependencies = [
  "base64",
  "chrono",
  "cloud-client-grant",
+ "cloud-client-projection",
  "cloud-control",
  "cloud-db",
  "ed25519-dalek",
@@ -336,6 +337,20 @@ dependencies = [
 
 [[package]]
 name = "cloud-client-grant"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "cloud-client-projection"
 version = "0.1.0"
 dependencies = [
  "base64",
@@ -425,6 +440,7 @@ dependencies = [
  "cloud-core-module",
  "cloud-db",
  "ed25519-dalek",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",

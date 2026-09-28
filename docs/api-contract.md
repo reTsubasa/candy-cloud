@@ -44,9 +44,14 @@ for enrollment, Grant, and Runtime delivery.
   whole session family on reuse. A disabled user, changed or removed membership,
   or revoked session is denied immediately by both Identity and Cloud API; both
   services validate the active session and current membership against storage.
-- Roles are `ORGANIZATION_OWNER`, `TENANT_ADMIN`, `OPERATOR`,
-  `BILLING_VIEWER`, and `AUDITOR`. Cloud API derives authorization from the
-  signed tenant context; the Web client never supplies a role or tenant scope.
+- Roles are `PLATFORM_ADMIN`, `ORGANIZATION_OWNER`, `TENANT_ADMIN`, `OPERATOR`,
+  `BILLING_VIEWER`, and `AUDITOR`. `PLATFORM_ADMIN` is a deployment-scoped
+  role for platform capabilities such as the shared GeoIP provider; it is not
+  a tenant role and cannot be granted through organization invitations or
+  member-management APIs. It is denied by tenant resource authorization and
+  is accepted only by explicit platform routes. Cloud API derives
+  authorization from the signed tenant context; the Web client never supplies
+  a role or tenant scope.
 - Human API endpoints are available at `/identity/v1/auth/...`. Registration
   accepts email, an at-least-12-character password, display name, and
   organization name, and returns `202 verification_required`. A verification

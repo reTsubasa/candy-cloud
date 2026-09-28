@@ -12,7 +12,6 @@ import {
   Select,
   Space,
   Spin,
-  Switch,
   Tag,
   Typography,
 } from '@arco-design/web-react';
@@ -23,7 +22,6 @@ import {
   buildResourceSpec,
   dnsRecordsForEditor,
   normalizeSpecForEditor,
-  policyDataPlaneChanged,
   policyRulesForEditor,
   validateResourceEditor,
   type Spec,
@@ -102,7 +100,7 @@ function displayName(item: ControlResource): string {
   if (overlay) return `${overlay.network}/${overlay.prefix_len}`;
   if (item.resource.kind === 'ATTACHMENT') return `网络接入 · ${String(spec.overlay_router_ipv4 ?? '待分配')}`;
   if (item.resource.kind === 'PEER') return '站点互联';
-  if (item.resource.kind === 'SERVICE_POLICY') return String(spec.name || '未命名策略');
+  if (item.resource.kind === 'SERVICE_POLICY') return '流量策略';
   return item.metadata.id;
 }
 
@@ -217,9 +215,7 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
     const current = resource?.resource ?? defaultSpec(definition.kind);
     const normalized = normalizeSpecForEditor(current);
     if (!resource && initialSpec) Object.assign(normalized, initialSpec);
-    if (definition.kind === 'SERVICE_POLICY') {
-      normalized.rules = policyRulesForEditor(normalized.rules);
-    }
+    if (definition.kind === 'SERVICE_POLICY') normalized.rules = policyRulesForEditor(normalized.rules);
     if (definition.kind === 'DNS_INTENT') normalized.records = dnsRecordsForEditor(normalized.records);
     setSpec(normalized);
     setError(null);
@@ -344,9 +340,7 @@ export function ResourceEditor({ visible, definition, session, resource, onClose
         if (!Number.isSafeInteger(currentGeneration) || currentGeneration < 1 || currentGeneration >= Number.MAX_SAFE_INTEGER) {
           throw new Error('策略代次无效，无法安全发布新配置');
         }
-        document.spec.generation = policyDataPlaneChanged(resource.resource, document)
-          ? currentGeneration + 1
-          : currentGeneration;
+        document.spec.generation = currentGeneration + 1;
       }
       const response = resource
         ? await replaceResource(session.token, tenantId, definition.collection, resource.metadata.id, resource.metadata.revision, document)
@@ -533,8 +527,6 @@ function PolicyFields({ spec, update, updateList, removeListItem, references, re
   const egressOptions = segmentEgresses(spec.segment_id, references);
   return <>
     <FormIntro title="在一个网络分段内选择出口">策略只匹配所选分段内的站点与流量，不会跨分段生效。规则按优先级依次匹配；没有命中的流量继续使用来源站点的本地出口。</FormIntro>
-    <Form.Item label="策略名称"><Input value={getValue(spec, 'name')} maxLength={120} showWordLimit onChange={(value) => update('name', value)} placeholder="例如：杭州办公网经美国出口" /><FieldHelp>名称用于控制台展示和运维识别；留空时按生效网络和出口自动生成展示名称。系统内部仍使用不可变 UUID 精确引用策略。</FieldHelp></Form.Item>
-    <Form.Item label="策略状态"><Switch checked={spec.enabled !== false} checkedText="启用" uncheckedText="禁用" onChange={(value) => update('enabled', value)} /><FieldHelp>禁用后保留策略配置，但所有规则立即从运行策略中移除；重新启用后按原规则热加载。</FieldHelp></Form.Item>
     <Form.Item label="生效网络" required>{referenceSelect('segments', spec.segment_id, (value) => {
       update('segment_id', value);
       update('rules', rules.map((rule) => ({ ...rule, source_site_ids: [], egress_id: rule.action_type === 'REMOTE_EGRESS' ? '' : rule.egress_id })));
@@ -544,7 +536,8 @@ function PolicyFields({ spec, update, updateList, removeListItem, references, re
       <header><div><strong>规则 {index + 1}</strong><span>优先级 {String(rule.priority)}</span></div><Button type="text" status="danger" icon={<IconDelete />} aria-label={`删除规则 ${index + 1}`} onClick={() => removeListItem('rules', index)} /></header>
       <div className="form-grid rule-grid"><Form.Item label="优先级"><InputNumber min={0} precision={0} value={Number(rule.priority)} onChange={(value) => updateList('rules', index, 'priority', value)} /></Form.Item><Form.Item label="来源站点"><Select mode="multiple" showSearch value={(rule.source_site_ids as string[]) ?? []} onChange={(value) => updateList('rules', index, 'source_site_ids', value)} options={siteOptions} placeholder={spec.segment_id ? '全部已接入站点' : '请先选择生效网络'} maxTagCount="responsive" /></Form.Item></div>
       <Form.Item label="目标网段"><InputTag value={(rule.destination_cidrs as string[]) ?? []} onChange={(value) => updateList('rules', index, 'destination_cidrs', value)} tokenSeparators={[',', ' ']} saveOnBlur placeholder={rule.action_type === 'REMOTE_EGRESS' ? '输入 0.0.0.0/0 表示全部互联网流量' : '输入 CIDR 后回车，例如 10.20.0.0/16'} /></Form.Item>
-      <Form.Item label="目标 IP 地理区域"><Select mode="multiple" allowCreate showSearch value={(rule.geo_countries as string[]) ?? []} onChange={(value) => updateList('rules', index, 'geo_countries', value.map((country: string) => String(country).trim().toUpperCase()).filter(Boolean))} options={geoCountryOptions} placeholder="选择或输入国家/地区码，例如 CN、US、HK" maxTagCount="responsive" /><FieldHelp>使用国家/地区代码匹配目标 IP。运行时需具备匹配版本的 GeoIP 数据；数据不可用时不会静默应用该规则。</FieldHelp></Form.Item>
+      <Form.Item label="目标 IP 地理区域"><Select mode="multiple" allowCreate showSearch value={(rule.geo_countries as string[]) ?? []} onChange={(value) => updateList('rules', index, 'geo_countries', value.map((country: string) => String(country).trim().toUpperCase()).filter(Boolean))} options={geoCountryOptions} placeholder="选择或输入国家/地区码，例如 CN、US、HK" maxTagCount="responsive" /><FieldHelp>按目标 IPv4 所属国家/地区匹配。数据源在“系统 → Geo 数据源”中配置；数据不可用或摘要不匹配时，Cloud 会拒绝发布该规则，不会静默放行。</FieldHelp></Form.Item>
+      {(rule.geo_countries as string[] | undefined)?.length ? <div className="form-grid three geo-rule-details"><Form.Item label="Geo Provider"><Input value={String(rule.geo_provider ?? 'openwrt-cidr-v1')} onChange={(value) => updateList('rules', index, 'geo_provider', value)} /></Form.Item><Form.Item label="数据版本"><Input value={String(rule.geo_version ?? '')} onChange={(value) => updateList('rules', index, 'geo_version', value)} placeholder="可选，例如 2026-09-24" /></Form.Item><Form.Item label="数据摘要"><Input value={String(rule.geo_digest ?? '')} onChange={(value) => updateList('rules', index, 'geo_digest', value)} placeholder="可选，64 位 SHA-256" /></Form.Item></div> : null}
       <Form.Item label="目标域名"><InputTag value={(rule.domains as string[]) ?? []} onChange={(value) => updateList('rules', index, 'domains', value)} tokenSeparators={[',', ' ']} saveOnBlur placeholder="输入域名后回车，例如 video.example.com" /></Form.Item>
       <div className="form-grid two"><Form.Item label="业务类型"><Select mode="multiple" allowCreate showSearch value={(rule.traffic_classes as string[]) ?? []} onChange={(value) => updateList('rules', index, 'traffic_classes', value)} options={trafficClassOptions} placeholder="全部业务" maxTagCount="responsive" /></Form.Item><Form.Item label="使用出口"><Radio.Group type="button" value={rule.action_type} onChange={(value) => updateList('rules', index, 'action_type', value)} options={[{ label: '本站出口', value: 'LOCAL_EGRESS' }, { label: '远端出口', value: 'REMOTE_EGRESS' }]} /></Form.Item></div>
       {rule.action_type === 'REMOTE_EGRESS' && <Form.Item label="指定远端出口" required>{referenceSelect('egresses', rule.egress_id, (value) => updateList('rules', index, 'egress_id', value), spec.segment_id ? '选择该网络内已发布的出口' : '请先选择生效网络', egressOptions)}</Form.Item>}

@@ -65,6 +65,7 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         "client_projections",
         "client_projection_receipts",
         "client_access_policy_binding_requests",
+        "geo_provider_platform_settings",
     ];
     for table in required {
         let count: i64 = sqlx::query_scalar(
@@ -76,6 +77,39 @@ async fn migration_is_repeatable_and_creates_core_tables() {
         .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+}
+
+#[test]
+fn platform_admin_role_is_explicit_and_not_assignable_by_tenant_invitation() {
+    let migration = include_str!("../migrations/0050_platform_admin_role.sql");
+    assert!(migration.contains("PLATFORM_ADMIN"));
+    assert!(migration.contains("MODIFY COLUMN role ENUM"));
+    assert!(!migration.contains("organization_invitations"));
+}
+
+#[test]
+fn platform_geo_provider_migration_is_singleton_and_migrates_latest_legacy_value() {
+    let migration = include_str!("../migrations/0049_geo_provider_platform.sql");
+    assert!(migration.contains("CREATE TABLE geo_provider_platform_settings"));
+    assert!(migration.contains("id TINYINT UNSIGNED NOT NULL PRIMARY KEY"));
+    assert!(migration.contains("FROM geo_provider_settings"));
+    assert!(migration.contains("ORDER BY updated_at DESC"));
+    assert!(migration.contains("LIMIT 1"));
+    assert!(!migration.contains("tenant_id"));
+}
+
+#[test]
+fn tenant_geo_provider_storage_is_removed_after_platform_migration() {
+    let migration = include_str!("../migrations/0051_remove_tenant_geo_provider.sql");
+    assert!(migration.contains("DROP TABLE IF EXISTS geo_provider_settings"));
+}
+
+#[test]
+fn platform_admin_role_is_explicit_and_not_invitable() {
+    let migration = include_str!("../migrations/0050_platform_admin_role.sql");
+    assert!(migration.contains("PLATFORM_ADMIN"));
+    assert!(migration.contains("MODIFY COLUMN role ENUM"));
+    assert!(!migration.contains("organization_invitations"));
 }
 
 #[test]
@@ -166,6 +200,98 @@ fn terminal_client_control_is_separate_from_node_enrollment_and_runtime() {
     assert!(migration.contains("RECEIVED','VERIFIED','STAGED','COMMITTED','REJECTED"));
     assert!(!migration.contains("runtime_configuration"));
     assert!(!migration.contains("activation_codes"));
+}
+
+#[test]
+fn projection_settings_are_versioned_and_the_traffic_mode_is_per_device() {
+    let migration = include_str!("../migrations/0045_terminal_client_projection_settings.sql");
+    assert!(migration.contains("CREATE TABLE client_projection_settings"));
+    assert!(migration.contains("CREATE TABLE client_traffic_mode_requests"));
+    // The settings document is the reviewed source of truth for values the
+    // Projection carries, so it is versioned and content-addressed like an
+    // access policy rather than being a mutable singleton row.
+    assert!(migration.contains("uq_client_projection_settings_generation (tenant_id, generation)"));
+    assert!(migration.contains("uq_client_projection_settings_content (tenant_id, content_hash)"));
+    assert!(migration.contains("uq_client_projection_settings_request (tenant_id, request_id)"));
+    assert!(migration
+        .contains("client_projection_settings_generation_positive CHECK (generation >= 1)"));
+    assert!(migration.contains("JSON_EXTRACT(settings_json, '$.schema_version') = 1"));
+    // The effective mode lives on the device and defaults to the restrictive
+    // one, so an unset column can never mean "global".
+    assert!(migration
+        .contains("ADD COLUMN traffic_mode ENUM('POLICY','GLOBAL') NOT NULL DEFAULT 'POLICY'"));
+    assert!(migration
+        .contains("uq_client_traffic_mode_request (tenant_id, client_device_id, request_id)"));
+    assert!(migration.contains("request_hash BINARY(32) NOT NULL"));
+    // Mode changes belong to the terminal client plane; nothing here may attach
+    // them to node enrollment or runtime configuration.
+    assert!(!migration.contains("runtime_configuration"));
+    assert!(!migration.contains("activation_codes"));
+    assert!(!migration.contains("node_pools"));
+}
+
+#[test]
+fn stored_projections_record_the_inputs_they_were_signed_from() {
+    let migration = include_str!("../migrations/0046_terminal_client_projection_inputs.sql");
+    for column in [
+        "ADD COLUMN policy_generation BIGINT UNSIGNED NOT NULL",
+        "ADD COLUMN settings_generation BIGINT UNSIGNED NOT NULL",
+        "ADD COLUMN device_traffic_mode ENUM('POLICY','GLOBAL') NOT NULL",
+        "ADD COLUMN inputs_hash BINARY(32) NOT NULL",
+        "ADD COLUMN request_hash BINARY(32) NOT NULL",
+    ] {
+        assert!(migration.contains(column), "missing {column}");
+    }
+    assert!(migration.contains("idx_client_projections_inputs"));
+    assert!(migration
+        .contains("client_projections_policy_generation_positive CHECK (policy_generation >= 1)"));
+    assert!(migration.contains(
+        "client_projections_settings_generation_positive CHECK (settings_generation >= 1)"
+    ));
+    // `inputs_hash` must stay non-unique: a re-signed Projection shares its
+    // inputs with the superseded predecessor that expired.
+    assert!(!migration.contains("UNIQUE KEY uq_client_projections_inputs"));
+    // Nothing in this migration may reach into the node enrollment or runtime
+    // tables; the terminal plane keeps its own trust domain.
+    assert!(!migration.contains("runtime_configuration"));
+    assert!(!migration.contains("device_keys"));
+}
+
+#[test]
+fn the_grant_assignment_lease_column_is_an_additive_nullable_derivation() {
+    let migration = include_str!("../migrations/0047_terminal_client_grant_assignment_lease.sql");
+    // The lease deadline is recorded next to the window it belongs to, and it is
+    // nullable so rows written before this migration stay readable and keep
+    // meaning "no recorded lease" rather than a value Cloud guessed.
+    assert!(
+        migration.contains("ADD COLUMN assignment_lease_until TIMESTAMP(6) NULL AFTER expires_at")
+    );
+    assert!(migration.contains(
+        "ADD KEY idx_client_grants_assignment_lease (tenant_id, client_device_id, device_key_id, status, assignment_lease_until)"
+    ));
+    // The migration must be additive only: no destructive rewrite of the table
+    // that already holds signed envelopes, and no backfill invented from rows
+    // whose lease cannot be recovered without parsing the blob.
+    for forbidden in [
+        "DROP",
+        "MODIFY",
+        "CHANGE",
+        "ALTER COLUMN",
+        "UPDATE client_grants",
+        "DELETE",
+        "NOT NULL",
+    ] {
+        assert!(
+            !migration.contains(forbidden),
+            "0047 must not contain `{forbidden}`"
+        );
+    }
+    // The lease window is not enforced by a CHECK constraint: it would have to
+    // accept NULL for pre-existing rows, and the invariant is already enforced
+    // where it is created (`ClientGrantWrite::validate`) instead.
+    assert!(!migration.contains("CHECK"));
+    assert!(!migration.contains("runtime_configuration"));
+    assert!(!migration.contains("device_keys"));
 }
 
 #[test]

@@ -1633,6 +1633,7 @@ fn session_response(record: SessionRecord) -> SessionResponse {
 }
 fn role_string(role: MembershipRole) -> &'static str {
     match role {
+        MembershipRole::PlatformAdmin => "PLATFORM_ADMIN",
         MembershipRole::OrganizationOwner => "ORGANIZATION_OWNER",
         MembershipRole::TenantAdmin => "TENANT_ADMIN",
         MembershipRole::Operator => "OPERATOR",
@@ -1646,7 +1647,10 @@ fn parse_role(value: &str) -> Option<MembershipRole> {
 }
 fn parse_assignable_role(value: &str) -> Result<MembershipRole, ApiError> {
     let role = parse_role(value).ok_or(ApiError::InvalidRequest)?;
-    if role == MembershipRole::OrganizationOwner {
+    if matches!(
+        role,
+        MembershipRole::PlatformAdmin | MembershipRole::OrganizationOwner
+    ) {
         Err(ApiError::InvalidRequest)
     } else {
         Ok(role)
