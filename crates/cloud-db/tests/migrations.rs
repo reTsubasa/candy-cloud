@@ -81,7 +81,7 @@ async fn migration_is_repeatable_and_creates_core_tables() {
 
 #[test]
 fn platform_admin_role_is_explicit_and_not_assignable_by_tenant_invitation() {
-    let migration = include_str!("../migrations/0050_platform_admin_role.sql");
+    let migration = include_str!("../migrations/0054_platform_admin_role.sql");
     assert!(migration.contains("PLATFORM_ADMIN"));
     assert!(migration.contains("MODIFY COLUMN role ENUM"));
     assert!(!migration.contains("organization_invitations"));
@@ -89,7 +89,7 @@ fn platform_admin_role_is_explicit_and_not_assignable_by_tenant_invitation() {
 
 #[test]
 fn platform_geo_provider_migration_is_singleton_and_migrates_latest_legacy_value() {
-    let migration = include_str!("../migrations/0049_geo_provider_platform.sql");
+    let migration = include_str!("../migrations/0053_geo_provider_platform.sql");
     assert!(migration.contains("CREATE TABLE geo_provider_platform_settings"));
     assert!(migration.contains("id TINYINT UNSIGNED NOT NULL PRIMARY KEY"));
     assert!(migration.contains("FROM geo_provider_settings"));
@@ -100,13 +100,13 @@ fn platform_geo_provider_migration_is_singleton_and_migrates_latest_legacy_value
 
 #[test]
 fn tenant_geo_provider_storage_is_removed_after_platform_migration() {
-    let migration = include_str!("../migrations/0051_remove_tenant_geo_provider.sql");
+    let migration = include_str!("../migrations/0055_remove_tenant_geo_provider.sql");
     assert!(migration.contains("DROP TABLE IF EXISTS geo_provider_settings"));
 }
 
 #[test]
 fn platform_admin_role_is_explicit_and_not_invitable() {
-    let migration = include_str!("../migrations/0050_platform_admin_role.sql");
+    let migration = include_str!("../migrations/0054_platform_admin_role.sql");
     assert!(migration.contains("PLATFORM_ADMIN"));
     assert!(migration.contains("MODIFY COLUMN role ENUM"));
     assert!(!migration.contains("organization_invitations"));
