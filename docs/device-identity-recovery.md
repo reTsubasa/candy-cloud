@@ -11,7 +11,7 @@ a lost response may replay the same request for twelve hours.
 
 Open **节点 → 修复身份**, confirm the existing node and choose **生成修复文件**.
 The one-time file expires in ten minutes. On an installed Linux server, run
-`sudo candy-server bootstrap candy-node-bootstrap.json`; on OpenWrt, import the
+`sudo candy-server repair candy-node-bootstrap.json`; on OpenWrt, import the
 file in **Candy → SD-WAN**. After issuance, return to the node list and verify
 Cloud synchronization and data-plane health. Certificate issuance alone is not
 proof that the data plane is online.
@@ -43,3 +43,5 @@ Coverage includes valid renewal, expired renewal, exact expiry grace boundary,
 revoked/future/stale rejection, ordinary-route rejection, replay and atomic rollback.
 The console tests/build must pass. Validate the effective Caddy configuration and
 verify public HTTPS trust before triggering a node's sync service.
+
+Runtime recovery uses `candy-server repair FILE` on Linux, or **Candy → SD-WAN → Repair identity → Import and repair identity** on OpenWrt. Ordinary bootstrap still refuses registered devices. Enrollment runs in a durable separate stage; failed requests can resume, and the old local bundle, Profile, TUN and Proxy are preserved. Only Cloud sync is paused during repair; it resumes on success or failure.

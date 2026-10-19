@@ -346,23 +346,23 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished, reco
         </Form>}
         {step === 1 && secret && !expired && <div className="activation-content">
           <div className="activation-status"><Spin dot /><div><strong>等待设备完成注册</strong><span>页面每 3 秒自动检查一次，加入文件有效期至 {new Date(secret.expires_at).toLocaleString()}</span></div><Tag color="arcoblue">实时等待</Tag></div>
-          {platform === 'LINUX_SERVER' && <Radio.Group type="button" className="installation-state-switch" value={installationState} onChange={setInstallationState}>
+          {!recoveryNode && platform === 'LINUX_SERVER' && <Radio.Group type="button" className="installation-state-switch" value={installationState} onChange={setInstallationState}>
             <Radio value="new">尚未安装 Candy</Radio>
             <Radio value="installed">已安装 Candy</Radio>
           </Radio.Group>}
-          {platform === 'LINUX_SERVER' && installationState === 'new' && <section className="bootstrap-command-panel">
+          {!recoveryNode && platform === 'LINUX_SERVER' && installationState === 'new' && <section className="bootstrap-command-panel">
             <div className="bootstrap-command-heading"><span><strong>在节点上执行一条命令</strong><small>自动识别架构，下载并校验 Candy，完成安装后使用本次授权注册</small></span><Button icon={<IconCopy />} onClick={() => void copyInstallCommand()}>复制命令</Button></div>
             <pre><code>{buildEnrollmentInstallCommand({ secret, cloudAddress })}</code></pre>
             <Typography.Text type="secondary">安装失败不会启用 SD-WAN，也不会修改节点现有的路由、DNS 或转发规则。</Typography.Text>
           </section>}
-          {(platform === 'OPEN_WRT' || installationState === 'installed') && <>
+          {(recoveryNode || platform === 'OPEN_WRT' || installationState === 'installed') && <>
             <section className="bootstrap-download primary">
-              <div><IconDownload /><span><strong>下载自动加入文件</strong><small>文件已包含 Cloud 地址和一次性注册信息，无需复制加入码</small></span></div>
+              <div><IconDownload /><span><strong>{recoveryNode ? '下载身份修复文件' : '下载自动加入文件'}</strong><small>文件已包含 Cloud 地址和一次性注册信息，无需复制加入码</small></span></div>
               <Button type="primary" size="large" icon={<IconDownload />} onClick={() => downloadEnrollmentBootstrap({ secret, cloudAddress })}>下载文件</Button>
             </section>
-            <div className="bootstrap-existing-note">{platform === 'LINUX_SERVER' ? <>将文件传到节点后执行 <code>sudo candy-server bootstrap candy-node-bootstrap.json</code></> : <>在 OpenWrt 的 Candy → SD-WAN 中导入该文件</>}</div>
+            <div className="bootstrap-existing-note">{platform === 'LINUX_SERVER' ? <>将文件传到节点后执行 <code>sudo candy-server {recoveryNode ? 'repair' : 'bootstrap'} candy-node-bootstrap.json</code></> : <>在 OpenWrt 的 Candy → SD-WAN 中{recoveryNode ? '选择“修复身份”，导入该文件' : '导入该文件'}</>}</div>
           </>}
-          <Alert type="info" showIcon content="运行成功后，加入文件和临时凭据会自动删除；页面会自动确认设备上线。" />
+          <Alert type="info" showIcon content="身份签发后页面会自动确认；设备仍需安装身份并完成配置同步。请返回节点列表检查实际在线状态。" />
           {window.location.hostname === 'localhost' && <Alert type="warning" showIcon content="本地 TLS 地址只适合本机验证；远程设备必须能够解析并访问加入文件中的 Cloud 地址。" />}
         </div>}
         {step === 3 && secret && <div className="activation-content">
