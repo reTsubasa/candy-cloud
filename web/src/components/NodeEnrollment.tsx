@@ -212,7 +212,7 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished, reco
     setFinishing(true);
     try {
       if (recoveryNode) {
-        message.success?.('节点恢复加入已完成，原有站点、接入和线路配置保持不变');
+        message.success?.('节点身份已修复，原有站点、接入和线路配置已保留；请在节点状态中确认同步恢复');
         setDrawerVisible(false);
         await load(true);
         onFinished();
@@ -301,11 +301,11 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished, reco
         <Button icon={<IconRefresh />} loading={loading} onClick={() => void load()}>刷新</Button>
       </header>
       <div className="enrollment-guide concise">
-        <div><span>1</span><strong>填写节点信息</strong></div>
+        <div><span>1</span><strong>{recoveryNode ? '确认目标节点' : '填写节点信息'}</strong></div>
         <IconRight />
-        <div><span>2</span><strong>下载并运行加入文件</strong></div>
+        <div><span>2</span><strong>{recoveryNode ? '导入修复文件' : '下载并运行加入文件'}</strong></div>
         <IconRight />
-        <div><span>3</span><strong>自动确认设备上线</strong></div>
+        <div><span>3</span><strong>确认身份签发</strong></div>
       </div>
       {error && <Alert type="error" showIcon content={error} action={<Button size="small" onClick={() => void load()}>重试</Button>} />}
       <section className="enrollment-start-panel">
@@ -329,7 +329,7 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished, reco
             ? <Space><Button onClick={() => setDrawerVisible(false)}>稍后继续</Button><Button type="primary" icon={<IconRefresh />} onClick={() => void load(true)}>检查设备状态</Button></Space>
             : step === 3
               ? <Space><Button onClick={() => setDrawerVisible(false)}>关闭</Button><Button type="primary" icon={<IconPlus />} onClick={resetWizard}>重新生成加入文件</Button></Space>
-              : <Space><Button onClick={() => setDrawerVisible(false)}>稍后继续</Button><Button type="primary" loading={finishing} onClick={() => void finish()}>完成添加</Button></Space>}
+              : <Space><Button onClick={() => setDrawerVisible(false)}>稍后继续</Button><Button type="primary" loading={finishing} onClick={() => void finish()}>{recoveryNode ? '完成修复' : '完成添加'}</Button></Space>}
       >
         {step === 0 && recoveryNode ? <div className="activation-content"><Alert type="info" showIcon title="将保留现有节点 Profile" content="确认后生成短时、一次性加入文件，在目标设备上完成重新加入即可轮换 Cloud 证书。站点归属、网络接入、网段、站点互联、线路、出口和策略都不会改变。" /><div className="recovery-profile"><div><span>节点</span><strong>{nodeName}</strong></div><div><span>站点 ID</span><code>{String(recoverySpec?.site_id ?? '—')}</code></div><div><span>平台 / 架构</span><strong>{platform === 'OPEN_WRT' ? 'OpenWrt' : 'Linux'} · {architecture}</strong></div></div></div> : step === 0 && <Form layout="vertical" className="enrollment-form">
           <Form.Item label="设备类型" required>
@@ -370,11 +370,11 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished, reco
         </div>}
         {step === 2 && activation && <div className="activation-content">
           <div className="activation-status completed"><IconCheckCircle /><div><strong>设备身份注册完成</strong><span>{activation.display_name ?? 'Candy 节点'} 已通过一次性凭据和密钥证明</span></div><Tag color="green">可信设备</Tag></div>
-          <Alert type="info" showIcon content="最后确认节点名称和所属站点。完成后，这台设备会出现在节点列表并参与后续网络编排。" />
-          <Form layout="vertical" className="enrollment-form">
+          <Alert type="info" showIcon content={recoveryNode ? '修复身份已签发，原有节点配置已保留。完成后返回节点列表，确认 Cloud 同步与数据面状态恢复。' : '最后确认节点名称和所属站点。完成后，这台设备会出现在节点列表并参与后续网络编排。'} />
+          {!recoveryNode && <Form layout="vertical" className="enrollment-form">
             <div className="form-grid two"><Form.Item label="节点名称" required><Input value={nodeName} onChange={setNodeName} /></Form.Item><Form.Item label="所属站点" required><Select value={siteId || undefined} onChange={setSiteId} placeholder="选择站点" options={sites.map((item) => ({ label: resourceName(item), value: item.metadata.id }))} /></Form.Item></div>
             <div className="form-grid two"><Form.Item label="设备类型" required><Radio.Group type="button" value={platform} onChange={setPlatform} options={[{ label: 'OpenWrt', value: 'OPEN_WRT' }, { label: 'Linux Server', value: 'LINUX_SERVER' }]} /></Form.Item><Form.Item label="处理器架构" required><Select value={architecture} onChange={setArchitecture} options={enrollmentArchitectureOptions(platform)} /></Form.Item></div>
-          </Form>
+          </Form>}
         </div>}
       </Drawer>
       <Modal visible={revokeTarget !== null} title="撤销本次节点加入？" okText="确认撤销" cancelText="取消" okButtonProps={{ status: 'danger' }} confirmLoading={revoking} onCancel={() => { if (!revoking) setRevokeTarget(null); }} onOk={() => void revoke()} unmountOnExit>

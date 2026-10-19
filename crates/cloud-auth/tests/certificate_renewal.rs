@@ -38,6 +38,22 @@ fn test_ca() -> Arc<DeviceCertificateIssuer> {
 
 #[tokio::test]
 async fn renewal_reuses_operational_key_and_atomically_supersedes_old_certificate() {
+    check_renewal(Duration::hours(1), false).await;
+}
+
+#[tokio::test]
+async fn expired_certificate_renews_within_grace_and_supports_lost_response_replay() {
+    check_renewal(-Duration::hours(1), false).await;
+}
+
+#[tokio::test]
+async fn renewal_rejects_certificates_outside_grace_not_yet_valid_or_revoked() {
+    check_renewal(-Duration::hours(13), false).await;
+    check_renewal(Duration::days(8), false).await;
+    check_renewal(-Duration::hours(1), true).await;
+}
+
+async fn check_renewal(expiry_from_now: Duration, revoked: bool) {
     let Ok(url) = std::env::var("DATABASE_URL") else {
         return;
     };
@@ -57,7 +73,7 @@ async fn renewal_reuses_operational_key_and_atomically_supersedes_old_certificat
             device_key_id,
             operational_public_key,
             1,
-            Utc::now() - Duration::days(7) + Duration::hours(1),
+            Utc::now() - Duration::days(7) + expiry_from_now,
         )
         .unwrap();
 
@@ -103,13 +119,72 @@ async fn renewal_reuses_operational_key_and_atomically_supersedes_old_certificat
         .bind(&old.san_uri)
         .bind(&old.environment)
         .bind(old.not_before)
-        // The database certificate is already expired, but still inside the
-        // bounded emergency renewal window. The X.509 bytes remain a valid
-        // fixture so this exercises the database grace path specifically.
-        .bind(Utc::now() - Duration::hours(1))
+        .bind(old.not_after)
         .execute(&pool)
         .await
         .unwrap();
+
+    let authenticator = DeviceIdentityAuthenticator::new(pool.clone(), "test").unwrap();
+    if revoked {
+        sqlx::query("UPDATE device_certificates SET status = 'REVOKED' WHERE id = ?")
+            .bind(old_certificate_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let rejected =
+        revoked || expiry_from_now < -Duration::hours(12) || expiry_from_now > Duration::days(7);
+    let renewal_actor = authenticator
+        .authenticate_verified_renewal_certificate(&old.certificate_der, Utc::now())
+        .await;
+    if rejected {
+        assert_eq!(
+            renewal_actor.unwrap_err(),
+            DeviceIdentityError::InactiveCertificate
+        );
+        let identity =
+            cloud_db::certificate_renewal::CertificateRenewalRepository::new(pool.clone())
+                .load_identity(
+                    organization_id,
+                    tenant_id,
+                    device_id,
+                    device_key_id,
+                    old_certificate_id,
+                    Utc::now(),
+                )
+                .await
+                .unwrap();
+        assert!(identity.is_none());
+        return;
+    }
+    assert_eq!(renewal_actor.unwrap().certificate_id(), old_certificate_id);
+    if expiry_from_now < Duration::zero() {
+        assert_eq!(
+            authenticator
+                .authenticate_verified_certificate(&old.certificate_der, Utc::now())
+                .await
+                .unwrap_err(),
+            DeviceIdentityError::InactiveCertificate
+        );
+        // Strict cutoff: exactly twelve hours expired is no longer renewable.
+        assert!(authenticator
+            .authenticate_verified_renewal_certificate(
+                &old.certificate_der,
+                old.not_after + Duration::hours(12) - Duration::seconds(1)
+            )
+            .await
+            .is_ok());
+        assert_eq!(
+            authenticator
+                .authenticate_verified_renewal_certificate(
+                    &old.certificate_der,
+                    old.not_after + Duration::hours(12)
+                )
+                .await
+                .unwrap_err(),
+            DeviceIdentityError::InactiveCertificate
+        );
+    }
 
     let actor = AuthenticatedDevice::new(
         organization_id,

@@ -108,7 +108,7 @@ impl CertificateRenewalRepository {
         .bind(device_id)
         .bind(device_key_id)
         .bind(certificate_id)
-        .bind(renewal_cutoff)
+        .bind(now)
         .bind(renewal_cutoff)
         .fetch_optional(&self.pool)
         .await?;
@@ -190,7 +190,7 @@ impl CertificateRenewalRepository {
         .bind(write.assurance_level)
         .bind(write.assurance_level)
         .bind(write.previous_certificate_id)
-        .bind(renewal_cutoff)
+        .bind(write.renewed_at)
         .bind(renewal_cutoff)
         .fetch_optional(&mut *transaction)
         .await?;

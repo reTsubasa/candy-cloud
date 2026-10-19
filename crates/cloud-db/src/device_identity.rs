@@ -88,8 +88,8 @@ impl DeviceCertificateIdentityRepository {
         .bind(device_key_id)
         .bind(certificate_der)
         .bind(environment)
-        .bind(renewal_cutoff)
         .bind(now)
+        .bind(renewal_cutoff)
         .bind(now)
         .fetch_optional(&self.pool)
         .await?;
