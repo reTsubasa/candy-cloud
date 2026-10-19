@@ -75,6 +75,12 @@ impl DeviceCertificateIdentityRepository {
         {
             return Err(RepositoryError::InvalidDeviceCertificateScope);
         }
+        // The renewal route is deliberately allowed to authenticate a recently
+        // expired certificate. The TLS edge requests the peer certificate and
+        // cloud-auth still checks its exact DER, device/key scope and the
+        // bounded emergency window below. Older certificates must use the
+        // explicit WebUI re-enrollment flow instead.
+        let renewal_cutoff = now - chrono::Duration::hours(12);
         let row = sqlx::query(
             "SELECT dc.organization_id, dc.tenant_id, d.id AS device_id, dk.id AS device_key_id, dc.id AS certificate_id, dc.assurance_level FROM device_certificates dc JOIN organizations org ON org.id = dc.organization_id AND org.status = 'ACTIVE' JOIN tenants t ON t.id = dc.tenant_id AND t.organization_id = org.id AND t.status = 'ACTIVE' JOIN devices d ON d.id = dc.device_id AND d.tenant_id = dc.tenant_id JOIN device_keys dk ON dk.id = dc.device_key_id AND dk.device_id = d.id AND dk.tenant_id = dc.tenant_id WHERE d.id = ? AND dk.id = ? AND dc.certificate_der = ? AND dc.environment = ? AND d.status = 'ACTIVE' AND dk.status = 'ACTIVE' AND dc.not_before <= ? AND dc.not_after > ? AND (dc.status = 'ACTIVE' OR (dc.status = 'SUPERSEDED' AND EXISTS(SELECT 1 FROM device_certificate_renewals renewal WHERE renewal.previous_certificate_id = dc.id AND renewal.organization_id = dc.organization_id AND renewal.tenant_id = dc.tenant_id AND renewal.device_id = dc.device_id AND renewal.device_key_id = dc.device_key_id AND renewal.replay_until > ?)))",
         )
@@ -82,7 +88,7 @@ impl DeviceCertificateIdentityRepository {
         .bind(device_key_id)
         .bind(certificate_der)
         .bind(environment)
-        .bind(now)
+        .bind(renewal_cutoff)
         .bind(now)
         .bind(now)
         .fetch_optional(&self.pool)

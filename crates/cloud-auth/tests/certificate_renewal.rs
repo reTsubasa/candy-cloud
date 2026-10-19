@@ -103,7 +103,10 @@ async fn renewal_reuses_operational_key_and_atomically_supersedes_old_certificat
         .bind(&old.san_uri)
         .bind(&old.environment)
         .bind(old.not_before)
-        .bind(old.not_after)
+        // The database certificate is already expired, but still inside the
+        // bounded emergency renewal window. The X.509 bytes remain a valid
+        // fixture so this exercises the database grace path specifically.
+        .bind(Utc::now() - Duration::hours(1))
         .execute(&pool)
         .await
         .unwrap();

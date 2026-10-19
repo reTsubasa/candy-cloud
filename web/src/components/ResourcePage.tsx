@@ -444,7 +444,7 @@ export function ResourcePage({ definition, session, createRequest = 0, onEnrollN
               );
             } catch (error) { message.error?.(error instanceof Error ? error.message : '创建升级任务失败'); }
           })()} /></Tooltip>
-          <Tooltip content="重新生成加入文件"><Button type="text" size="small" icon={<IconSync />} aria-label="重新加入" onClick={() => onReenrollNode?.(record)} /></Tooltip>
+          <Tooltip content="修复过期证书或重新加入节点；保留现有站点和网络配置"><Button type="text" size="small" icon={<IconSync />} aria-label="修复节点身份" onClick={() => onReenrollNode?.(record)}>修复身份</Button></Tooltip>
         </>}
         <Tooltip content="编辑"><Button type="text" size="small" icon={<IconEdit />} aria-label="编辑" onClick={() => setEditor({ visible: true, resource: record })} /></Tooltip>
         <Tooltip content="删除"><Button type="text" size="small" status="danger" icon={<IconDelete />} aria-label="删除" loading={deletingId === record.metadata.id} disabled={deletingId !== null} onClick={() => void openDelete(record)} /></Tooltip>

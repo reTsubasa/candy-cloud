@@ -111,10 +111,7 @@ impl CertificateRenewalCoordinator {
             )
             .map_err(|_| CertificateRenewalError::Unavailable)?;
         let certificate_id = Uuid::now_v7();
-        let replay_until = std::cmp::min(
-            issued.not_before + crate::certificates::EMERGENCY_RENEWAL_WINDOW,
-            identity.not_after,
-        );
+        let replay_until = issued.not_before + crate::certificates::EMERGENCY_RENEWAL_WINDOW;
         match self
             .repository
             .renew(&CertificateRenewalWrite {

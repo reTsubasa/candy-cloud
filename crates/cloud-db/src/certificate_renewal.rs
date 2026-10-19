@@ -99,6 +99,7 @@ impl CertificateRenewalRepository {
         {
             return Err(RepositoryError::InvalidDeviceCertificateScope);
         }
+        let renewal_cutoff = now - chrono::Duration::hours(12);
         let row = sqlx::query(
             "SELECT dc.organization_id, dc.tenant_id, dc.device_id, dc.device_key_id, dc.id AS certificate_id, dk.public_key, dc.assurance_level, dc.not_after FROM device_certificates dc JOIN organizations org ON org.id = dc.organization_id AND org.status = 'ACTIVE' JOIN tenants t ON t.id = dc.tenant_id AND t.organization_id = org.id AND t.status = 'ACTIVE' JOIN devices d ON d.id = dc.device_id AND d.tenant_id = dc.tenant_id AND d.status = 'ACTIVE' JOIN device_keys dk ON dk.id = dc.device_key_id AND dk.device_id = d.id AND dk.tenant_id = dc.tenant_id AND dk.status = 'ACTIVE' WHERE dc.organization_id = ? AND dc.tenant_id = ? AND dc.device_id = ? AND dc.device_key_id = ? AND dc.id = ? AND dc.status = 'ACTIVE' AND dc.not_before <= ? AND dc.not_after > ?",
         )
@@ -107,8 +108,8 @@ impl CertificateRenewalRepository {
         .bind(device_id)
         .bind(device_key_id)
         .bind(certificate_id)
-        .bind(now)
-        .bind(now)
+        .bind(renewal_cutoff)
+        .bind(renewal_cutoff)
         .fetch_optional(&self.pool)
         .await?;
         row.map(identity_from_row).transpose()
@@ -177,6 +178,7 @@ impl CertificateRenewalRepository {
             transaction.commit().await?;
             return Ok(CertificateRenewalOutcome::Replay(record));
         }
+        let renewal_cutoff = write.renewed_at - chrono::Duration::hours(12);
         let current = sqlx::query(
             "SELECT dc.id FROM device_certificates dc JOIN organizations org ON org.id = dc.organization_id AND org.status = 'ACTIVE' JOIN tenants t ON t.id = dc.tenant_id AND t.organization_id = org.id AND t.status = 'ACTIVE' JOIN devices d ON d.id = dc.device_id AND d.tenant_id = dc.tenant_id AND d.status = 'ACTIVE' JOIN device_keys dk ON dk.id = dc.device_key_id AND dk.device_id = d.id AND dk.tenant_id = dc.tenant_id AND dk.status = 'ACTIVE' WHERE dc.organization_id = ? AND dc.tenant_id = ? AND dc.device_id = ? AND dc.device_key_id = ? AND dk.public_key = ? AND dk.assurance_level = ? AND dc.assurance_level = ? AND dc.id = ? AND dc.status = 'ACTIVE' AND dc.not_before <= ? AND dc.not_after > ? FOR UPDATE",
         )
@@ -188,8 +190,8 @@ impl CertificateRenewalRepository {
         .bind(write.assurance_level)
         .bind(write.assurance_level)
         .bind(write.previous_certificate_id)
-        .bind(write.renewed_at)
-        .bind(write.renewed_at)
+        .bind(renewal_cutoff)
+        .bind(renewal_cutoff)
         .fetch_optional(&mut *transaction)
         .await?;
         if current.is_none() {

@@ -297,7 +297,7 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished, reco
       {messageHolder}
       <button type="button" className="page-back" onClick={onBack}><IconArrowLeft /> 节点</button>
       <header className="page-header">
-        <div><Typography.Title heading={4}>{recoveryNode ? '重新加入节点' : '添加节点'}</Typography.Title><Typography.Text type="secondary">{recoveryNode ? '为现有节点轮换一次性身份，站点、网络和策略配置全部保留' : '在设备上执行一次安全加入，即可获得 Cloud 身份并归属到站点'}</Typography.Text></div>
+        <div><Typography.Title heading={4}>{recoveryNode ? '修复节点身份' : '添加节点'}</Typography.Title><Typography.Text type="secondary">{recoveryNode ? '为现有节点重新签发身份，修复过期证书或丢失凭据；站点、网络和策略配置全部保留' : '在设备上执行一次安全加入，即可获得 Cloud 身份并归属到站点'}</Typography.Text></div>
         <Button icon={<IconRefresh />} loading={loading} onClick={() => void load()}>刷新</Button>
       </header>
       <div className="enrollment-guide concise">
@@ -309,8 +309,8 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished, reco
       </div>
       {error && <Alert type="error" showIcon content={error} action={<Button size="small" onClick={() => void load()}>重试</Button>} />}
       <section className="enrollment-start-panel">
-        <div><IconDesktop /><span><Typography.Title heading={5}>{recoveryNode ? `恢复“${nodeName}”` : '添加一台 Candy 节点'}</Typography.Title><Typography.Text type="secondary">{recoveryNode ? '适用于节点重装、误删本地凭据或更换设备身份；不会创建重复节点。' : '设备从内网主动连接 Cloud，不要求公网 IP。加入文件已包含一次性注册信息。'}</Typography.Text></span></div>
-        <Button type="primary" size="large" icon={<IconPlus />} onClick={resetWizard}>开始添加</Button>
+        <div><IconDesktop /><span><Typography.Title heading={5}>{recoveryNode ? `修复“${nodeName}”` : '添加一台 Candy 节点'}</Typography.Title><Typography.Text type="secondary">{recoveryNode ? '为节点生成短时、一次性加入文件。过期 Cloud 证书、节点重装或凭据丢失都可使用；不会创建重复节点，并保留现有网络 Profile。' : '设备从内网主动连接 Cloud，不要求公网 IP。加入文件已包含一次性注册信息。'}</Typography.Text></span></div>
+        <Button type="primary" size="large" icon={recoveryNode ? <IconRefresh /> : <IconPlus />} onClick={resetWizard}>{recoveryNode ? '开始修复' : '开始添加'}</Button>
       </section>
       {actionableItems.length > 0 && <><div className="toolbar-row enrollment-toolbar"><div><Typography.Text bold>待完成任务</Typography.Text><Typography.Text type="secondary">只显示仍可继续操作的节点加入</Typography.Text></div><Typography.Text type="secondary">{activeCount} 个等待设备 · {pendingConfiguration} 个待确认</Typography.Text></div>
         <div className="table-surface enrollment-table compact">
@@ -322,16 +322,16 @@ export function NodeEnrollment({ session, onBack, onCreateSite, onFinished, reco
         visible={drawerVisible}
         onCancel={() => setDrawerVisible(false)}
         className="cloud-drawer resource-drawer enrollment-drawer"
-        title={<div className="drawer-title"><strong>{recoveryNode ? '重新加入节点' : '添加节点'}</strong><span>{step === 0 ? recoveryNode ? '确认保留现有 Profile' : '先确定设备角色与归属' : step === 1 ? '在目标设备上完成安全加入' : step === 3 ? '加入文件已过期' : '确认设备身份并完成配置'}</span></div>}
+        title={<div className="drawer-title"><strong>{recoveryNode ? '修复节点身份' : '添加节点'}</strong><span>{step === 0 ? recoveryNode ? '确认保留现有 Profile' : '先确定设备角色与归属' : step === 1 ? '在目标设备上完成安全加入' : step === 3 ? '加入文件已过期' : '确认设备身份并完成配置'}</span></div>}
         footer={step === 0
-          ? <Space><Button onClick={() => setDrawerVisible(false)}>取消</Button><Button type="primary" disabled={!validCloudAddress(cloudAddress)} loading={creating} onClick={() => void create()}>{recoveryNode ? '生成新的加入文件' : '生成加入文件'}</Button></Space>
+          ? <Space><Button onClick={() => setDrawerVisible(false)}>取消</Button><Button type="primary" disabled={!validCloudAddress(cloudAddress)} loading={creating} onClick={() => void create()}>{recoveryNode ? '生成修复文件' : '生成加入文件'}</Button></Space>
           : step === 1
             ? <Space><Button onClick={() => setDrawerVisible(false)}>稍后继续</Button><Button type="primary" icon={<IconRefresh />} onClick={() => void load(true)}>检查设备状态</Button></Space>
             : step === 3
               ? <Space><Button onClick={() => setDrawerVisible(false)}>关闭</Button><Button type="primary" icon={<IconPlus />} onClick={resetWizard}>重新生成加入文件</Button></Space>
               : <Space><Button onClick={() => setDrawerVisible(false)}>稍后继续</Button><Button type="primary" loading={finishing} onClick={() => void finish()}>完成添加</Button></Space>}
       >
-        {step === 0 && recoveryNode ? <div className="activation-content"><Alert type="info" showIcon title="将保留现有节点 Profile" content="新的加入文件只会轮换设备身份。站点归属、网络接入、网段、站点互联、线路、出口和策略都不会改变。" /><div className="recovery-profile"><div><span>节点</span><strong>{nodeName}</strong></div><div><span>站点 ID</span><code>{String(recoverySpec?.site_id ?? '—')}</code></div><div><span>平台 / 架构</span><strong>{platform === 'OPEN_WRT' ? 'OpenWrt' : 'Linux'} · {architecture}</strong></div></div></div> : step === 0 && <Form layout="vertical" className="enrollment-form">
+        {step === 0 && recoveryNode ? <div className="activation-content"><Alert type="info" showIcon title="将保留现有节点 Profile" content="确认后生成短时、一次性加入文件，在目标设备上完成重新加入即可轮换 Cloud 证书。站点归属、网络接入、网段、站点互联、线路、出口和策略都不会改变。" /><div className="recovery-profile"><div><span>节点</span><strong>{nodeName}</strong></div><div><span>站点 ID</span><code>{String(recoverySpec?.site_id ?? '—')}</code></div><div><span>平台 / 架构</span><strong>{platform === 'OPEN_WRT' ? 'OpenWrt' : 'Linux'} · {architecture}</strong></div></div></div> : step === 0 && <Form layout="vertical" className="enrollment-form">
           <Form.Item label="设备类型" required>
             <Radio.Group className="device-type-options" value={platform} onChange={setPlatform}>
               <Radio value="OPEN_WRT"><span><IconDesktop /><strong>OpenWrt</strong><small>路由器、家庭网关、分支网关</small></span></Radio>
