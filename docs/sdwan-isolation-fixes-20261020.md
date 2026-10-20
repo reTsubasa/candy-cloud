@@ -45,7 +45,7 @@ Core 兼容目录由当前真实签名的权限限定，旧代不能扩张身份
 
 ## 上线边界
 
-`CANDY_ENABLE_MULTI_GENERATION_POLICY_ISOLATION` 默认关闭。开启前必须先部署支持精确 `route_policy` 请求的新 Cloud，再同步部署有界多代与当前权限上限验证的 Runtime/Core，并完成三端联动门禁。旧 Cloud 会拒绝未知请求字段，不能先升级发送新字段的 Runtime。
+`CANDY_ENABLE_MULTI_GENERATION_POLICY_ISOLATION` 默认关闭。发布顺序为 Cloud → Core → Runtime：先提供精确 `route_policy` 请求与重同步响应，再提供完整 inbound signed catalog 和 managed policy socket，最后更新生成这些输入的 Runtime。旧 Cloud 会拒绝未知请求字段，旧 Core 会拒绝新的 `inbound_server_config`，因此不能颠倒依赖。多代隔离开关须在各实例配置一致、三端联动门禁通过后再开启。
 
 兼容组最多 32 代，仅接收 `[N-32,N-1]` 内每个 Peer 的一个旧活动身份或 N-1 排空身份。当前目录和旧目录分别最多 4096 个身份，组合预算 8192，避免同一个 Peer 同时出现在当前与旧目录时被重复计入同一个 4096 配额；单目录、单对象及 Runtime 文档 3 MiB 字节上限不变，Core 当前 Peer 目录仍保留 256 上限。这些是解析和内存保护，不是实际容量承诺。
 
@@ -79,3 +79,41 @@ Grant HTTP 409 只有顶层 `code=route_policy_resync_required` 才触发重同�
 新增 3 项重同步状态/凭证/解析回归及本地真实 HTTP 409/403 分类回归通过；Grant 模块 16 项回归通过，cloud-sync 全 target 严格 Clippy 通过。
 
 拓扑节点单独显示“路由策略需重同步”，详情列出已确认运行代际、目标代际与原因。该提示不改变节点、Peer、隧道健康状态；缺遥测时仍保留重同步提示，且不会编造隧道就绪。拓扑 34 项回归通过，包含局部重同步不会改变健康 Peer 状态；TypeScript、ESLint 与生产构建通过。
+
+## 共享 listener 的最新授权目录
+
+Managed listener 原先在启动闭包中固定捕获 inbound signed catalog，导致 PolicyUpdate 已更新转发规则后，新连接仍可能拿到旧目录。本轮改为单个完整快照携带 catalog、policy generation、authorization hash、local attachment epoch，Core 验证并收到 pump ACK 后一起发布。已认证但尚未发送 OPEN 的连接，在真正处理 OPEN 时重新读取最新目录，避免跨撤销竞态。已协商 successor 普通重连也必须通过当前目录，不能用历史协商证据绕过撤销。
+
+Runtime client activation 生成完整签名 inbound 输入，快照闭包复制并改写当前/保留签名文件与 transport 引用，不能从本地路由推断远端权限。热更新保持已运行 listener 的身份和信任；需要轮换信任时走运输替换。
+
+真实 QUIC + owner IPC 门禁 1 项通过，覆盖当前及保留引用的新 OPEN、AUTH 与 OPEN 之间发布撤销的精确拒绝、后续当前引用恢复接入，以及原健康 lane 的身份/epoch 不变并继续传输 28 字节载荷。严格 Clippy 通过。该门禁不创建特权内核 TUN，也不代表吞吐验收。
+
+## Managed 策略与物理 owner 分离
+
+复核发现，managed Runtime 原先将签名摘要变化统一按新 worker/authority 处理，因此即使 Cloud 标记 `POLICY_ONLY`，仍会进入运输替换。本轮将活动策略代际与 `binding_policy_generation` 分开：前者更新签名路由和准入目录，后者保留 PacketPort、IO、owner、fence 与物理授权的初始代际。进程重新接管核对这两个身份，正常 hot-policy adoption 只续 owner lease，不执行 Guard、Prepare 或新 fence。
+
+热更新要求 transport、trust、resource contract、基础设施、部署位置和本机身份均不变；新签名有效期必须覆盖原物理上限。新策略允许更晚到期，但不能延长旧物理 cap；有效期变短、信任轮换、资源或运输配置变化仍走 MBB。原物理 cap 到期前 120 秒、有更新授权时进入正式续期，不能靠后续策略无期限延用初始连接。上述分流和恢复边界已通过 Runtime Linux 回归；完整跨组件联动仍须后续门禁。
+
+Runtime 在发送 Core 请求前落盘单个原始 signed snapshot intent；Core ACK 后再提交 Netd，最后才前移有效 plan 与进程记录。拒绝、ACK 丢失和 Netd 后置失败均保留原事务；即使 Cloud 又发布新版本，也必须先恢复确切旧 intent。Core 候选事务与 PolicyUpdate 共用互斥 fence：尚未触发操作的错误请求不会封锁健康策略更新；已发出但结果未知的操作不能被新策略越过。
+
+Core 新增 managed 专用 `--policy-reload-socket`，只允许 PolicyUpdate，拒绝 Replace/Prepare/Commit/Abort/Suspend/Resume。收到转发器 ACK 后才发布完整 inbound snapshot 与实际策略状态。真实 Unix 接口正例通过：原物理代际、PID、就绪 token 保持；策略代际前移；同步 status 文件在返回 ACK 时已反映新策略；更晚有效期允许、缩短有效期拒绝；同一签名输入搬到不同目录不改变 authorization/resource 摘要。
+
+Netd `ForwardPolicyUpdate` 使用原 Active owner，单调本地 policy revision 与精确 signed hash 绑定幂等重试。Linux 先安装目标路线，再原子替换 nft，最后删除旧路线；无 TUN 重建、接口地址/MTU变更或共享 sysctl 重置。部分失败落盘并重试原目标；到期或撤销先持久化取消，再隔离并清理不完整目标，不能重放已过期路线。取消后仅新增的目标前缀回到主机现有路由，本轮未引入永久 reject 新语义。
+
+Netd Linux 真实内核门禁通过：20 轮 remote 路由和本地源集合更新，完整 TUN link/address、owner/fence 均不变；删除 nft 表注入“目标路线已安装、nft 更新失败”，到期后目标新增路线与 selector 清理、原 remote reject 保留。单元/集成及 all-target 严格 Clippy 通过。细节见 Runtime `docs/SDWAN_NETD_LIVE_POLICY_20261020.md`。
+
+共享 listener 注册也必须将物理 dispatch 与活动策略拆开。原实现要求 `worker_authority_sha256 == 活动目录摘要`，会在 hot policy 后误拒绝正常 worker；同代目录变化还可能触发 host/pool 替换。现已分别核验原物理 authority 与活动目录摘要；本地 policy revision 仅在相同 worker incarnation 内单调，新 epoch 可以在相同 Cloud generation 使用新 Grant/hash 和 revision 0。热更新复用原 host/pool，不进入 drain。Linux registry 14 项通过，包含 status → record → plan → registration 各发布中间阶段轮询仍保留同一 host、原 lease 与连接，以及后续真实新 epoch 接管。
+
+Core 的策略逻辑回执独立于周期遥测。actor 已确认而 status 文件写入失败时，内部活动策略仍前移，保留待发布回执并阻止后续 revision 越过；精确重试只补齐状态发布，不重复安装 actor。周期遥测、错误及停机状态写入都在同一 watch 写锁内合并回执，不能把 policy revision/hash 回退。真实 managed Unix 接口覆盖上述故障、后续 revision 拒绝、精确重试和更短授权拒绝；真实 packet actor 的周期 tick 覆盖回执保持。
+
+Runtime 在编译与确认期间续保原 owner 的 30 秒短租约，但仍受初始物理授权 cap 限制。恢复时允许读取并采用同一物理 owner 已续新的 lease，仅更新 journal 的租约字段，不能改变原 policy intent。确切 IO/Netd 身份、无候选/未决副作用、Netd Revoked 及租约或授权到期证据同时成立时，保留完整终态与签名 snapshot 后归档，进入正式续期；UNKNOWN 继续保留屏障，不能伪造 ACTIVE。新 journal 创建前也核验 Netd 的实际 revision/gen/hash，避免覆盖来源不明的活动策略。
+
+## 本轮最终验证与提交
+
+- Core `a245f75`：应用完整 133/133、Linux registry 14/14；真实 QUIC/OPEN 与 owner IPC、managed Unix 故障恢复及周期遥测回执门禁通过。Core process/carrier-runtime/carrier-server 的 lib/tests 严格 Clippy 通过；本轮修改文件格式和 diff 检查通过。workspace 格式检查仍报告既有 `candy-carrier-runtime/src/lib.rs` 模块排序差异，未修改无关文件。
+- Runtime `ac63469`：完整 signed inbound closure；cloud-sync 116 项通过、1 项沿用原条件忽略。`785857c`：Netd 原 owner 原位策略事务及真实 Linux 内核门禁。`f53119e`：managed policy 事务、租约恢复与注册；Linux agent 157/157，最终 managed-policy 定向 4/4、registration 2/2，all-target 严格 Clippy 通过。
+- Cloud `0aa4df3`、`3d00dd9`、`98727a7`：发布 fencing、独立恢复和落后 Peer 精确重同步；上述隔离 MySQL、UI、Caddy 和部署事务证据保持有效。
+
+完整 Runtime → 实际 Core master/worker → Netd → 新 OPEN 的组合连续流量门禁尚未完成，本轮不据此宣称端到端稳定性或吞吐达标。两小时持续测试按用户要求延期。本轮未修改、重启或压测生产节点，多代开关继续默认关闭；上线前须按 Cloud → Core → Runtime 顺序完成组合门禁。
+
+详细事务与故障注入证据分别见 Runtime `docs/SDWAN_MANAGED_POLICY_HOT_UPDATE_20261020.md` 和 `docs/SDWAN_NETD_LIVE_POLICY_20261020.md`。
