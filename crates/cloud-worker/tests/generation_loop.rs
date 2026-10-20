@@ -726,3 +726,47 @@ async fn stalled_recovery_does_not_block_lanes_or_shutdown() {
         .unwrap()
         .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn successful_recovery_does_not_resurrect_later_permanent_failures() {
+    let queue = queue_with_job();
+    let publisher = FakePublisher(Err(PublicationFailure::Permanent {
+        code: "ROUTE_INPUT_INVALID_CONFIGURATION".into(),
+    }));
+    let worker = GenerationWorker::new(
+        queue.clone(),
+        publisher,
+        "worker-a".into(),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let task = tokio::spawn(async move {
+        worker
+            .run_with_concurrency(Duration::from_secs(1), 2, shutdown)
+            .await
+    });
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    {
+        let mut state = queue.0.lock().unwrap();
+        assert_eq!(state.recovery_calls, 1);
+        assert_eq!(state.failures.len(), 1);
+        state.recoverable_job = Some(job());
+    }
+    tokio::time::advance(Duration::from_secs(300)).await;
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    {
+        let state = queue.0.lock().unwrap();
+        assert_eq!(state.recovery_calls, 1);
+        assert!(state.recoverable_job.is_some());
+        assert_eq!(state.failures.len(), 1);
+        assert!(state.refreshes.len() > 1);
+    }
+    assert!(!task.is_finished());
+    stop.send(true).unwrap();
+    task.await.unwrap().unwrap();
+}

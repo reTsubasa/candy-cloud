@@ -474,7 +474,6 @@ where
 
     async fn run_recovery_scanner(
         &self,
-        poll_interval: Duration,
         mut shutdown: watch::Receiver<bool>,
     ) -> Result<(), WorkerLoopError> {
         let deadline = self.lease_ttl.div_f64(4.0).min(Duration::from_secs(5));
@@ -493,13 +492,15 @@ where
             };
             let delay = match result {
                 Ok(Ok(count)) => {
-                    failures = 0;
                     if count > 0 {
                         tracing::warn!(event = "route_jobs_recovered", job_count = count,
                             owner = %self.owner_id, reason = "topology_materialization_available",
                             "requeued recoverable route jobs without pausing publication lanes");
                     }
-                    poll_interval.max(Duration::from_secs(60))
+                    // Upgrade reconciliation is attempted once per process.
+                    // Repeating a successful scan would resurrect permanent
+                    // invalid configuration jobs indefinitely.
+                    return Ok(());
                 }
                 failure => {
                     failures = failures.saturating_add(1);
@@ -614,7 +615,7 @@ where
         let recovery_shutdown = shutdown.clone();
         tasks.spawn(async move {
             recovery_worker
-                .run_recovery_scanner(poll_interval, recovery_shutdown)
+                .run_recovery_scanner(recovery_shutdown)
                 .await
         });
         let result = loop {
