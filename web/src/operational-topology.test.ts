@@ -66,7 +66,7 @@ function configurationStatus(device: string): RuntimeConfigurationStatus {
   return {
     device_id: `device-${device}`, device_key_id: `key-${device}`,
     projection_publication_id: `projection-${device}`, state: 'active',
-    error_code: null, reported_at: '2026-08-26T05:59:45Z', current: true,
+    error_code: null, reported_at: '2026-08-26T05:59:45Z', current: true, activation_mode: 'TUNNEL',
   };
 }
 
@@ -144,8 +144,60 @@ describe('operational topology', () => {
     };
     const snapshot = buildOperationalTopology(resources, statuses, { [segment]: readiness }, segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
     expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.hkUs)?.status.tone).toBe('green');
-    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)?.status.tone).toBe(state === 'rejected' ? 'red' : 'orange');
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)).toMatchObject({
+      status: { tone: 'green', code: 'active' },
+      applyStatus: { tone: state === 'rejected' ? 'red' : 'orange' },
+    });
+    const wrtNode = snapshot.nodes.find((node) => node.id === threeSiteIds.nodes.wrt);
+    const wrtSite = snapshot.sites.find((site) => site.id === threeSiteIds.sites.wrt);
+    expect(wrtNode?.status).toMatchObject({ tone: 'green', code: 'healthy' });
+    expect(wrtNode?.applyStatus.tone).toBe(state === 'rejected' ? 'red' : 'orange');
+    expect(wrtNode?.applyStatus.label).toContain('网络配置');
+    expect(wrtSite?.status).toMatchObject({ tone: 'green', code: 'healthy' });
+    if (state === 'prepared') expect(snapshot.pendingNodeCount).toBe(1);
+    if (state === 'rejected') expect(snapshot.rejectedNodeCount).toBe(1);
     expect(snapshot.readiness?.ready).toBe(false);
+  });
+
+  it('labels POLICY_ONLY receipts as route policy without changing live tunnel health', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    const statuses = ['wrt', 'us', 'hk'].map(configurationStatus);
+    statuses[0] = { ...statuses[0], state: 'prepared', activation_mode: 'POLICY_ONLY' };
+    const snapshot = buildOperationalTopology(resources, statuses, {}, threeSiteIds.segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    const node = snapshot.nodes.find((item) => item.id === threeSiteIds.nodes.wrt);
+    const link = snapshot.links.find((item) => item.id === threeSiteIds.peers.wrtHk);
+    expect(node?.status).toMatchObject({ code: 'healthy', tone: 'green' });
+    expect(node?.applyStatus).toMatchObject({ code: 'pending', label: '路由策略更新中', tone: 'orange' });
+    expect(link?.status).toMatchObject({ code: 'active', tone: 'green' });
+    expect(link?.applyStatus).toMatchObject({ code: 'pending', label: '配置应用中', tone: 'orange' });
+  });
+
+  it('keeps healthy Peer streams visible when route forwarding fails', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    telemetry[0] = {
+      ...telemetry[0], ready_route_owners: 0, last_error_code: 'route_probe_failed',
+      last_error_detail: 'route target did not answer', failed_route_prefixes: ['10.50.0.0/24'],
+      paths: telemetry[0].paths.map((path) => ({ ...path, transport_mode: 'stream_primary', ready_streams: 1, stream_count: 1, streams: [streamTelemetry()] })),
+    };
+    const snapshot = buildOperationalTopology(resources, ['wrt', 'us', 'hk'].map(configurationStatus), {}, threeSiteIds.segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    const node = snapshot.nodes.find((item) => item.id === threeSiteIds.nodes.wrt);
+    expect(node?.status).toMatchObject({ code: 'healthy', tone: 'green' });
+    expect(node?.dataPlaneActive).toBe(false);
+    expect(node?.routeStatus).toMatchObject({ code: 'failed', tone: 'red', detail: expect.stringContaining('10.50.0.0/24') });
+    expect(snapshot.sites.find((item) => item.id === threeSiteIds.sites.wrt)?.failedRouteNodeCount).toBe(1);
+    expect(snapshot.links.find((item) => item.id === threeSiteIds.peers.wrtHk)?.status).toMatchObject({ code: 'active', tone: 'green' });
+    expect(snapshot.links.find((item) => item.id === threeSiteIds.peers.hkUs)?.status).toMatchObject({ code: 'active', tone: 'green' });
+  });
+
+  it('does not spread a failed Peer stream to another healthy Peer on the same node', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    telemetry[2] = { ...telemetry[2], ready_route_owners: 1, last_error_code: 'peer_stream_failed', paths: telemetry[2].paths.map((path, index) => ({
+      ...path, transport_mode: 'stream_primary', ready_streams: index === 0 ? 0 : 1, stream_count: 1,
+      streams: [streamTelemetry(index === 0 ? { state: 'failed', last_error_code: 'stream_reset' } : {})],
+    })) };
+    const snapshot = buildOperationalTopology(resources, ['wrt', 'us', 'hk'].map(configurationStatus), {}, threeSiteIds.segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.links.find((item) => item.id === threeSiteIds.peers.wrtHk)?.status).toMatchObject({ code: 'one_way', tone: 'orange' });
+    expect(snapshot.links.find((item) => item.id === threeSiteIds.peers.hkUs)?.status).toMatchObject({ code: 'active', tone: 'green' });
   });
 
   it('makes offline rejected sites and their incident links gray', () => {
@@ -249,7 +301,7 @@ describe('operational topology', () => {
     const snapshot = buildOperationalTopology(fixture(), [], {}, 'segment');
     expect(snapshot.links[0].state).toBe('endpoint_offline');
     expect(snapshot.links[0].status.tone).toBe('gray');
-    expect(snapshot.readinessLabel).toBe('等待 Cloud 生成配置');
+    expect(snapshot.readinessLabel).toBe('配置状态待确认');
   });
 
   it('shows OpenWrt fail-open as a node fault while its Lane failure stays on the link', () => {

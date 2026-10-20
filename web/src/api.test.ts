@@ -36,8 +36,8 @@ describe('same-origin Cloud API client', () => {
   });
 
   it('reads tenant-scoped persisted Runtime activation results', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ schema_version: 1, items: [] }), { status: 200, headers: { 'content-type': 'application/json' } }));
-    await fetchRuntimeConfigurationStatuses('jwt-token', 'tenant/id');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ schema_version: 1, items: [{ activation_mode: 'POLICY_ONLY' }] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await expect(fetchRuntimeConfigurationStatuses('jwt-token', 'tenant/id')).resolves.toMatchObject({ items: [{ activation_mode: 'POLICY_ONLY' }] });
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/tenants/tenant%2Fid/runtime-configuration-status', expect.objectContaining({
       headers: expect.objectContaining({ Authorization: 'Bearer jwt-token' }),
     }));

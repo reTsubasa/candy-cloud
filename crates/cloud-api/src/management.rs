@@ -991,6 +991,7 @@ pub struct RuntimeConfigurationStatusItem {
     pub error_code: Option<String>,
     pub reported_at: chrono::DateTime<Utc>,
     pub current: bool,
+    pub activation_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1318,6 +1319,7 @@ pub async fn runtime_configuration_statuses(
             error_code: record.error_code,
             reported_at: record.reported_at,
             current: record.current,
+            activation_mode: record.activation_mode,
         })
         .collect();
     Ok(Json(RuntimeConfigurationStatusResponse {

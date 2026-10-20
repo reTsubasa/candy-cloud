@@ -174,7 +174,13 @@ export function Overview({ session, onOpenLogs }: Props) {
       items.push({ tone: 'error', title: `${link.siteAName} ↔ ${link.siteBName} · ${link.status.label}`, detail: link.status.detail });
     }
     if (topology.segment && topology.readiness && !topology.readiness.ready) {
-      items.push({ tone: 'warn', title: `${topology.segment.name} 尚未完全激活`, detail: topology.readinessLabel });
+      items.push({ tone: topology.readiness.failed_apply_count > 0 ? 'error' : 'warn', title: `${topology.segment.name} · 配置应用`, detail: topology.readinessLabel });
+    }
+    for (const node of topology.nodes.filter((item) => item.applyStatus.code === 'rejected')) {
+      items.push({ tone: 'error', title: `${node.name} · ${node.applyStatus.label}`, detail: node.applyStatus.detail + (node.errorCode ? `（${node.errorCode}）` : '') });
+    }
+    for (const node of topology.nodes.filter((item) => item.routeStatus.code === 'failed' || item.routeStatus.code === 'recovering')) {
+      items.push({ tone: node.routeStatus.code === 'failed' ? 'error' : 'warn', title: `${node.name} · ${node.routeStatus.label}`, detail: node.routeStatus.detail });
     }
     for (const node of topology.nodes.filter((item) => item.status.tone === 'orange')) {
       items.push({ tone: 'warn', title: `${node.name} · ${node.status.label}`, detail: node.status.detail });
@@ -199,7 +205,7 @@ export function Overview({ session, onOpenLogs }: Props) {
         <div className="operational-status-strip">
           <StatusMetric icon={<IconCloud />} label="控制面" value={controlReady ? '正常' : '异常'} detail={controlPlaneDetail(health)} tone={controlReady ? 'ok' : 'error'} />
           <StatusMetric icon={<IconDesktop />} label="节点状态" value={`${topology.registeredNodeCount} 已认证`} detail={`${topology.onlineNodeCount} 在线 · ${topology.nodes.length - topology.registeredNodeCount} 待认证`} tone={topology.nodes.length === 0 ? 'neutral' : topology.registeredNodeCount === topology.nodes.length ? 'ok' : 'warn'} />
-          <StatusMetric icon={<IconBranch />} label="互联线路" value={`${topology.activeLinkCount} / ${topology.links.length} 已认证`} detail={`${topology.warningLinkCount} 协商/更新 · ${topology.failedLinkCount} 故障`} tone={topology.failedLinkCount > 0 ? 'error' : topology.links.length === 0 ? 'neutral' : topology.warningLinkCount > 0 ? 'warn' : 'ok'} />
+          <StatusMetric icon={<IconBranch />} label="互联线路" value={`${topology.activeLinkCount} / ${topology.links.length} 已认证`} detail={`${topology.warningLinkCount} 协商/降级 · ${topology.failedLinkCount} 故障`} tone={topology.failedLinkCount > 0 ? 'error' : topology.links.length === 0 ? 'neutral' : topology.warningLinkCount > 0 ? 'warn' : 'ok'} />
           <StatusMetric icon={<IconStorage />} label="路由与出口" value={`${topology.routeCount} 条路由`} detail={`${topology.egressCount} 个出口 · ${topology.policyRuleCount} 条策略规则`} tone="neutral" />
           <StatusMetric icon={<IconThunderbolt />} label="性能遥测" value={topology.nodes.length > 0 ? `${topology.telemetryCoverageCount} / ${topology.nodes.length}` : '未接入'} detail={!telemetryAvailable ? 'Cloud 遥测接口当前不可用' : topology.telemetryCoverageCount > 0 ? '仅统计新鲜且有来源的性能样本' : 'Runtime 在线状态已接入，等待 Core 性能指标'} tone="neutral" />
         </div>
@@ -290,7 +296,7 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
   const siteY = aggregate ? 142 : 190;
   const maximumNodeRows = Math.min(3, Math.max(1, ...snapshot.sites.map((site) => site.nodes.length)));
   const hasOverflowNodes = snapshot.sites.some((site) => site.nodes.length > maximumNodeRows);
-  const siteCardHeight = 126 + maximumNodeRows * 18 + (hasOverflowNodes ? 18 : 0);
+  const siteCardHeight = 168 + maximumNodeRows * 18 + (hasOverflowNodes ? 18 : 0);
   const siteBottom = siteY + siteCardHeight;
   const linkLaneGap = 62;
   const linkLaneCount = Math.min(snapshot.links.length, 8);
@@ -298,8 +304,8 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
   const siteX = (index: number) => siteCount <= 1 ? center : 100 + index * ((width - 200) / (siteCount - 1));
   const siteById = Object.fromEntries(snapshot.sites.map((site, index) => [site.id, { ...site, x: siteX(index) }]));
   const allSitesOffline = snapshot.sites.length > 0 && snapshot.sites.every((site) => site.status.tone === 'gray');
-  const controlLinkTone = !controlReady ? 'red' : allSitesOffline ? 'gray' : snapshot.readiness?.ready ? 'green' : 'orange';
-  const segmentTone = !controlReady ? 'red' : allSitesOffline ? 'gray' : snapshot.readiness?.ready ? 'green' : 'orange';
+  const controlLinkTone = !controlReady ? 'red' : allSitesOffline ? 'gray' : 'green';
+  const segmentTone = !controlReady ? 'red' : allSitesOffline ? 'gray' : 'green';
   return <><div className="topology-canvas" aria-label="SD-WAN 运行拓扑">
     <svg viewBox={`0 0 ${width} ${height}`} role="img" style={{ minWidth: width, height }}>
       <g className={`topology-control-node ${controlReady ? 'ok' : 'error'}`} transform={`translate(${center - 98} 20)`}>
@@ -324,10 +330,12 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
             <line x1="14" y1="62" x2="166" y2="62" />
             <text x="14" y="83">节点 {site.nodes.length}</text><text className="value" x="166" y="83" textAnchor="end">已认证 {site.registeredNodeCount}</text>
             <text x="14" y="106">在线 {site.onlineNodeCount}</text><text className="value" x="166" y="106" textAnchor="end">路由 {site.routeCount} · 出口 {site.egressCount}</text>
-            {site.nodes.length === 0 ? <text className="sub" x="14" y="132">等待节点接入</text> : site.nodes.slice(0, maximumNodeRows).map((node, nodeIndex) => <g className={`topology-node-state tone-${node.status.tone}`} key={node.id} transform={`translate(0 ${126 + nodeIndex * 18})`}>
-              <text x="14" y="10">{ellipsis(node.name, 14)}</text><text className="state" x="166" y="10" textAnchor="end">{node.status.label}</text>
+            <text className="sub" x="14" y="120">配置应用 · {site.rejectedApplyNodeCount ? `失败 ${site.rejectedApplyNodeCount}` : site.pendingApplyNodeCount ? `更新中 ${site.pendingApplyNodeCount}` : site.nodes.length > 0 && site.nodes.every((node) => node.applyStatus.code === 'active') ? '已应用' : '待确认'}</text>
+            <text className={`sub ${site.failedRouteNodeCount ? 'route-fault' : ''}`} x="14" y="138">路由转发 · {site.failedRouteNodeCount ? `异常 ${site.failedRouteNodeCount}` : site.recoveringRouteNodeCount ? `恢复中 ${site.recoveringRouteNodeCount}` : site.nodes.length > 0 && site.nodes.every((node) => node.routeStatus.code === 'ready') ? '正常' : '待确认'}</text>
+            {site.nodes.length === 0 ? <text className="sub" x="14" y="160">等待节点接入</text> : site.nodes.slice(0, maximumNodeRows).map((node, nodeIndex) => <g className={`topology-node-state tone-${node.status.tone}`} key={node.id} transform={`translate(0 ${156 + nodeIndex * 18})`}>
+              <title>{`Runtime：${node.status.label}；${node.applyStatus.label}：${node.applyStatus.detail}；${node.routeStatus.label}：${node.routeStatus.detail}`}</title><text x="14" y="10">{ellipsis(node.name, 14)}</text><text className="state" x="166" y="10" textAnchor="end">{node.status.label}</text>
             </g>)}
-            {site.nodes.length > maximumNodeRows && <text className="sub" x="14" y={126 + maximumNodeRows * 18 + 10}>另有 {site.nodes.length - maximumNodeRows} 个节点</text>}
+            {site.nodes.length > maximumNodeRows && <text className="sub" x="14" y={156 + maximumNodeRows * 18 + 10}>另有 {site.nodes.length - maximumNodeRows} 个节点</text>}
           </g>
         </g>;
       })}
@@ -349,10 +357,11 @@ function TopologyCanvas({ snapshot, controlReady }: { snapshot: OperationalTopol
         const labelY = curveMidY - 9;
         const linkPath = `M ${left.x} ${siteBottom} C ${left.x} ${y}, ${right.x} ${y}, ${right.x} ${siteBottom}`;
         return <g className={`topology-peer-link ${tone}`} key={link.id}>
-          <title>{`${link.status.label}：${link.status.detail}${pathDetail}`}</title>
+          <title>{`Peer 隧道：${link.status.label}，${link.status.detail}；配置：${link.applyStatus.label}，${link.applyStatus.detail}${pathDetail}`}</title>
           <path aria-label="站点数据线路" d={linkPath} />
           {tone === 'ok' && <path className="topology-link-flow" d={linkPath} aria-hidden="true" />}
           {telemetrySummary && <text className="telemetry" x={labelCenter} y={labelY} textAnchor="middle"><title>{`链路状态：${link.status.label}。${link.status.detail}`}</title>{ellipsis(telemetrySummary, 86)}</text>}
+          <text className={`policy-state tone-${link.applyStatus.tone}`} x={labelCenter} y={telemetrySummary ? labelY + 13 : labelY} textAnchor="middle">{link.applyStatus.label}</text>
         </g>;
       })}
     </svg>

@@ -13,8 +13,12 @@ use uuid::Uuid;
 
 async fn fixture() -> Option<(cloud_db::DbPool, Uuid)> {
     let url = std::env::var("DATABASE_URL").ok()?;
-    let pool = cloud_db::connect(&url).await.ok()?;
-    cloud_db::migrate(&pool).await.ok()?;
+    let pool = cloud_db::connect(&url)
+        .await
+        .expect("configured test database must be reachable");
+    cloud_db::migrate(&pool)
+        .await
+        .expect("configured test database migrations must succeed");
     let organization = Uuid::new_v4();
     let tenant = Uuid::new_v4();
     sqlx::query("INSERT INTO organizations (id, name) VALUES (?, ?)")
@@ -293,6 +297,22 @@ async fn repository_enforces_tenant_revision_idempotency_and_lease_recovery() {
         .unwrap();
     assert_eq!(recovered.id, first.id);
     assert_eq!(recovered.attempt_count, 2);
+    assert!(matches!(
+        jobs.publish(&first, now + ChronoDuration::seconds(2), 9, [7; 32])
+            .await,
+        Err(ControlStoreError::LeaseLost)
+    ));
+    assert!(matches!(
+        jobs.fail(
+            &first,
+            now + ChronoDuration::seconds(2),
+            &JobFailure::Permanent {
+                code: "STALE_WORKER_MUST_NOT_REVOKE_NEW_OWNER".into(),
+            }
+        )
+        .await,
+        Err(ControlStoreError::LeaseLost)
+    ));
     jobs.fail(
         &recovered,
         now + ChronoDuration::seconds(2),

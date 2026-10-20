@@ -109,6 +109,7 @@ pub struct RuntimeConfigurationStatusRecord {
     /// Publication that acts as the rollout handoff identity for this node.
     pub handoff_id: Uuid,
     pub segment_generation: Option<u64>,
+    pub activation_mode: Option<String>,
     pub rollout_phase: Option<String>,
     pub rollout_ordinal: Option<u32>,
     pub rollout_member_count: Option<u32>,
@@ -496,7 +497,7 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT status.device_id, status.device_key_id, status.projection_publication_id, status.active_projection_publication_id, status.apply_state, status.error_code, status.reported_at, projection.segment_generation, member.rollout_ordinal, rollout.member_count AS rollout_member_count, rollout.state AS rollout_phase, EXISTS(SELECT 1 FROM segment_attachments attachment JOIN site_route_projection_publications active_projection ON active_projection.id = status.active_projection_publication_id AND active_projection.tenant_id = attachment.tenant_id AND active_projection.attachment_id = attachment.id AND active_projection.device_id = attachment.device_id AND active_projection.device_key_id = attachment.device_key_id JOIN segment_route_publications publication ON publication.tenant_id = active_projection.tenant_id AND publication.segment_id = active_projection.segment_id AND publication.generation = active_projection.segment_generation AND publication.content_hash = active_projection.segment_content_hash WHERE attachment.tenant_id = status.tenant_id AND attachment.device_id = status.device_id AND attachment.device_key_id = status.device_key_id AND attachment.principal_kind = 'DEVICE' AND attachment.state IN ('ACTIVE','STANDBY') AND NOT EXISTS(SELECT 1 FROM segment_route_publications newer WHERE newer.tenant_id = publication.tenant_id AND newer.segment_id = publication.segment_id AND newer.generation > publication.generation)) AS current_configuration FROM runtime_configuration_status status LEFT JOIN site_route_projection_publications projection ON projection.id = status.projection_publication_id AND projection.tenant_id = status.tenant_id LEFT JOIN segment_route_publication_members member ON member.tenant_id = projection.tenant_id AND member.projection_publication_id = projection.id LEFT JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = projection.tenant_id AND rollout.segment_id = projection.segment_id AND rollout.segment_generation = projection.segment_generation WHERE status.tenant_id = ? ORDER BY status.reported_at DESC, status.device_id LIMIT 4096",
+            "SELECT status.device_id, status.device_key_id, status.projection_publication_id, status.active_projection_publication_id, status.apply_state, status.error_code, status.reported_at, projection.segment_generation, member.rollout_ordinal, rollout.member_count AS rollout_member_count, rollout.activation_mode, rollout.state AS rollout_phase, EXISTS(SELECT 1 FROM segment_attachments attachment JOIN site_route_projection_publications active_projection ON active_projection.id = status.active_projection_publication_id AND active_projection.tenant_id = attachment.tenant_id AND active_projection.attachment_id = attachment.id AND active_projection.device_id = attachment.device_id AND active_projection.device_key_id = attachment.device_key_id JOIN segment_route_publications publication ON publication.tenant_id = active_projection.tenant_id AND publication.segment_id = active_projection.segment_id AND publication.generation = active_projection.segment_generation AND publication.content_hash = active_projection.segment_content_hash WHERE attachment.tenant_id = status.tenant_id AND attachment.device_id = status.device_id AND attachment.device_key_id = status.device_key_id AND attachment.principal_kind = 'DEVICE' AND attachment.state IN ('ACTIVE','STANDBY') AND NOT EXISTS(SELECT 1 FROM segment_route_publications newer WHERE newer.tenant_id = publication.tenant_id AND newer.segment_id = publication.segment_id AND newer.generation > publication.generation)) AS current_configuration FROM runtime_configuration_status status LEFT JOIN site_route_projection_publications projection ON projection.id = status.projection_publication_id AND projection.tenant_id = status.tenant_id LEFT JOIN segment_route_publication_members member ON member.tenant_id = projection.tenant_id AND member.projection_publication_id = projection.id LEFT JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = projection.tenant_id AND rollout.segment_id = projection.segment_id AND rollout.segment_generation = projection.segment_generation WHERE status.tenant_id = ? ORDER BY status.reported_at DESC, status.device_id LIMIT 4096",
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -519,6 +520,7 @@ impl ControlRepository {
                     current: row.try_get("current_configuration")?,
                     handoff_id: row.try_get("projection_publication_id")?,
                     segment_generation: row.try_get("segment_generation")?,
+                    activation_mode: row.try_get("activation_mode")?,
                     rollout_phase: row.try_get("rollout_phase")?,
                     rollout_ordinal: row.try_get("rollout_ordinal")?,
                     rollout_member_count: row.try_get("rollout_member_count")?,
@@ -2522,7 +2524,10 @@ fn resource_state(state: ResourceState) -> &'static str {
 }
 
 fn policy_only_activation(kind: ResourceKind) -> bool {
-    matches!(kind, ResourceKind::ServicePolicy)
+    matches!(
+        kind,
+        ResourceKind::ServicePolicy | ResourceKind::Prefix | ResourceKind::Egress
+    )
 }
 
 fn mutation_requires_publication(
@@ -2638,15 +2643,15 @@ mod tests {
     }
 
     #[test]
-    fn only_service_policy_mutations_bypass_the_tunnel_barrier() {
+    fn routing_policy_mutations_bypass_the_tunnel_barrier() {
         assert!(policy_only_activation(ResourceKind::ServicePolicy));
+        assert!(policy_only_activation(ResourceKind::Prefix));
+        assert!(policy_only_activation(ResourceKind::Egress));
         for kind in [
             ResourceKind::Segment,
             ResourceKind::Attachment,
-            ResourceKind::Prefix,
             ResourceKind::Peer,
             ResourceKind::PathCandidate,
-            ResourceKind::Egress,
         ] {
             assert!(!policy_only_activation(kind));
         }

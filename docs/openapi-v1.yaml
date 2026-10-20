@@ -2572,7 +2572,7 @@ components:
     RuntimeConfigurationStatusItem:
       type: object
       additionalProperties: false
-      required: [device_id, device_key_id, projection_publication_id, state, error_code, reported_at, current]
+      required: [device_id, device_key_id, projection_publication_id, state, error_code, reported_at, current, activation_mode]
       properties:
         device_id: { $ref: "#/components/schemas/Uuid" }
         device_key_id: { $ref: "#/components/schemas/Uuid" }
@@ -2581,6 +2581,7 @@ components:
         error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }, { type: "null" }] }
         reported_at: { type: string, format: date-time }
         current: { type: boolean, description: True only when this report names the device's current Cloud projection. }
+        activation_mode: { type: [string, "null"], enum: [TUNNEL, POLICY_ONLY, null], description: Rollout mode of the reported publication; independent of live Peer health. }
     RuntimeTelemetry:
       type: object
       additionalProperties: false

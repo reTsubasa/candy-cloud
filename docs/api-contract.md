@@ -413,8 +413,12 @@ Operators read the latest persisted result per device from
 `GET /api/v1/tenants/{tenant_id}/runtime-configuration-status`. The management
 response is tenant-scoped and contains no signed configuration or Grant bytes.
 Its `current` field is true only when the report still names the current Cloud
-projection. The node inventory renders `active`, `rejected`, or `pending` when
-no current successful or rejected report has been stored yet.
+projection. `activation_mode` reports the rollout class (`POLICY_ONLY` or
+`TUNNEL`) from Cloud's persisted rollout record, so operators can distinguish
+a route-only update from a full network configuration rollout. It does not
+describe live Peer or TUN health. The node inventory renders `active`,
+`rejected`, or `pending` when no current successful or rejected report has
+been stored yet.
 
 Status-report timeout never rolls back a successful local apply. Runtime
 retries the same report with bounded exponential backoff and jitter. A rejected

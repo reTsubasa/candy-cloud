@@ -875,6 +875,9 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     assert!(prepared_statuses
         .iter()
         .all(|status| status.apply_state == "PREPARED" && !status.current));
+    assert!(prepared_statuses
+        .iter()
+        .all(|status| status.activation_mode.as_deref() == Some("TUNNEL")));
     for (lookup, prepared) in [
         (&runtime_lookup, &first_runtime),
         (&peer_runtime_lookup, &first_peer_runtime),
@@ -1567,6 +1570,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         status.apply_state == "ACTIVE"
             && status.current
             && status.segment_generation == Some(policy.generation)
+            && status.activation_mode.as_deref() == Some("POLICY_ONLY")
     }));
 
     let second_segment_id = Uuid::new_v4();

@@ -6,7 +6,7 @@ import {
   type NodeOperationalCode,
   type OperationalStatus,
 } from './operational-status';
-import { pathHealth, runtimeAttention, runtimeDataPlaneReady } from './runtime-observability';
+import { pathHealth, routeDiagnosticsFault, runtimeDataPlaneReady } from './runtime-observability';
 
 export type OperationalResourceKey = 'sites' | 'nodes' | 'segments' | 'attachments' | 'prefixes' | 'peers' | 'paths' | 'egress' | 'policies' | 'dns' | 'relays';
 export type OperationalResources = Record<OperationalResourceKey, ControlResource[]>;
@@ -23,6 +23,8 @@ export type OperationalNode = {
   siteId: string;
   registered: boolean;
   applyState: 'active' | 'rejected' | 'pending' | 'unknown';
+  applyStatus: OperationalStatus<'active' | 'pending' | 'rejected' | 'unknown'>;
+  routeStatus: OperationalStatus<'ready' | 'recovering' | 'failed' | 'unknown'>;
   errorCode: string | null;
   reportedAt: string | null;
   telemetryState: 'online' | 'stale' | 'unreported';
@@ -49,6 +51,10 @@ export type OperationalSite = {
   dataPlaneActiveNodeCount: number;
   failOpenNodeCount: number;
   hasRejectedNode: boolean;
+  pendingApplyNodeCount: number;
+  rejectedApplyNodeCount: number;
+  failedRouteNodeCount: number;
+  recoveringRouteNodeCount: number;
   routeCount: number;
   egressCount: number;
   status: OperationalStatus<'empty' | 'unregistered' | 'healthy' | 'warning' | 'fault'>;
@@ -72,6 +78,7 @@ export type OperationalLink = {
   relayNodeNames: string[];
   state: LinkOperationalCode;
   status: OperationalStatus<LinkOperationalCode>;
+  applyStatus: OperationalStatus<'active' | 'pending' | 'rejected' | 'unknown'>;
   activeDirectionCount: number;
   staleDirectionCount: number;
   activePathCount: number;
@@ -130,17 +137,47 @@ function cidr(input: unknown): string {
 }
 
 function readinessLabel(readiness: RuntimeActivationReadiness | null): string {
-  if (!readiness) return '等待 Cloud 生成配置';
-  if (readiness.ready) return '数据面已就绪';
+  if (!readiness) return '配置状态待确认';
+  if (readiness.ready) return '配置已应用';
   if (readiness.reason_codes.includes('service_not_enabled')) return '服务尚未开通';
-  if (readiness.reason_codes.includes('node_apply_failed')) return '节点应用失败';
-  if (readiness.reason_codes.includes('activation_blocked')) return '发布已阻断';
+  if (readiness.reason_codes.includes('node_apply_failed')) return '配置应用失败';
+  if (readiness.reason_codes.includes('activation_blocked')) return '配置发布已阻断';
   if (readiness.reason_codes.includes('node_offline')) return '等待节点端点';
   if (readiness.reason_codes.includes('config_pending')) return '配置发布中';
-  if (readiness.reason_codes.includes('activation_preparing')) return '全网准备中';
-  if (readiness.reason_codes.includes('activation_committing')) return '统一提交中';
-  if (readiness.reason_codes.includes('node_apply_pending')) return '等待节点应用';
-  return '等待激活';
+  if (readiness.reason_codes.includes('activation_preparing')) return '配置准备中';
+  if (readiness.reason_codes.includes('activation_committing')) return '配置提交中';
+  if (readiness.reason_codes.includes('node_apply_pending')) return '等待节点应用配置';
+  return '等待配置';
+}
+
+function configurationApplyStatus(state: OperationalNode['applyState'], mode: RuntimeConfigurationStatus['activation_mode']): OperationalNode['applyStatus'] {
+  const item = mode === 'POLICY_ONLY' ? '路由策略' : '网络配置';
+  if (state === 'active') return { code: 'active', label: `${item}已应用`, detail: '当前配置回执已确认', tone: 'green' };
+  if (state === 'pending') return { code: 'pending', label: `${item}更新中`, detail: `等待 Cloud 发布或节点确认当前${item}`, tone: 'orange' };
+  if (state === 'rejected') return { code: 'rejected', label: `${item}应用失败`, detail: `节点拒绝了当前${item}`, tone: 'red' };
+  return { code: 'unknown', label: `${item}状态未知`, detail: '尚无当前配置回执', tone: 'gray' };
+}
+
+function aggregateApplyStatus(nodes: OperationalNode[]): OperationalNode['applyStatus'] {
+  if (nodes.some((node) => node.applyStatus.code === 'rejected')) return { code: 'rejected', label: '配置应用失败', detail: '至少一个节点拒绝了当前配置；Peer 状态按实时遥测单独显示', tone: 'red' };
+  if (nodes.some((node) => node.applyStatus.code === 'pending')) return { code: 'pending', label: '配置应用中', detail: '等待相关节点确认配置；Peer 状态按实时遥测单独显示', tone: 'orange' };
+  if (nodes.length > 0 && nodes.every((node) => node.applyStatus.code === 'active')) return { code: 'active', label: '配置已应用', detail: '所有相关节点均已确认当前配置', tone: 'green' };
+  return { code: 'unknown', label: '配置状态未知', detail: '部分节点尚无当前配置回执', tone: 'gray' };
+}
+
+function routeStatus(runtime: RuntimeTelemetry | null, fresh: boolean): OperationalNode['routeStatus'] {
+  if (!runtime || !fresh) return { code: 'unknown', label: '路由状态待确认', detail: '尚无新鲜路由遥测', tone: 'gray' };
+  const fault = routeDiagnosticsFault(runtime.route_diagnostics);
+  if (fault || runtime.failed_route_prefixes?.length) return {
+    code: 'failed', label: '路由转发异常', tone: 'red',
+    detail: [runtime.failed_route_prefixes?.length ? `故障前缀：${runtime.failed_route_prefixes.join('、')}` : '', fault, runtime.last_error_detail].filter(Boolean).join('；'),
+  };
+  if (runtime.route_diagnostics?.integrity === 'reconciling') return { code: 'recovering', label: '路由恢复中', detail: '主机路由正在差量协调，Peer 状态独立判定', tone: 'orange' };
+  if (runtime.required_route_owners > runtime.ready_route_owners) return {
+    code: 'failed', label: '部分路由不可达', detail: `${runtime.ready_route_owners}/${runtime.required_route_owners} 个路由目标已就绪`, tone: 'red',
+  };
+  if (runtime.required_route_owners > 0 || runtime.route_diagnostics?.integrity === 'consistent') return { code: 'ready', label: '路由已就绪', detail: '当前路由遥测正常', tone: 'green' };
+  return { code: 'unknown', label: '路由状态待确认', detail: 'Runtime 尚无路由目标或路由诊断', tone: 'gray' };
 }
 
 function siteOperationalStatus(nodes: OperationalNode[]): OperationalSite['status'] {
@@ -169,10 +206,9 @@ function pathIsReady(path: RuntimePathTelemetry, runtime: RuntimeTelemetry): boo
     return (path.ready_streams ?? 0) > 0
       && (!path.streams?.length || pathHealth(path) !== 'fault');
   }
-  // Legacy reports do not identify stream readiness. Only retain their previous
-  // authenticated-path meaning when the whole reported data plane is ready.
-  return runtime.active_peers > 0
-    && runtime.ready_route_owners === runtime.required_route_owners;
+  // Legacy reports lack per-stream readiness; use the authenticated Peer count
+  // to avoid making unrelated route-owner readiness control tunnel visibility.
+  return runtime.active_peers > 0;
 }
 
 export function buildOperationalTopology(
@@ -237,12 +273,9 @@ export function buildOperationalTopology(
       failOpenRequired: runtime?.fail_open_required ?? false,
       runtimeErrorCode: runtime?.last_error_code ?? null,
       runtimeErrorDetail: runtime?.last_error_detail ?? null,
-      dataPlaneReady: runtime ? runtimeDataPlaneReady(runtime) : undefined,
-      operationalAttention: runtime ? runtimeAttention(runtime) : null,
-      operationalTransition: runtime?.route_diagnostics?.integrity === 'reconciling' || runtime?.dataplane_phase === 'recovering',
+      operationalTransition: runtime?.dataplane_phase === 'recovering',
     });
     const dataPlaneActive = registered
-      && applyState === 'active'
       && telemetryState === 'online'
       && runtime !== null
       && runtimeDataPlaneReady(runtime);
@@ -252,6 +285,8 @@ export function buildOperationalTopology(
       siteId: value(item, 'site_id'),
       registered,
       applyState,
+      applyStatus: configurationApplyStatus(applyState, status?.activation_mode),
+      routeStatus: routeStatus(runtime, telemetryState === 'online'),
       errorCode: status?.error_code ?? null,
       reportedAt: status?.reported_at ?? null,
       telemetryState,
@@ -287,6 +322,10 @@ export function buildOperationalTopology(
         dataPlaneActiveNodeCount: siteNodes.filter((node) => node.dataPlaneActive).length,
         failOpenNodeCount: siteNodes.filter((node) => node.failOpenRequired).length,
         hasRejectedNode: siteNodes.some((node) => node.applyState === 'rejected'),
+        pendingApplyNodeCount: siteNodes.filter((node) => node.applyState === 'pending').length,
+        rejectedApplyNodeCount: siteNodes.filter((node) => node.applyState === 'rejected').length,
+        failedRouteNodeCount: siteNodes.filter((node) => node.routeStatus.code === 'failed').length,
+        recoveringRouteNodeCount: siteNodes.filter((node) => node.routeStatus.code === 'recovering').length,
         routeCount: selectedPrefixes.filter((prefix) => value(prefix, 'site_id') === item.metadata.id).length,
         egressCount: selectedEgresses.filter((egress) => value(egress, 'site_id') === item.metadata.id).length,
         status: siteOperationalStatus(siteNodes),
@@ -333,7 +372,7 @@ export function buildOperationalTopology(
         [siteBId, new Set(peerAttachments.filter((attachment) => value(attachment, 'site_id') === siteBId).map((attachment) => attachment.metadata.id))],
       ]);
       const activePaths: OperationalPathTelemetry[] = peerNodes.flatMap((node) => {
-        if (!node.registered || node.telemetryState !== 'online' || node.lifecycle !== 'active' || node.failOpenRequired || !node.telemetry || !runtimeDataPlaneReady(node.telemetry) || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
+        if (!node.registered || node.telemetryState !== 'online' || !['active', 'degraded', 'fail_open'].includes(node.lifecycle ?? '') || !node.telemetry || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
         const destinationSiteId = node.siteId === siteAId ? siteBId : siteAId;
         const destinationAttachmentIds = attachmentIdsBySite.get(destinationSiteId) ?? new Set<string>();
         return (node.telemetry?.paths ?? [])
@@ -362,26 +401,19 @@ export function buildOperationalTopology(
       const staleDirectionKeys = new Set(staleDirections);
       const staleDirectionCount = staleDirectionKeys.size;
       const endpointNodes = [peerNodes.filter((node) => node.siteId === siteAId), peerNodes.filter((node) => node.siteId === siteBId)];
-      const rejectedNodes = endpointNodes.flat().filter((node) => node.registered && node.telemetryState === 'online' && node.applyState === 'rejected');
-      const failedEndpointLabels = endpointNodes.flatMap((siteNodes, index) => (
-        siteNodes.length > 0 && siteNodes.every((node) => (
+      const failedEndpointLabels = endpointNodes.flatMap((siteNodes, index) => {
+        const siteId = index === 0 ? siteAId : siteBId;
+        const hasActiveDirection = activeDirections.has(`${siteId}:${siteId === siteAId ? siteBId : siteAId}`);
+        return !hasActiveDirection && siteNodes.length > 0 && siteNodes.every((node) => (
           !node.registered
-          || node.failOpenRequired
-          || (node.telemetryState === 'online' && (
-            node.lifecycle === 'degraded'
-            || node.lifecycle === 'stopped'
-            || (node.telemetry !== null && !runtimeDataPlaneReady(node.telemetry))
-          ))
-        ))
-          ? [index === 0 ? siteAName : siteBName]
-          : []
-      ));
-      const configurationFailed = rejectedNodes.length > 0;
+          || (node.telemetryState === 'online' && (node.lifecycle === 'degraded' || node.lifecycle === 'stopped'))
+        )) ? [index === 0 ? siteAName : siteBName] : [];
+      });
       const endpointFailed = failedEndpointLabels.length > 0;
       const endpointOffline = endpointNodes.some((siteNodes) => (
         siteNodes.length === 0 || siteNodes.every((node) => node.status.tone === 'gray')
       ));
-      const policyUpdating = !configurationFailed && endpointNodes.some((siteNodes) => siteNodes.some((node) => node.registered && node.telemetryState === 'online' && node.applyState === 'pending'));
+      const linkEndpointNodes = endpointNodes.flat();
       const expectedDirections = [
         { key: `${siteAId}:${siteBId}`, label: `${siteAName} -> ${siteBName}` },
         { key: `${siteBId}:${siteAId}`, label: `${siteBName} -> ${siteAName}` },
@@ -391,12 +423,10 @@ export function buildOperationalTopology(
         endpointOffline,
         activeDirectionCount,
         staleDirectionCount,
-        policyUpdating,
-        configurationFailed,
         endpointFailed,
         missingDirectionLabels: expectedDirections.filter((direction) => !activeDirections.has(direction.key)).map((direction) => direction.label),
         staleDirectionLabels: expectedDirections.filter((direction) => staleDirectionKeys.has(direction.key)).map((direction) => direction.label),
-        failedEndpointLabels: rejectedNodes.length > 0 ? rejectedNodes.map((node) => node.name) : failedEndpointLabels,
+        failedEndpointLabels,
         degradedPathLabels,
       });
       const activeKinds = new Set(activePaths.map((path) => path.path_kind));
@@ -433,6 +463,7 @@ export function buildOperationalTopology(
         relayNodeNames,
         state: operationalStatus.code,
         status: operationalStatus,
+        applyStatus: aggregateApplyStatus(linkEndpointNodes),
         activeDirectionCount,
         staleDirectionCount,
         activePathCount: activePaths.length,
