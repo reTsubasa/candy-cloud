@@ -110,10 +110,10 @@ Runtime 在编译与确认期间续保原 owner 的 30 秒短租约，但仍受�
 
 ## 本轮最终验证与提交
 
-- Core `a245f75`：应用完整 133/133、Linux registry 14/14；真实 QUIC/OPEN 与 owner IPC、managed Unix 故障恢复及周期遥测回执门禁通过。Core process/carrier-runtime/carrier-server 的 lib/tests 严格 Clippy 通过；本轮修改文件格式和 diff 检查通过。workspace 格式检查仍报告既有 `candy-carrier-runtime/src/lib.rs` 模块排序差异，未修改无关文件。
+- Core `a245f75`、`08fb4b2`、`686ddd8`：应用完整 **134/134**、Linux registry 14/14；真实 QUIC/OPEN 与 owner IPC、managed Unix 故障恢复及周期遥测回执门禁通过。Prepare 的超时、回复丢失和 actor 暂时不可用现在重放同一个不可变 Prepare，再查询双方回执；永久拒绝不会重放。候选相关测试 22/22，Core process/carrier-runtime/carrier-server 的 lib/tests 严格 Clippy 通过。使用既有 x86_64 static Core 做真实 Docker server/client TCP 转发门禁通过，临时网络和容器已自动清理。本轮修改文件格式和 diff 检查通过；workspace 格式检查仍报告既有 `candy-carrier-runtime/src/lib.rs` 模块排序差异，未修改无关文件。
 - Runtime `ac63469`：完整 signed inbound closure；cloud-sync 116 项通过、1 项沿用原条件忽略。`785857c`：Netd 原 owner 原位策略事务及真实 Linux 内核门禁。`f53119e`：managed policy 事务、租约恢复与注册；Linux agent 157/157，最终 managed-policy 定向 4/4、registration 2/2，all-target 严格 Clippy 通过。
 - Cloud `0aa4df3`、`3d00dd9`、`98727a7`：发布 fencing、独立恢复和落后 Peer 精确重同步；上述隔离 MySQL、UI、Caddy 和部署事务证据保持有效。
 
-完整 Runtime → 实际 Core master/worker → Netd → 新 OPEN 的组合连续流量门禁尚未完成，本轮不据此宣称端到端稳定性或吞吐达标。两小时持续测试按用户要求延期。本轮未修改、重启或压测生产节点，多代开关继续默认关闭；上线前须按 Cloud → Core → Runtime 顺序完成组合门禁。
+完整 Runtime → 实际 Core master/worker → Netd → 新 OPEN 的 MBB 组合连续流量门禁仍未完成；本轮通过的是真实 Core server/client 基础转发和各组件分层故障门禁，不据此宣称 MBB 端到端稳定性或吞吐达标。两小时持续测试按用户要求延期。本轮未修改、重启或压测生产节点，多代开关继续默认关闭；上线前须按 Cloud → Core → Runtime 顺序完成组合门禁。
 
 详细事务与故障注入证据分别见 Runtime `docs/SDWAN_MANAGED_POLICY_HOT_UPDATE_20261020.md` 和 `docs/SDWAN_NETD_LIVE_POLICY_20261020.md`。
