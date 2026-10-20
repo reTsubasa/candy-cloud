@@ -64,6 +64,27 @@ fn publication(tenant_id: Uuid, segment_id: Uuid) -> SegmentPublicationWrite {
     }
 }
 
+fn next_policy(previous: &SegmentPublicationWrite, byte: u8) -> SegmentPublicationWrite {
+    let mut next = previous.clone();
+    next.publication_id = Uuid::new_v4();
+    next.audit_event_id = Uuid::new_v4();
+    next.expected_previous_generation = previous.generation;
+    next.expected_previous_hash = previous.snapshot.content_hash;
+    next.generation += 1;
+    next.policy_only = true;
+    next.snapshot = signed(byte);
+    next.expansions.clear();
+    for (index, projection) in next.projections.iter_mut().enumerate() {
+        projection.publication_id = Uuid::new_v4();
+        projection.segment_generation = next.generation;
+        projection.segment_content_hash = next.snapshot.content_hash;
+        projection.projection_generation += 1;
+        projection.previous_hash = projection.object.content_hash;
+        projection.object = signed(byte + u8::try_from(index).unwrap() + 1);
+    }
+    next
+}
+
 #[tokio::test]
 async fn tunnel_host_catalog_contains_remote_route_owners_and_excludes_local_projection() {
     let Ok(url) = std::env::var("DATABASE_URL") else {
@@ -260,6 +281,335 @@ async fn tunnel_host_catalog_contains_remote_route_owners_and_excludes_local_pro
     else {
         panic!("initial generation must bootstrap all members without a rollout deadlock");
     };
+    // Establish the transport generation before enabling independent policy
+    // publication. All members prepare, then independently acknowledge commit.
+    for state in [
+        RuntimeConfigurationApplyState::Prepared,
+        RuntimeConfigurationApplyState::Active,
+    ] {
+        for site in &sites {
+            let lookup = RuntimeConfigurationLookup {
+                tenant_id,
+                device_id: site.device_id,
+                device_key_id: site.device_key_id,
+            };
+            let RuntimeConfigurationState::Current(config) = repository
+                .current_runtime_configuration(&lookup)
+                .await
+                .unwrap()
+            else {
+                panic!("missing config")
+            };
+            repository
+                .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+                    lookup,
+                    projection_publication_id: config.projection_publication_id,
+                    projection_content_hash: config.projection_content_hash,
+                    envelope_sha256: config.envelope_sha256(),
+                    apply_state: state,
+                    error_code: None,
+                })
+                .await
+                .unwrap();
+        }
+    }
+    sqlx::query("INSERT INTO node_endpoints (id, node_id, endpoint, transport, server_name, transport_preset, status, region) VALUES (?, ?, '198.51.100.10:443', 'CANDY_QUIC_UDP', 'test', 'CURRENT', 'ACTIVE', 'test')")
+        .bind(Uuid::new_v4()).bind(local.node_id).execute(&pool).await.unwrap();
+    let isolated = SdwanRepository::new(pool.clone()).with_policy_isolation(true);
+    let second = next_policy(&write, 30);
+    isolated.publish(&second).await.unwrap();
+    let local_lookup = RuntimeConfigurationLookup {
+        tenant_id,
+        device_id: local.device_id,
+        device_key_id: local.device_key_id,
+    };
+    let RuntimeConfigurationState::Current(local_second) = isolated
+        .current_runtime_configuration(&local_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("missing second")
+    };
+    let RuntimeConfigurationState::Current(peer_second) = isolated
+        .current_runtime_configuration(&second_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("missing peer second")
+    };
+    isolated
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: second_lookup.clone(),
+            projection_publication_id: peer_second.projection_publication_id,
+            projection_content_hash: peer_second.projection_content_hash,
+            envelope_sha256: peer_second.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Active,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    let third = next_policy(&second, 40);
+    assert_eq!(
+        repository.publish(&third).await,
+        Err(SdwanError::RolloutPending),
+        "default feature gate must preserve old Runtime safety"
+    );
+    isolated.publish(&third).await.unwrap();
+    let RuntimeConfigurationState::Current(local_third) = isolated
+        .current_runtime_configuration(&local_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("missing third")
+    };
+    assert_eq!(
+        local_third
+            .compatibility_generations
+            .iter()
+            .map(|group| group.segment_generation)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    let old_ids = local_third
+        .compatibility_generations
+        .iter()
+        .flat_map(|group| {
+            group
+                .peer_projection_catalog
+                .iter()
+                .map(move |peer| (group.segment_generation, peer.projection_id))
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        old_ids,
+        std::collections::HashSet::from([(1, sites[2].attachment_id), (2, sites[1].attachment_id)])
+    );
+    // A late ACTIVE receipt can describe real running state after publication
+    // overtakes it, but may not erase a newer rejection or move backwards.
+    isolated
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: local_lookup.clone(),
+            projection_publication_id: local_third.projection_publication_id,
+            projection_content_hash: local_third.projection_content_hash,
+            envelope_sha256: local_third.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Rejected,
+            error_code: Some("policy_reload_failed".into()),
+        })
+        .await
+        .unwrap();
+    isolated
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: local_lookup.clone(),
+            projection_publication_id: local_second.projection_publication_id,
+            projection_content_hash: local_second.projection_content_hash,
+            envelope_sha256: local_second.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Active,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    let (receipt, active, state): (Uuid, Uuid, String) = sqlx::query_as("SELECT projection_publication_id, active_projection_publication_id, apply_state FROM runtime_configuration_status WHERE tenant_id = ? AND device_id = ? AND device_key_id = ?")
+        .bind(tenant_id).bind(local.device_id).bind(local.device_key_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        (receipt, active, state.as_str()),
+        (
+            local_third.projection_publication_id,
+            local_second.projection_publication_id,
+            "REJECTED"
+        )
+    );
+    let mut wrong_hash = RuntimeConfigurationStatusWrite {
+        lookup: local_lookup.clone(),
+        projection_publication_id: local_second.projection_publication_id,
+        projection_content_hash: [99; 32],
+        envelope_sha256: local_second.envelope_sha256(),
+        apply_state: RuntimeConfigurationApplyState::Active,
+        error_code: None,
+    };
+    assert!(matches!(
+        isolated
+            .record_runtime_configuration_status(&wrong_hash)
+            .await,
+        Err(RuntimeConfigurationError::StaleConfiguration)
+    ));
+    wrong_hash.projection_content_hash = write.projections[0].object.content_hash;
+    wrong_hash.projection_publication_id = write.projections[0].publication_id;
+    isolated
+        .record_runtime_configuration_status(&wrong_hash)
+        .await
+        .unwrap();
+    let active: Uuid = sqlx::query_scalar("SELECT active_projection_publication_id FROM runtime_configuration_status WHERE tenant_id = ? AND device_id = ? AND device_key_id = ?")
+        .bind(tenant_id).bind(local.device_id).bind(local.device_key_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        active, local_second.projection_publication_id,
+        "delayed older ACTIVE must not roll back running identity"
+    );
+
+    // Exact Grant requests can renew this device's active version or obtain
+    // its current target; they cannot select another site's or arbitrary old
+    // policy, bypass a TUNNEL transaction, or outlive signed stale_until.
+    let subscription_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO subscriptions (id, tenant_id, plan_code, status, starts_at) VALUES (?, ?, 'policy-isolation', 'ACTIVE', ?)")
+        .bind(subscription_id).bind(tenant_id).bind(chrono::Utc::now()).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO entitlements (id, tenant_id, subscription_id, node_pool_id, service_permission, quota_json, status) VALUES (?, ?, ?, ?, 'private.tun.connect', JSON_OBJECT(), 'ACTIVE')")
+        .bind(Uuid::new_v4()).bind(tenant_id).bind(subscription_id).bind(node_pool_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO authorization_generations (tenant_id, generation) VALUES (?, 1)")
+        .bind(tenant_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let authorization = cloud_db::authorization::AuthorizationRepository::new(pool.clone())
+        .with_policy_isolation(true);
+    let auth_lookup = cloud_db::authorization::AuthorizationLookup {
+        tenant_id,
+        device_id: local.device_id,
+        device_key_id: local.device_key_id,
+        node_pool_id,
+    };
+    let exact = |projection: &SiteProjectionPublicationWrite| {
+        cloud_db::authorization::AuthorizationPolicyRef {
+            policy_id: projection.projection_id,
+            generation: projection.projection_generation,
+            content_hash: projection.object.content_hash,
+        }
+    };
+    for projection in [&second.projections[0], &third.projections[0]] {
+        let record = authorization
+            .load_for_policy(&auth_lookup, Some(&exact(projection)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            record.route_policy.unwrap().projection_content_hash,
+            projection.object.content_hash
+        );
+    }
+    for projection in [&write.projections[0], &second.projections[1]] {
+        assert!(authorization
+            .load_for_policy(&auth_lookup, Some(&exact(projection)))
+            .await
+            .is_err());
+    }
+    let fourth = next_policy(&third, 50);
+    isolated.publish(&fourth).await.unwrap();
+    assert!(
+        authorization
+            .load_for_policy(&auth_lookup, Some(&exact(&second.projections[0])))
+            .await
+            .is_ok(),
+        "active policy can renew across multiple policy-only generations"
+    );
+    sqlx::query("UPDATE segment_route_publications SET activation_mode = 'TUNNEL' WHERE id = ?")
+        .bind(fourth.publication_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        authorization
+            .load_for_policy(&auth_lookup, Some(&exact(&second.projections[0])))
+            .await
+            .is_err(),
+        "old active policy cannot cross a transport change beyond N-1"
+    );
+    let fifth = next_policy(&fourth, 60);
+    assert_eq!(
+        isolated.publish(&fifth).await,
+        Err(SdwanError::RolloutPending),
+        "unfinished TUNNEL must remain fenced even with feature enabled"
+    );
+    // Existing N-1 make-before-break authorization remains available even
+    // while the new TUNNEL transaction is PREPARING or BLOCKED.
+    sqlx::query("UPDATE runtime_configuration_status SET active_projection_publication_id = ? WHERE tenant_id = ? AND device_id = ? AND device_key_id = ?")
+        .bind(third.projections[0].publication_id).bind(tenant_id).bind(local.device_id).bind(local.device_key_id).execute(&pool).await.unwrap();
+    for state in ["PREPARING", "BLOCKED"] {
+        sqlx::query("UPDATE runtime_configuration_rollouts SET state = ?, activation_mode = 'TUNNEL' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = 4")
+            .bind(state).bind(tenant_id).bind(segment_id).execute(&pool).await.unwrap();
+        let legacy_safe = cloud_db::authorization::AuthorizationRepository::new(pool.clone());
+        assert!(
+            legacy_safe
+                .load_for_policy(&auth_lookup, Some(&exact(&third.projections[0])))
+                .await
+                .is_ok(),
+            "N-1 active tunnel migration Grant must survive {state}"
+        );
+        assert!(
+            legacy_safe
+                .load_for_policy(&auth_lookup, Some(&exact(&fourth.projections[0])))
+                .await
+                .is_ok(),
+            "current prepared target may request its exact Grant"
+        );
+    }
+    // Omitting route_policy must not bypass the same new-Grant expiry
+    // boundary enforced by exact requests (even during stale retention).
+    for publication in [&third, &fourth] {
+        sqlx::query("UPDATE segment_route_publications SET expires_at = 0 WHERE id = ?")
+            .bind(publication.publication_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    assert!(authorization.load(&auth_lookup).await.is_err());
+    for publication in [&third, &fourth] {
+        sqlx::query("UPDATE segment_route_publications SET expires_at = ? WHERE id = ?")
+            .bind(publication.expires_at)
+            .bind(publication.publication_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("UPDATE runtime_configuration_status SET active_projection_publication_id = ? WHERE tenant_id = ? AND device_id = ? AND device_key_id = ?")
+        .bind(second.projections[0].publication_id).bind(tenant_id).bind(local.device_id).bind(local.device_key_id).execute(&pool).await.unwrap();
+    sqlx::query(
+        "UPDATE segment_route_publications SET activation_mode = 'POLICY_ONLY' WHERE id = ?",
+    )
+    .bind(fourth.publication_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE segment_route_publications SET stale_until = 0 WHERE id = ?")
+        .bind(second.publication_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(authorization
+        .load_for_policy(&auth_lookup, Some(&exact(&second.projections[0])))
+        .await
+        .is_err());
+    let RuntimeConfigurationState::Current(expired) = isolated
+        .current_runtime_configuration(&local_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("missing config")
+    };
+    assert!(expired
+        .compatibility_generations
+        .iter()
+        .all(|group| group.segment_generation != 2));
+    // Reserving the entire interval makes the bound safe under any later
+    // ACTIVE split or N-1 fallback, not just the groups observed at publish.
+    sqlx::query("UPDATE runtime_configuration_rollouts SET state = 'COMPLETE', activation_mode = 'POLICY_ONLY' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = 4")
+        .bind(tenant_id).bind(segment_id).execute(&pool).await.unwrap();
+    let mut last = fourth.clone();
+    for generation in 5..=33 {
+        let next = next_policy(&last, u8::try_from(generation + 60).unwrap());
+        assert_eq!(next.generation, generation);
+        isolated.publish(&next).await.unwrap();
+        last = next;
+    }
+    assert_eq!(
+        isolated.publish(&next_policy(&last, 100)).await,
+        Err(SdwanError::RolloutPending),
+        "generation 1 still active: generation 34 must reserve a 33rd slot"
+    );
+    assert!(
+        isolated
+            .current_runtime_configuration(&local_lookup)
+            .await
+            .is_ok(),
+        "bounded publication backpressure must preserve readable current configuration"
+    );
 }
 
 fn control_resource(
@@ -874,7 +1224,9 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     assert_eq!(prepared_statuses.len(), 2);
     assert!(prepared_statuses
         .iter()
-        .all(|status| status.apply_state == "PREPARED" && !status.current));
+        .all(|status| status.apply_state == "PREPARED"
+            && status.current
+            && !status.running_current));
     assert!(prepared_statuses
         .iter()
         .all(|status| status.activation_mode.as_deref() == Some("TUNNEL")));
@@ -1270,6 +1622,31 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
         "SELECT state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = 2",
     ).bind(tenant_id).bind(segment_id).fetch_one(&pool).await.unwrap();
     assert_eq!(blocked_state, "BLOCKED");
+    // The newest target was rejected while generation 1 is still active.
+    // Reporting the active version as "current" used to turn this rejection
+    // into an endless pending state in the operational topology.
+    let rejected_status = cloud_db::control::ControlRepository::new(pool.clone())
+        .runtime_configuration_statuses(tenant_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|status| status.device_id == peer_device_id)
+        .unwrap();
+    assert!(rejected_status.current);
+    assert!(!rejected_status.running_current);
+    assert_eq!(rejected_status.apply_state, "REJECTED");
+    assert_eq!(
+        rejected_status.error_code.as_deref(),
+        Some("netd_prepare_failed")
+    );
+    assert_eq!(
+        rejected_status.projection_publication_id,
+        peer_runtime_before_ack.projection_publication_id
+    );
+    assert_eq!(
+        rejected_status.active_projection_publication_id,
+        Some(first_peer_runtime.projection_publication_id)
+    );
     for lookup in [&runtime_lookup, &peer_runtime_lookup] {
         let RuntimeConfigurationState::Current(retry) = repository
             .current_runtime_configuration(lookup)
@@ -1569,6 +1946,7 @@ async fn publication_is_atomic_idempotent_and_rejects_divergent_replay() {
     assert!(policy_statuses.iter().all(|status| {
         status.apply_state == "ACTIVE"
             && status.current
+            && status.running_current
             && status.segment_generation == Some(policy.generation)
             && status.activation_mode.as_deref() == Some("POLICY_ONLY")
     }));

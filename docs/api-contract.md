@@ -190,7 +190,34 @@ reject the superseded certificate. Stable failures are
 
 `POST /auth/v1/access-grants` is device-mTLS authenticated. Tenant, device, and
 device-key scope always come from the verified certificate. The body contains
-only request id, node pool, service class, and permission.
+request id, node pool, service class, permission, and optionally the exact signed
+`route_policy` requested by Runtime:
+
+```json
+{"route_policy":{"policy_id":"018f624d-a61c-7abc-8d0f-4fc178812200","generation":7,"content_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+```
+
+`policy_id` is the projection UUID; `generation` is positive; `content_hash` is
+exactly 64 lowercase hexadecimal digits representing a nonzero SHA-256 hash.
+This binding is included in the issuance idempotency fingerprint. Tenant and
+device identity remain certificate-owned.
+
+An exact request may select the current prepared target or the same device and
+attachment's precisely acknowledged active projection. N-1 active Grants remain
+available during the existing transport make-before-break transaction. Older
+active Grants require a continuous POLICY_ONLY publication chain and the
+multi-generation gate. Arbitrary historical, wrong-hash, other-attachment,
+revoked-key and expired (`expires_at`) route objects cannot issue new Grants;
+`stale_until` permits bounded retention of already authorized connections only.
+Core independently intersects retained signed permissions with the current signed
+policy and rejects revoked permissions.
+
+Deploy Cloud before the new Runtime, because older Cloud rejects the new JSON
+field. Requests without `route_policy` retain the previous selection behavior.
+`CANDY_ENABLE_MULTI_GENERATION_POLICY_ISOLATION=1` must be enabled consistently
+on API/Auth/Worker only after Core/Runtime compatibility and existing-connection
+revocation gates pass; its default is disabled. New Runtime always sends the exact
+binding. This release does not enable the multi-generation gate automatically.
 
 The current issuer accepts `service_class: private` and the permissions
 `private.connect` and `private.tun.connect`. A TUN Grant is issued only when the
@@ -258,6 +285,16 @@ reports active packet-probe target/success counts and RTT. A negotiated or
 authenticated path is therefore not presented as data-plane healthy until the
 probe state is `succeeded`. Older Runtime versions may omit this object; the
 management UI labels the diagnostics unavailable instead of inferring health.
+Topology path health uses only readiness evidence for that specific Peer.
+A device-wide `active_peers` count, RTT, traffic counters, or connection epoch
+cannot prove another Peer's readiness. Missing per-Peer readiness is unknown.
+One failed or starting Stream reduces path capacity; other ready Streams keep
+the path usable, with a degraded indication and the individual error retained.
+If no Stream is usable and a Stream is failed, the path is faulted. Cumulative
+`decode_errors` and reset counters stay visible as historical evidence but do
+not permanently mark a recovered ready Stream as failed. Current error codes
+remain faults until the Runtime clears them.
+
 Schema version 2 additionally carries at most 64 current and 64 most recently
 recovered route issues. Each issue identifies the canonical prefix, Candy route
 table, expected and observed route kind, a bounded reason code, and the action
@@ -362,12 +399,23 @@ rolling activation. Each entry is an independent object with this shape:
 }
 ```
 
-Cloud may include only the exact previous Segment generation, `N-1`, and only
-while that publication remains inside both its signed validity and stale
-windows. At most one compatibility generation is returned, only to a node that
-owns an inbound transport catalog. An expired generation, an empty or duplicate
-catalog, a malformed hash, or any generation other than `N-1` fails closed. An
-empty array means no prior-generation connection may be accepted.
+Cloud returns the current generation and, when the isolation gate is enabled,
+up to 32 exact retained generations, including N-1 drain fallback identities
+in this bound. A retained generation is returned only before its signed
+`stale_until` boundary, its peer/device/key/attachment
+scope still matches, and every intervening publication is `POLICY_ONLY`.
+Without the gate the compatibility response remains the existing exact `N-1`
+behavior. A generation past `stale_until`, an empty or duplicate catalog, a malformed
+hash, or a generation outside the bounded interval fails closed. If the bound
+would be exceeded, publication is back-pressured; Cloud never drops a running
+identity merely to make the response fit.
+
+Publication also reserves the complete 32-generation interval so later ACTIVE
+receipts cannot split old groups into a 33rd compatibility group. This bounded
+bridge can still back-pressure a Segment after 32 policy revisions when a peer
+has not advanced; complete per-site publication isolation remains unfinished.
+New Grants always require `expires_at` validity even while existing connections
+retain compatibility material through `stale_until`.
 
 Runtime must verify the compatibility Segment snapshot and every projection as
 a separate catalog. It selects an inbound catalog only by the Grant's exact
@@ -412,8 +460,15 @@ Cloud validates the same boundary again before storage.
 Operators read the latest persisted result per device from
 `GET /api/v1/tenants/{tenant_id}/runtime-configuration-status`. The management
 response is tenant-scoped and contains no signed configuration or Grant bytes.
-Its `current` field is true only when the report still names the current Cloud
-projection. `activation_mode` reports the rollout class (`POLICY_ONLY` or
+Its `current` field identifies whether the receipt names the latest target
+projection for that attachment, including `prepared` and `rejected` targets.
+`active_projection_publication_id` is the last projection acknowledged `active`;
+it stays unchanged when a newer target is prepared or rejected. `running_current`
+is true only when this acknowledged running version is also the latest target.
+An unrelated attachment publication does not invalidate either comparison.
+The target result, acknowledged running version, and live Peer health are
+independent: a rejected target must remain visible while the old version keeps
+forwarding traffic. `activation_mode` reports the rollout class (`POLICY_ONLY` or
 `TUNNEL`) from Cloud's persisted rollout record, so operators can distinguish
 a route-only update from a full network configuration rollout. It does not
 describe live Peer or TUN health. The node inventory renders `active`,

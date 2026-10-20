@@ -105,7 +105,10 @@ pub struct RuntimeConfigurationStatusRecord {
     pub apply_state: String,
     pub error_code: Option<String>,
     pub reported_at: DateTime<Utc>,
+    /// Whether this receipt describes the latest projection for this attachment.
     pub current: bool,
+    /// Whether the acknowledged active projection is also the latest target.
+    pub running_current: bool,
     /// Publication that acts as the rollout handoff identity for this node.
     pub handoff_id: Uuid,
     pub segment_generation: Option<u64>,
@@ -497,7 +500,64 @@ impl ControlRepository {
             return Err(ControlStoreError::InvalidRequest);
         }
         let rows = sqlx::query(
-            "SELECT status.device_id, status.device_key_id, status.projection_publication_id, status.active_projection_publication_id, status.apply_state, status.error_code, status.reported_at, projection.segment_generation, member.rollout_ordinal, rollout.member_count AS rollout_member_count, rollout.activation_mode, rollout.state AS rollout_phase, EXISTS(SELECT 1 FROM segment_attachments attachment JOIN site_route_projection_publications active_projection ON active_projection.id = status.active_projection_publication_id AND active_projection.tenant_id = attachment.tenant_id AND active_projection.attachment_id = attachment.id AND active_projection.device_id = attachment.device_id AND active_projection.device_key_id = attachment.device_key_id JOIN segment_route_publications publication ON publication.tenant_id = active_projection.tenant_id AND publication.segment_id = active_projection.segment_id AND publication.generation = active_projection.segment_generation AND publication.content_hash = active_projection.segment_content_hash WHERE attachment.tenant_id = status.tenant_id AND attachment.device_id = status.device_id AND attachment.device_key_id = status.device_key_id AND attachment.principal_kind = 'DEVICE' AND attachment.state IN ('ACTIVE','STANDBY') AND NOT EXISTS(SELECT 1 FROM segment_route_publications newer WHERE newer.tenant_id = publication.tenant_id AND newer.segment_id = publication.segment_id AND newer.generation > publication.generation)) AS current_configuration FROM runtime_configuration_status status LEFT JOIN site_route_projection_publications projection ON projection.id = status.projection_publication_id AND projection.tenant_id = status.tenant_id LEFT JOIN segment_route_publication_members member ON member.tenant_id = projection.tenant_id AND member.projection_publication_id = projection.id LEFT JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = projection.tenant_id AND rollout.segment_id = projection.segment_id AND rollout.segment_generation = projection.segment_generation WHERE status.tenant_id = ? ORDER BY status.reported_at DESC, status.device_id LIMIT 4096",
+            r#"SELECT status.device_id, status.device_key_id,
+               status.projection_publication_id, status.active_projection_publication_id,
+               status.apply_state, status.error_code, status.reported_at,
+               projection.segment_generation, member.rollout_ordinal,
+               rollout.member_count AS rollout_member_count, rollout.activation_mode,
+               rollout.state AS rollout_phase,
+               EXISTS(
+                 SELECT 1 FROM segment_attachments attachment
+                 WHERE attachment.id = projection.attachment_id
+                   AND attachment.tenant_id = status.tenant_id
+                   AND attachment.device_id = status.device_id
+                   AND attachment.device_key_id = status.device_key_id
+                   AND attachment.principal_kind = 'DEVICE'
+                   AND attachment.state IN ('ACTIVE','STANDBY')
+                   AND NOT EXISTS(
+                     SELECT 1 FROM site_route_projection_publications newer
+                     WHERE newer.tenant_id = projection.tenant_id
+                       AND newer.attachment_id = projection.attachment_id
+                       AND newer.device_id = projection.device_id
+                       AND newer.device_key_id = projection.device_key_id
+                       AND newer.segment_generation > projection.segment_generation
+                   )
+               ) AS current_configuration,
+               EXISTS(
+                 SELECT 1 FROM site_route_projection_publications active_projection
+                 JOIN segment_attachments attachment
+                   ON attachment.id = active_projection.attachment_id
+                   AND attachment.tenant_id = active_projection.tenant_id
+                   AND attachment.device_id = active_projection.device_id
+                   AND attachment.device_key_id = active_projection.device_key_id
+                 WHERE active_projection.id = status.active_projection_publication_id
+                   AND active_projection.tenant_id = status.tenant_id
+                   AND active_projection.device_id = status.device_id
+                   AND active_projection.device_key_id = status.device_key_id
+                   AND attachment.principal_kind = 'DEVICE'
+                   AND attachment.state IN ('ACTIVE','STANDBY')
+                   AND NOT EXISTS(
+                     SELECT 1 FROM site_route_projection_publications newer
+                     WHERE newer.tenant_id = active_projection.tenant_id
+                       AND newer.attachment_id = active_projection.attachment_id
+                       AND newer.device_id = active_projection.device_id
+                       AND newer.device_key_id = active_projection.device_key_id
+                       AND newer.segment_generation > active_projection.segment_generation
+                   )
+               ) AS running_current
+             FROM runtime_configuration_status status
+             LEFT JOIN site_route_projection_publications projection
+               ON projection.id = status.projection_publication_id
+               AND projection.tenant_id = status.tenant_id
+             LEFT JOIN segment_route_publication_members member
+               ON member.tenant_id = projection.tenant_id
+               AND member.projection_publication_id = projection.id
+             LEFT JOIN runtime_configuration_rollouts rollout
+               ON rollout.tenant_id = projection.tenant_id
+               AND rollout.segment_id = projection.segment_id
+               AND rollout.segment_generation = projection.segment_generation
+             WHERE status.tenant_id = ?
+             ORDER BY status.reported_at DESC, status.device_id LIMIT 4096"#,
         )
         .bind(tenant_id)
         .fetch_all(&self.pool)
@@ -518,6 +578,7 @@ impl ControlRepository {
                     error_code: row.try_get("error_code")?,
                     reported_at: row.try_get("reported_at")?,
                     current: row.try_get("current_configuration")?,
+                    running_current: row.try_get("running_current")?,
                     handoff_id: row.try_get("projection_publication_id")?,
                     segment_generation: row.try_get("segment_generation")?,
                     activation_mode: row.try_get("activation_mode")?,
@@ -614,7 +675,7 @@ impl ControlRepository {
         }
         let mut transaction = self.pool.begin().await?;
         let job: (u64, String) = sqlx::query_as(
-            "SELECT head.desired_revision, job.activation_mode FROM segment_generation_heads head JOIN segment_generation_jobs job ON job.tenant_id = head.tenant_id AND job.segment_id = head.segment_id AND job.desired_revision = ? WHERE head.tenant_id = ? AND head.segment_id = ? FOR SHARE",
+            "SELECT head.desired_revision, CASE WHEN job.activation_mode = 'POLICY_ONLY' AND EXISTS(SELECT 1 FROM segment_generation_jobs changed WHERE changed.tenant_id = head.tenant_id AND changed.segment_id = head.segment_id AND changed.activation_mode = 'TUNNEL' AND changed.desired_revision > COALESCE((SELECT MAX(applied.desired_revision) FROM segment_generation_jobs applied WHERE applied.tenant_id = head.tenant_id AND applied.segment_id = head.segment_id AND applied.state = 'PUBLISHED'), 0)) THEN 'TUNNEL' ELSE job.activation_mode END AS activation_mode FROM segment_generation_heads head JOIN segment_generation_jobs job ON job.tenant_id = head.tenant_id AND job.segment_id = head.segment_id AND job.desired_revision = ? WHERE head.tenant_id = ? AND head.segment_id = ? FOR SHARE",
         )
         .bind(desired_revision)
         .bind(tenant_id)
@@ -625,6 +686,10 @@ impl ControlRepository {
         if job.0 < desired_revision {
             return Err(ControlStoreError::InvalidTransition);
         }
+        // The snapshot contains the current resource graph, not a historical
+        // copy at desired_revision. A policy job can therefore include failed
+        // earlier transport edits or later queued ones. Preserve their prepare
+        // fence even when this particular queue row requested POLICY_ONLY.
         let policy_only = match job.1.as_str() {
             "TUNNEL" => false,
             "POLICY_ONLY" => true,
@@ -2195,7 +2260,7 @@ impl GenerationJobRepository {
         let threshold_unix = threshold.timestamp().max(0) as u64;
         let mut transaction = self.pool.begin().await?;
         let rows = sqlx::query(
-            "SELECT seg.tenant_id, seg.id AS segment_id, seg.current_generation, head.desired_revision FROM segments seg JOIN segment_generation_heads head ON head.tenant_id = seg.tenant_id AND head.segment_id = seg.id JOIN segment_route_publications publication ON publication.tenant_id = seg.tenant_id AND publication.segment_id = seg.id AND publication.generation = seg.current_generation WHERE seg.state = 'ACTIVE' AND seg.current_generation > 0 AND publication.expires_at <= ? AND NOT EXISTS (SELECT 1 FROM segment_generation_jobs pending WHERE pending.tenant_id = seg.tenant_id AND pending.segment_id = seg.id AND pending.state IN ('PENDING','LEASED','RETRY')) ORDER BY publication.expires_at, seg.tenant_id, seg.id LIMIT ? FOR UPDATE SKIP LOCKED",
+            "SELECT seg.tenant_id, seg.id AS segment_id, seg.current_generation, head.desired_revision, EXISTS(SELECT 1 FROM segment_generation_jobs changed WHERE changed.tenant_id = seg.tenant_id AND changed.segment_id = seg.id AND changed.activation_mode = 'TUNNEL' AND changed.desired_revision > COALESCE((SELECT MAX(applied.desired_revision) FROM segment_generation_jobs applied WHERE applied.tenant_id = seg.tenant_id AND applied.segment_id = seg.id AND applied.state = 'PUBLISHED'), 0)) AS transport_change_pending FROM segments seg JOIN segment_generation_heads head ON head.tenant_id = seg.tenant_id AND head.segment_id = seg.id JOIN segment_route_publications publication ON publication.tenant_id = seg.tenant_id AND publication.segment_id = seg.id AND publication.generation = seg.current_generation WHERE seg.state = 'ACTIVE' AND seg.current_generation > 0 AND publication.expires_at <= ? AND NOT EXISTS (SELECT 1 FROM segment_generation_jobs pending WHERE pending.tenant_id = seg.tenant_id AND pending.segment_id = seg.id AND pending.state IN ('PENDING','LEASED','RETRY')) ORDER BY publication.expires_at, seg.tenant_id, seg.id LIMIT ? FOR UPDATE SKIP LOCKED",
         )
         .bind(threshold_unix)
         .bind(limit as u32)
@@ -2206,6 +2271,11 @@ impl GenerationJobRepository {
             let tenant_id: Uuid = row.try_get("tenant_id")?;
             let segment_id: Uuid = row.try_get("segment_id")?;
             let current_revision: u64 = row.try_get("desired_revision")?;
+            // Renewing a signed policy does not change the transport graph.
+            // A failed, unpublished transport edit is still present in the
+            // resource snapshot, however: retry it with the full tunnel
+            // transaction rather than misclassifying it as a policy refresh.
+            let transport_change_pending: bool = row.try_get("transport_change_pending")?;
             let desired_revision = current_revision
                 .checked_add(1)
                 .ok_or(ControlStoreError::InvalidTransition)?;
@@ -2225,13 +2295,14 @@ impl GenerationJobRepository {
             .execute(&mut *transaction)
             .await?;
             sqlx::query(
-                "INSERT INTO segment_generation_jobs (id, tenant_id, segment_id, desired_revision, idempotency_hash) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO segment_generation_jobs (id, tenant_id, segment_id, desired_revision, idempotency_hash, activation_mode) VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(Uuid::now_v7())
             .bind(tenant_id)
             .bind(segment_id)
             .bind(desired_revision)
             .bind(idempotency_hash.as_slice())
+            .bind(if transport_change_pending { "TUNNEL" } else { "POLICY_ONLY" })
             .execute(&mut *transaction)
             .await?;
             refreshed = refreshed.saturating_add(1);
@@ -2371,13 +2442,16 @@ impl GenerationJobRepository {
                 return Err(ControlStoreError::InvalidTransition);
             }
             sqlx::query(
-                "INSERT INTO segment_generation_jobs (id, tenant_id, segment_id, desired_revision, idempotency_hash) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO segment_generation_jobs (id, tenant_id, segment_id, desired_revision, idempotency_hash, activation_mode) VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(Uuid::now_v7())
             .bind(tenant_id)
             .bind(segment_id)
             .bind(reconciliation_revision)
             .bind(idempotency_hash.as_slice())
+            // A superseded publication may have replaced transport state.
+            // Reconcile through the full prepare fence, never policy-only.
+            .bind("TUNNEL")
             .execute(&mut *transaction)
             .await?;
             recovered += 1;

@@ -150,6 +150,7 @@ export type RuntimeConfigurationStatus = {
   error_code: string | null;
   reported_at: string;
   current: boolean;
+  running_current?: boolean;
   activation_mode?: 'TUNNEL' | 'POLICY_ONLY' | null;
 };
 

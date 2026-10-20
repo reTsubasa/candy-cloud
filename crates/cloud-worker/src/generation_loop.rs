@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -109,6 +109,9 @@ fn control_error_code(error: &ControlStoreError) -> &'static str {
 
 #[async_trait]
 pub trait GenerationJobQueue: Send + Sync {
+    async fn recover_failed_heads(&self) -> Result<u64, ControlStoreError> {
+        Ok(0)
+    }
     async fn refresh_expiring(
         &self,
         _now: DateTime<Utc>,
@@ -139,6 +142,9 @@ pub trait GenerationJobQueue: Send + Sync {
 
 #[async_trait]
 impl GenerationJobQueue for GenerationJobRepository {
+    async fn recover_failed_heads(&self) -> Result<u64, ControlStoreError> {
+        self.recover_route_input_head_failures().await
+    }
     async fn refresh_expiring(
         &self,
         now: DateTime<Utc>,
@@ -194,11 +200,15 @@ pub enum WorkerLoopError {
     InvalidRetryDelay,
     #[error("poll interval must be nonzero")]
     InvalidPollInterval,
+    #[error("worker concurrency must be between 1 and 32")]
+    InvalidConcurrency,
+    #[error("generation worker task failed: {0}")]
+    Task(#[from] tokio::task::JoinError),
 }
 
 pub struct GenerationWorker<Q, P> {
-    queue: Q,
-    publisher: P,
+    queue: Arc<Q>,
+    publisher: Arc<P>,
     owner_id: String,
     lease_ttl: Duration,
 }
@@ -248,8 +258,8 @@ where
             return Err(WorkerLoopError::Storage(ControlStoreError::InvalidRequest));
         }
         Ok(Self {
-            queue,
-            publisher,
+            queue: Arc::new(queue),
+            publisher: Arc::new(publisher),
             owner_id,
             lease_ttl,
         })
@@ -259,6 +269,11 @@ where
         if !self.publisher.ready() {
             return Ok(RunOutcome::PublisherUnavailable);
         }
+        self.refresh_expiring(now).await;
+        self.run_claimed_once(now).await
+    }
+
+    async fn refresh_expiring(&self, now: DateTime<Utc>) {
         let refresh = tokio::time::timeout(
             self.lease_ttl.div_f64(4.0).min(Duration::from_secs(5)),
             self.queue.refresh_expiring(
@@ -278,6 +293,12 @@ where
                 owner = %self.owner_id, detail = "renewal scan exceeded independent deadline",
                 action = "preserve_existing_jobs_continue_claim")
             }
+        }
+    }
+
+    async fn run_claimed_once(&self, now: DateTime<Utc>) -> Result<RunOutcome, WorkerLoopError> {
+        if !self.publisher.ready() {
+            return Ok(RunOutcome::PublisherUnavailable);
         }
         let Some(job) = self
             .queue
@@ -386,7 +407,7 @@ where
         WorkerLoopError::Storage(error)
     }
 
-    pub async fn run(
+    async fn run_lane(
         &self,
         poll_interval: Duration,
         mut shutdown: watch::Receiver<bool>,
@@ -407,7 +428,7 @@ where
                     if changed.is_err() || *shutdown.borrow() { return Ok(()); }
                     continue;
                 }
-                result = tokio::time::timeout(self.lease_ttl, self.run_once(Utc::now())) => result,
+                result = tokio::time::timeout(self.lease_ttl, self.run_claimed_once(Utc::now())) => result,
             };
             let delay = match result {
                 Ok(Ok(outcome)) => {
@@ -449,5 +470,172 @@ where
                 }
             }
         }
+    }
+
+    async fn run_recovery_scanner(
+        &self,
+        poll_interval: Duration,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> Result<(), WorkerLoopError> {
+        let deadline = self.lease_ttl.div_f64(4.0).min(Duration::from_secs(5));
+        let mut failures = 0_u32;
+        loop {
+            if *shutdown.borrow() || shutdown.has_changed().is_err() {
+                return Ok(());
+            }
+            let result = tokio::select! {
+                biased;
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() { return Ok(()); }
+                    continue;
+                }
+                result = tokio::time::timeout(deadline, self.queue.recover_failed_heads()) => result,
+            };
+            let delay = match result {
+                Ok(Ok(count)) => {
+                    failures = 0;
+                    if count > 0 {
+                        tracing::warn!(event = "route_jobs_recovered", job_count = count,
+                            owner = %self.owner_id, reason = "topology_materialization_available",
+                            "requeued recoverable route jobs without pausing publication lanes");
+                    }
+                    poll_interval.max(Duration::from_secs(60))
+                }
+                failure => {
+                    failures = failures.saturating_add(1);
+                    let delay = Duration::from_secs(1_u64 << failures.min(6));
+                    let detail = match failure {
+                        Ok(Err(error)) => error.to_string(),
+                        Err(_) => "recovery scan exceeded independent deadline".into(),
+                        Ok(Ok(_)) => unreachable!(),
+                    };
+                    tracing::error!(code = "generation_recovery_scan_failed", module = "cloud_generation_worker",
+                        owner = %self.owner_id, detail, consecutive_failures = failures,
+                        retry_after_ms = delay.as_millis() as u64,
+                        action = "retry_recovery_scan_preserve_other_lanes");
+                    delay
+                }
+            };
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {},
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() { return Ok(()); }
+                }
+            }
+        }
+    }
+
+    /// Runs bounded independent publication lanes. The queue must serialize each
+    /// (tenant, segment) across all owners; this is enforced by the repository's
+    /// claim transaction. Each lane gets its own fencing owner, and dropped or
+    /// timed-out publications remain reclaimable when their lease expires.
+    pub async fn run(
+        &self,
+        poll_interval: Duration,
+        shutdown: watch::Receiver<bool>,
+    ) -> Result<(), WorkerLoopError>
+    where
+        Q: 'static,
+        P: 'static,
+    {
+        self.run_with_concurrency(poll_interval, 4, shutdown).await
+    }
+
+    pub async fn run_with_concurrency(
+        &self,
+        poll_interval: Duration,
+        concurrency: usize,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> Result<(), WorkerLoopError>
+    where
+        Q: 'static,
+        P: 'static,
+    {
+        if poll_interval.is_zero() {
+            return Err(WorkerLoopError::InvalidPollInterval);
+        }
+        if !(1..=32).contains(&concurrency) {
+            return Err(WorkerLoopError::InvalidConcurrency);
+        }
+        if *shutdown.borrow() || shutdown.has_changed().is_err() {
+            return Ok(());
+        }
+        let mut tasks = tokio::task::JoinSet::new();
+        // A UUID per run avoids reusing an abandoned lane's lease owner after
+        // restart, even when CLOUD_WORKER_ID is configured identically.
+        let run_id = uuid::Uuid::now_v7();
+        tracing::info!(event = "generation_scheduler_started", owner = %self.owner_id,
+            %run_id, concurrency, lease_seconds = self.lease_ttl.as_secs(),
+            "started bounded publication lanes with independent renewal and recovery scanners");
+        for lane in 0..concurrency {
+            let worker = Self {
+                queue: self.queue.clone(),
+                publisher: self.publisher.clone(),
+                owner_id: format!("{run_id}:lane-{lane}"),
+                lease_ttl: self.lease_ttl,
+            };
+            let lane_shutdown = shutdown.clone();
+            tasks.spawn(async move { worker.run_lane(poll_interval, lane_shutdown).await });
+        }
+        let refresh_worker = Self {
+            queue: self.queue.clone(),
+            publisher: self.publisher.clone(),
+            owner_id: self.owner_id.clone(),
+            lease_ttl: self.lease_ttl,
+        };
+        let mut refresh_shutdown = shutdown.clone();
+        tasks.spawn(async move {
+            loop {
+                if *refresh_shutdown.borrow() || refresh_shutdown.has_changed().is_err() {
+                    return Ok(());
+                }
+                tokio::select! {
+                    biased;
+                    changed = refresh_shutdown.changed() => {
+                        if changed.is_err() || *refresh_shutdown.borrow() { return Ok(()); }
+                        continue;
+                    }
+                    _ = refresh_worker.refresh_expiring(Utc::now()) => {}
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(poll_interval) => {}
+                    changed = refresh_shutdown.changed() => {
+                        if changed.is_err() || *refresh_shutdown.borrow() { return Ok(()); }
+                    }
+                }
+            }
+        });
+        let recovery_worker = Self {
+            queue: self.queue.clone(),
+            publisher: self.publisher.clone(),
+            owner_id: self.owner_id.clone(),
+            lease_ttl: self.lease_ttl,
+        };
+        let recovery_shutdown = shutdown.clone();
+        tasks.spawn(async move {
+            recovery_worker
+                .run_recovery_scanner(poll_interval, recovery_shutdown)
+                .await
+        });
+        let result = loop {
+            tokio::select! {
+                biased;
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() { break Ok(()); }
+                }
+                result = tasks.join_next() => {
+                    match result {
+                        Some(Ok(Ok(()))) if *shutdown.borrow() || shutdown.has_changed().is_err() => break Ok(()),
+                        Some(Ok(Ok(()))) => continue,
+                        Some(Ok(Err(error))) => break Err(error),
+                        Some(Err(error)) => break Err(error.into()),
+                        None => break Ok(()),
+                    }
+                }
+            }
+        };
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        result
     }
 }

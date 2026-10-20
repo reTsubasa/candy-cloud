@@ -577,6 +577,7 @@ fn grant_request_type_remains_domain_owned() {
         node_pool_id: Uuid::new_v4(),
         service_class: ServiceClass::Private,
         service_permission: "private.connect".into(),
+        route_policy: None,
     };
     assert_eq!(request.service_class, ServiceClass::Private);
 }
@@ -1265,4 +1266,71 @@ async fn runtime_telemetry_uses_authenticated_identity_and_rejects_impossible_co
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(service.telemetry.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn exact_route_policy_request_preserves_hash_and_rejects_invalid_bindings() {
+    let service = Arc::new(RecordingService::default());
+    let actor = device_actor(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+    let policy_id = Uuid::new_v4();
+    let body = serde_json::json!({
+        "request_id": "exact-route-1", "node_pool_id": Uuid::new_v4(),
+        "service_class": "private", "service_permission": "private.tun.connect",
+        "route_policy": {"policy_id": policy_id, "generation": 7, "content_hash": "ab".repeat(32)}
+    });
+    let response = authenticated_app(service.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/access-grants")
+                .header("content-type", "application/json")
+                .extension(actor.clone())
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let command = service.grants.lock().unwrap().pop().unwrap();
+    assert_eq!(
+        command.request.route_policy,
+        Some(cloud_db::authorization::AuthorizationPolicyRef {
+            policy_id,
+            generation: 7,
+            content_hash: [0xab; 32],
+        })
+    );
+    for (field, value) in [
+        ("content_hash", serde_json::json!("AB".repeat(32))),
+        ("content_hash", serde_json::json!("00".repeat(32))),
+        ("content_hash", serde_json::json!("ab".repeat(31))),
+        ("generation", serde_json::json!(0)),
+        ("policy_id", serde_json::json!(Uuid::nil())),
+    ] {
+        let mut invalid = body.clone();
+        invalid["route_policy"][field] = value;
+        let response = authenticated_app(service.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/access-grants")
+                    .header("content-type", "application/json")
+                    .extension(actor.clone())
+                    .body(Body::from(invalid.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "invalid {field}"
+        );
+    }
+    assert!(service.grants.lock().unwrap().is_empty());
 }

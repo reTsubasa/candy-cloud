@@ -27,6 +27,9 @@ export type OperationalNode = {
   routeStatus: OperationalStatus<'ready' | 'recovering' | 'failed' | 'unknown'>;
   errorCode: string | null;
   reportedAt: string | null;
+  reportedPublicationId: string | null;
+  runningPublicationId: string | null;
+  runningCurrent: boolean | null;
   telemetryState: 'online' | 'stale' | 'unreported';
   lifecycle: RuntimeTelemetry['lifecycle'] | null;
   dataPlaneActive: boolean;
@@ -198,17 +201,8 @@ function siteOperationalStatus(nodes: OperationalNode[]): OperationalSite['statu
   return { code: 'healthy', label: '节点在线', detail: '站点内已认证节点均在线且 Runtime 稳定', tone: 'green' };
 }
 
-function pathIsReady(path: RuntimePathTelemetry, runtime: RuntimeTelemetry): boolean {
-  const streamTelemetry = path.transport_mode === 'stream_primary'
-    || runtime.transport_mode === 'stream_primary'
-    || path.ready_streams != null || path.stream_count != null || (path.streams?.length ?? 0) > 0;
-  if (streamTelemetry) {
-    return (path.ready_streams ?? 0) > 0
-      && (!path.streams?.length || pathHealth(path) !== 'fault');
-  }
-  // Legacy reports lack per-stream readiness; use the authenticated Peer count
-  // to avoid making unrelated route-owner readiness control tunnel visibility.
-  return runtime.active_peers > 0;
+function pathIsReady(path: RuntimePathTelemetry): boolean {
+  return ['ready', 'backpressured', 'degraded'].includes(pathHealth(path));
 }
 
 export function buildOperationalTopology(
@@ -228,11 +222,9 @@ export function buildOperationalTopology(
   const selectedNodes = selectedSegmentId
     ? resources.nodes.filter((item) => attachedNodeIds.has(item.metadata.id))
     : resources.nodes;
-  // The API intentionally returns the full receipt history so it can also feed
-  // the audit/log views.  A device can therefore have a newer *historical*
-  // rejected receipt than its currently applied generation.  Never let that
-  // historical row drive the live topology: prefer the current projection,
-  // then fall back to the newest receipt only when no current row exists.
+  // Configuration results describe the latest target, independently of the
+  // previously acknowledged active projection and live per-Peer telemetry.
+  // Ignore historical rejections whenever a receipt for the current target exists.
   const statusByIdentity = new Map<string, RuntimeConfigurationStatus>();
   for (const status of statuses) {
     const identity = `${status.device_id}:${status.device_key_id}`;
@@ -289,6 +281,9 @@ export function buildOperationalTopology(
       routeStatus: routeStatus(runtime, telemetryState === 'online'),
       errorCode: status?.error_code ?? null,
       reportedAt: status?.reported_at ?? null,
+      reportedPublicationId: status?.projection_publication_id ?? null,
+      runningPublicationId: status?.active_projection_publication_id ?? (status?.state === 'active' ? status.projection_publication_id : null),
+      runningCurrent: status?.running_current ?? null,
       telemetryState,
       lifecycle: runtime?.lifecycle ?? null,
       dataPlaneActive,
@@ -371,12 +366,12 @@ export function buildOperationalTopology(
         [siteAId, new Set(peerAttachments.filter((attachment) => value(attachment, 'site_id') === siteAId).map((attachment) => attachment.metadata.id))],
         [siteBId, new Set(peerAttachments.filter((attachment) => value(attachment, 'site_id') === siteBId).map((attachment) => attachment.metadata.id))],
       ]);
-      const activePaths: OperationalPathTelemetry[] = peerNodes.flatMap((node) => {
+      const observedPaths: OperationalPathTelemetry[] = peerNodes.flatMap((node) => {
         if (!node.registered || node.telemetryState !== 'online' || !['active', 'degraded', 'fail_open'].includes(node.lifecycle ?? '') || !node.telemetry || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
         const destinationSiteId = node.siteId === siteAId ? siteBId : siteAId;
         const destinationAttachmentIds = attachmentIdsBySite.get(destinationSiteId) ?? new Set<string>();
         return (node.telemetry?.paths ?? [])
-          .filter((path) => destinationAttachmentIds.has(path.peer_attachment_id) && pathIsReady(path, node.telemetry!))
+          .filter((path) => destinationAttachmentIds.has(path.peer_attachment_id))
           .map((path) => ({
             ...path,
             sourceSiteId: node.siteId,
@@ -385,11 +380,12 @@ export function buildOperationalTopology(
             sampledAt: node.telemetry?.reported_at ?? '',
           }));
       });
+      const activePaths = observedPaths.filter(pathIsReady);
       const activeDirections = new Set(activePaths.map((path) => `${path.sourceSiteId}:${path.destinationSiteId}`));
       const activeDirectionCount = activeDirections.size;
       const degradedPathLabels = activePaths
-        .filter((path) => pathHealth(path) === 'backpressured')
-        .map((path) => `${path.sourceNodeName} -> ${siteNameById.get(path.destinationSiteId) ?? '对端'}`);
+        .filter((path) => ['backpressured', 'degraded'].includes(pathHealth(path)))
+        .map((path) => `${path.sourceNodeName} -> ${siteNameById.get(path.destinationSiteId) ?? '对端'}（${pathHealth(path) === 'backpressured' ? 'Stream 背压' : '部分 Stream 不可用或探测丢失'}）`);
       const staleDirections = peerNodes.flatMap((node) => {
         if (node.telemetryState !== 'stale' || !node.telemetry || (node.siteId !== siteAId && node.siteId !== siteBId)) return [];
         const destinationSiteId = node.siteId === siteAId ? siteBId : siteAId;
@@ -428,6 +424,11 @@ export function buildOperationalTopology(
         staleDirectionLabels: expectedDirections.filter((direction) => staleDirectionKeys.has(direction.key)).map((direction) => direction.label),
         failedEndpointLabels,
         degradedPathLabels,
+        failedPathLabels: observedPaths.filter((path) => pathHealth(path) === 'fault')
+          .map((path) => `${path.sourceNodeName} -> ${siteNameById.get(path.destinationSiteId) ?? '对端'}`),
+        unknownPathLabels: observedPaths.filter((path) => pathHealth(path) === 'unknown')
+          .filter((path) => !activeDirections.has(`${path.sourceSiteId}:${path.destinationSiteId}`))
+          .map((path) => `${path.sourceNodeName} -> ${siteNameById.get(path.destinationSiteId) ?? '对端'}`),
       });
       const activeKinds = new Set(activePaths.map((path) => path.path_kind));
       const pathById = new Map(paths.map((path) => [path.metadata.id, path]));

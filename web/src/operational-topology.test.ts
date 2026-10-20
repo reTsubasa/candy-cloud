@@ -55,6 +55,7 @@ function telemetry(
     paths: peerAttachmentIds.map((peerAttachmentId, index) => ({
       peer_attachment_id: peerAttachmentId, candidate_id: null,
       path_kind: 'direct', transport: 'quic_udp', connection_epoch: index + 1,
+      transport_mode: 'stream_primary', stream_count: 1, ready_streams: 1,
       rtt_ms: 30, jitter_ms: 2, packet_loss_ppm: 0,
       rx_bps: 20_000, tx_bps: 10_000, reconnects: 0, path_changes: 0,
     })),
@@ -196,8 +197,60 @@ describe('operational topology', () => {
       streams: [streamTelemetry(index === 0 ? { state: 'failed', last_error_code: 'stream_reset' } : {})],
     })) };
     const snapshot = buildOperationalTopology(resources, ['wrt', 'us', 'hk'].map(configurationStatus), {}, threeSiteIds.segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
-    expect(snapshot.links.find((item) => item.id === threeSiteIds.peers.wrtHk)?.status).toMatchObject({ code: 'one_way', tone: 'orange' });
+    expect(snapshot.links.find((item) => item.id === threeSiteIds.peers.wrtHk)?.status).toMatchObject({ code: 'degraded', tone: 'orange' });
     expect(snapshot.links.find((item) => item.id === threeSiteIds.peers.hkUs)?.status).toMatchObject({ code: 'active', tone: 'green' });
+  });
+
+  it('shows a rejected current target separately from the preserved running configuration', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    const rejected = {
+      ...configurationStatus('wrt'), projection_publication_id: 'new-rejected',
+      active_projection_publication_id: 'old-active', current: true, running_current: false,
+      state: 'rejected' as const, error_code: 'policy_route_conflict', activation_mode: 'POLICY_ONLY' as const,
+    };
+    const snapshot = buildOperationalTopology(resources, [rejected, configurationStatus('us'), configurationStatus('hk')], {}, threeSiteIds.segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.nodes.find((node) => node.id === threeSiteIds.nodes.wrt)).toMatchObject({
+      applyState: 'rejected', applyStatus: { code: 'rejected', tone: 'red' },
+      reportedPublicationId: 'new-rejected', runningPublicationId: 'old-active', runningCurrent: false,
+      errorCode: 'policy_route_conflict', status: { code: 'healthy', tone: 'green' },
+    });
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)?.status.code).toBe('active');
+  });
+
+  it('keeps a Peer with one failed Stream partially available and exposes its fault', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    telemetry[0].paths[0] = {
+      ...telemetry[0].paths[0], stream_count: 2, ready_streams: 1,
+      streams: [streamTelemetry(), streamTelemetry({ slot: 1, state: 'failed', last_error_code: 'stream_reset' })],
+    };
+    const snapshot = buildOperationalTopology(resources, [], {}, threeSiteIds.segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    const link = snapshot.links.find((item) => item.id === threeSiteIds.peers.wrtHk);
+    expect(link).toMatchObject({ activeDirectionCount: 2, activePathCount: 2, status: { code: 'degraded', tone: 'orange' } });
+    expect(link?.activePaths[0].streams?.[1].last_error_code).toBe('stream_reset');
+    expect(link?.status.detail).toContain('部分 Stream 不可用');
+  });
+
+  it('does not borrow another Peer active count when this Peer lacks readiness evidence', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    telemetry[2].paths = telemetry[2].paths.map((path, index) => index === 0 ? {
+      ...path, transport_mode: undefined, stream_count: undefined, ready_streams: undefined,
+    } : path);
+    const snapshot = buildOperationalTopology(resources, [], {}, threeSiteIds.segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.links.find((item) => item.id === threeSiteIds.peers.wrtHk)).toMatchObject({
+      activeDirectionCount: 1, status: { code: 'evidence_unknown', tone: 'gray', detail: expect.stringContaining('缺少该 Peer') },
+    });
+    expect(snapshot.links.find((item) => item.id === threeSiteIds.peers.hkUs)?.status.code).toBe('active');
+  });
+
+  it('shows a Peer fault when both directions have failed Streams even though the Runtime is active', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    for (const runtime of telemetry) runtime.paths = runtime.paths.map((path) => ({
+      ...path, ready_streams: 0, streams: [streamTelemetry({ state: 'failed', last_error_code: 'stream_read_failed' })],
+    }));
+    const snapshot = buildOperationalTopology(resources, [], {}, threeSiteIds.segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.links.find((item) => item.id === threeSiteIds.peers.wrtHk)).toMatchObject({
+      activePathCount: 0, status: { code: 'path_failed', tone: 'red' },
+    });
   });
 
   it('makes offline rejected sites and their incident links gray', () => {
@@ -266,12 +319,12 @@ describe('operational topology', () => {
     telemetry[0].transport_mode = 'stream_primary';
     telemetry[0].paths[0] = {
       ...telemetry[0].paths[0], transport_mode: 'stream_primary', ready_streams: 1, stream_count: 1,
-      streams: [streamTelemetry({ last_error_code: 'peer_stream_closed' })],
+      streams: [streamTelemetry({ state: 'closed', last_error_code: 'peer_stream_closed' })],
     };
     const snapshot = buildOperationalTopology(resources, ['wrt', 'us', 'hk'].map(configurationStatus), {}, '', telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
     expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)).toMatchObject({
       activeDirectionCount: 1,
-      status: { code: 'one_way', tone: 'orange' },
+      status: { code: 'degraded', tone: 'orange' },
     });
   });
 
@@ -420,7 +473,7 @@ describe('operational topology', () => {
       required_route_owners: 1, ready_route_owners: 1, fail_open_required: false,
       last_error_code: null, rtt_ms: 42, jitter_ms: 7, packet_loss_ppm: 12_500,
       rx_bps: 20_000_000, tx_bps: 10_000_000, reconnects: 2, path_changes: 1,
-      paths: [{ peer_attachment_id: 'attachment-b', candidate_id: null, path_kind: 'direct', transport: 'quic_udp', connection_epoch: 3, rtt_ms: 42, jitter_ms: 7, packet_loss_ppm: 12_500, rx_bps: 20_000_000, tx_bps: 10_000_000, reconnects: 2, path_changes: 1 }],
+      paths: [{ peer_attachment_id: 'attachment-b', candidate_id: null, path_kind: 'direct', transport: 'quic_udp', connection_epoch: 3, ready_streams: 1, stream_count: 1, rtt_ms: 42, jitter_ms: 7, packet_loss_ppm: 12_500, rx_bps: 20_000_000, tx_bps: 10_000_000, reconnects: 2, path_changes: 1 }],
       local_networks: [{ network_id: '30bfd718e3f4b79faf151e52915f15928bf9c63b57a7963b807c8c1f7f502ae5', interface_name: 'br-lan', cidr: '192.168.10.0/24', address: '192.168.10.1', kind: 'direct_ipv4' }],
       reported_at: '2026-08-18T09:59:40Z',
     };
@@ -460,7 +513,7 @@ describe('operational topology', () => {
   it('marks a link active only with fresh telemetry in both endpoint directions', () => {
     const now = Date.parse('2026-08-18T10:00:00Z');
     const path = {
-      candidate_id: null, path_kind: 'direct' as const, transport: 'quic_udp', connection_epoch: 3,
+      candidate_id: null, path_kind: 'direct' as const, transport: 'quic_udp', connection_epoch: 3, ready_streams: 1, stream_count: 1,
       rtt_ms: 42, jitter_ms: 7, packet_loss_ppm: 0, rx_bps: 20_000, tx_bps: 10_000,
       reconnects: 0, path_changes: 0,
     };

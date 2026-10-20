@@ -47,20 +47,39 @@ export function runtimeDataPlaneReady(runtime: RuntimeTelemetry): boolean {
     && !routeDiagnosticsFault(runtime.route_diagnostics);
 }
 
+export type PathHealth = 'ready' | 'backpressured' | 'degraded' | 'fault' | 'starting' | 'unknown';
+
 export function streamHealth(stream: RuntimeStreamTelemetry): 'ready' | 'backpressured' | 'fault' | 'starting' {
-  if (stream.last_error_code || stream.decode_errors > 0) return 'fault';
+  // Counters and last_error_code survive recoverable congestion drops. The
+  // current state determines readiness; retain historical evidence separately.
+  if (['failed', 'closed', 'reset', 'fault'].includes(stream.state)) return 'fault';
   if (stream.state !== 'ready') return 'starting';
   if (stream.queue_limit > 0 && stream.queue_depth >= stream.queue_limit * 0.8) return 'backpressured';
   return 'ready';
 }
 
-export function pathHealth(path: RuntimePathTelemetry): 'ready' | 'backpressured' | 'fault' | 'starting' {
+export function pathHealth(path: RuntimePathTelemetry): PathHealth {
   const streams = path.streams ?? [];
-  if (streams.some((stream) => streamHealth(stream) === 'fault')) return 'fault';
-  if (streams.some((stream) => streamHealth(stream) === 'backpressured')) return 'backpressured';
-  if (streams.length > 0 && !streams.some((stream) => stream.state === 'ready')) return 'starting';
-  if (path.stream_count != null && (path.ready_streams ?? 0) === 0) return 'starting';
-  return 'ready';
+  if (streams.length > 0) {
+    const states = streams.map(streamHealth);
+    const usable = states.filter((state) => state === 'ready' || state === 'backpressured');
+    if (usable.length === 0) return states.some((state) => state === 'fault') ? 'fault' : 'starting';
+    // One lane failing cannot invalidate healthy lanes on the same Peer. Still
+    // expose the reduced capacity and current errors instead of painting green.
+    if (usable.length < streams.length || (path.ready_streams != null && path.stream_count != null && path.ready_streams < path.stream_count)
+      || (path.probe_misses ?? 0) > 0) return 'degraded';
+    if (usable.some((state) => state === 'backpressured')) return 'backpressured';
+    return 'ready';
+  }
+  // Summary readiness is per Peer. Host-wide active_peers, traffic counters,
+  // RTT and connection_epoch cannot establish this particular Peer's health.
+  if (path.ready_streams != null && path.ready_streams > 0) {
+    if ((path.stream_count != null && path.ready_streams < path.stream_count) || (path.probe_misses ?? 0) > 0) return 'degraded';
+    if (path.queue_limit != null && path.queue_limit > 0 && (path.queue_depth ?? 0) >= path.queue_limit * 0.8) return 'backpressured';
+    return 'ready';
+  }
+  if (path.ready_streams != null || path.stream_count != null) return 'starting';
+  return 'unknown';
 }
 
 export function runtimeAttention(runtime: RuntimeTelemetry): string | null {
@@ -69,6 +88,12 @@ export function runtimeAttention(runtime: RuntimeTelemetry): string | null {
   if (routeFault) return routeFault;
   if (runtime.dataplane_phase && ['failed', 'degraded'].includes(runtime.dataplane_phase)) return dataplanePhaseLabel(runtime.dataplane_phase);
   const path = runtime.paths.find((item) => pathHealth(item) !== 'ready');
-  if (path) return pathHealth(path) === 'backpressured' ? 'Stream 队列接近上限' : 'Stream 尚未稳定';
+  if (path) {
+    const health = pathHealth(path);
+    if (health === 'backpressured') return 'Stream 队列接近上限';
+    if (health === 'degraded') return 'Peer 部分 Stream 不可用或探测丢失，其余 Stream 仍可转发';
+    if (health === 'unknown') return '缺少当前 Peer 的 Stream 就绪证据';
+    return health === 'fault' ? 'Peer Stream 故障' : 'Stream 尚未稳定';
+  }
   return null;
 }

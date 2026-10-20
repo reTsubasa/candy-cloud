@@ -203,6 +203,7 @@ services:
       CORE_MODULE_BUNDLE_SHA256: ${CORE_MODULE_BUNDLE_SHA256:?set CORE_MODULE_BUNDLE_SHA256}
       CORE_MODULE_SHA256: ${CORE_MODULE_SHA256:?set CORE_MODULE_SHA256}
       CANDY_GEOIP_PROVIDER_DIR: /var/lib/candy/geoip
+      CLOUD_WORKER_CONCURRENCY: ${CLOUD_WORKER_CONCURRENCY:-4}
     volumes:
       - candy-cloud-geoip-data:/var/lib/candy/geoip
     depends_on:

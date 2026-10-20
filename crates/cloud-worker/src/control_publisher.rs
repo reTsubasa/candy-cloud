@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     net::SocketAddr,
+    os::fd::AsRawFd,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -93,8 +94,79 @@ fn geo_provider_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_GEO_PROVIDER_DIR))
 }
 
-fn geo_provider_dir() -> PathBuf {
-    geo_provider_root()
+fn geo_provider_dir(root: &Path) -> PathBuf {
+    let current = root.join("current");
+    if current.is_dir() {
+        current
+    } else {
+        root.to_owned()
+    }
+}
+
+/// The lock covers refresh, metadata validation and all reads of one policy.
+/// Nonblocking flock reschedules competing Geo jobs immediately, preserving
+/// lanes for unrelated work, including across processes sharing this volume.
+async fn lock_geo_provider(root: &Path) -> Result<std::fs::File> {
+    tokio::fs::create_dir_all(root)
+        .await
+        .context("create GeoIP provider root")?;
+    let file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(".provider.lock"))
+        .await
+        .context("open GeoIP provider lock")?
+        .into_std()
+        .await;
+    // SAFETY: file owns a live descriptor for the full guard lifetime.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(file);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return Err(GeoProviderBusy.into());
+    }
+    Err(error).context("lock GeoIP provider cache")
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("GeoIP provider cache is refreshing in another publication")]
+struct GeoProviderBusy;
+
+struct GeoStageCleanup(PathBuf);
+impl Drop for GeoStageCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn activate_geo_provider(root: &Path, stage: &Path) -> Result<PathBuf> {
+    let current = root.join("current");
+    let previous = root.join(".previous");
+    if !current.exists() && previous.exists() {
+        std::fs::rename(&previous, &current).context("recover previous GeoIP provider")?;
+    }
+    let had_current = current.exists();
+    if had_current {
+        if previous.exists() {
+            std::fs::remove_dir_all(&previous).context("clean previous GeoIP provider")?;
+        }
+        std::fs::rename(&current, &previous).context("rotate GeoIP provider directory")?;
+    }
+    // This small filesystem commit intentionally has no async cancellation
+    // point between rotating the old directory and activating/restoring it.
+    if let Err(error) = std::fs::rename(stage, &current) {
+        if had_current {
+            std::fs::rename(&previous, &current).context("restore previous GeoIP provider")?;
+        }
+        return Err(error).context("activate GeoIP provider directory");
+    }
+    if had_current {
+        let _ = std::fs::remove_dir_all(previous);
+    }
+    Ok(current)
 }
 
 fn provider_is_fresh(
@@ -138,20 +210,26 @@ fn provider_is_fresh(
 
 async fn refresh_geo_provider(
     settings: &cloud_db::geo_provider::GeoProviderSettings,
+    parent: &Path,
 ) -> Result<PathBuf> {
-    let provider_dir = geo_provider_dir();
+    let current = parent.join("current");
+    let previous = parent.join(".previous");
+    if !current.exists() && previous.exists() {
+        std::fs::rename(&previous, &current).context("recover previous GeoIP provider")?;
+    }
+    let provider_dir = geo_provider_dir(parent);
     if provider_is_fresh(&provider_dir, settings) {
         return Ok(provider_dir);
     }
-    let parent = geo_provider_root();
-    tokio::fs::create_dir_all(&parent)
+    tokio::fs::create_dir_all(parent)
         .await
         .context("create GeoIP provider root")?;
     let stage = parent.join(format!(".stage-{}", Uuid::new_v4()));
     tokio::fs::create_dir(&stage)
         .await
         .context("create GeoIP provider staging directory")?;
-    let result = async {
+    let _stage_cleanup = GeoStageCleanup(stage.clone());
+    async {
         let client = reqwest::Client::builder()
             .https_only(true)
             .connect_timeout(std::time::Duration::from_secs(10))
@@ -222,24 +300,9 @@ async fn refresh_geo_provider(
         )
         .await
         .context("stage GeoIP provider source")?;
-        let previous = parent.join(".previous");
-        let _ = tokio::fs::remove_dir_all(&previous).await;
-        if tokio::fs::metadata(&provider_dir).await.is_ok() {
-            tokio::fs::rename(&provider_dir, &previous)
-                .await
-                .context("rotate GeoIP provider directory")?;
-        }
-        tokio::fs::rename(&stage, &provider_dir)
-            .await
-            .context("activate GeoIP provider directory")?;
-        let _ = tokio::fs::remove_dir_all(previous).await;
-        Ok::<(), anyhow::Error>(())
+        activate_geo_provider(parent, &stage)
     }
-    .await;
-    if result.is_err() {
-        let _ = tokio::fs::remove_dir_all(&stage).await;
-    }
-    result.map(|_| provider_dir)
+    .await
 }
 
 fn digest_hex(value: &[u8; 32]) -> String {
@@ -493,10 +556,16 @@ impl ControlRoutePublisher {
                 {
                     let mut expanded_rules = policy.rules.clone();
                     let settings_for_refresh = geo_settings.as_ref();
-                    let provider_dir = if expanded_rules
+                    let provider_root = geo_provider_root();
+                    let has_geo = expanded_rules
                         .iter()
-                        .any(|rule| rule.destination_geo.is_some())
-                    {
+                        .any(|rule| rule.destination_geo.is_some());
+                    let _geo_guard = if has_geo {
+                        Some(lock_geo_provider(&provider_root).await?)
+                    } else {
+                        None
+                    };
+                    let provider_dir = if has_geo {
                         let settings = settings_for_refresh.ok_or_else(|| {
                             anyhow::anyhow!(
                                 "Geo policy requires a platform Geo provider configuration"
@@ -505,9 +574,9 @@ impl ControlRoutePublisher {
                         if !settings.enabled {
                             bail!("platform Geo provider is disabled");
                         }
-                        refresh_geo_provider(settings).await?
+                        refresh_geo_provider(settings, &provider_root).await?
                     } else {
-                        geo_provider_dir()
+                        geo_provider_dir(&provider_root)
                     };
                     let mut geo_digests = Vec::new();
                     for rule in &mut expanded_rules {
@@ -1356,11 +1425,18 @@ fn classify_input_error(error: anyhow::Error) -> PublicationFailure {
             retry_after: std::time::Duration::from_secs(5),
         };
     }
+    if error.downcast_ref::<GeoProviderBusy>().is_some() {
+        return PublicationFailure::Retryable {
+            code: "ROUTE_INPUT_GEO_PROVIDER_BUSY".into(),
+            retry_after: std::time::Duration::from_secs(1),
+        };
+    }
     let retryable = error.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<SdwanError>(),
             Some(SdwanError::Database(_))
-        )
+        ) || cause.downcast_ref::<reqwest::Error>().is_some()
+            || cause.downcast_ref::<std::io::Error>().is_some()
     });
     if retryable {
         PublicationFailure::Retryable {
@@ -1415,6 +1491,97 @@ mod tests {
 
         policy.generation = 8;
         assert_ne!(service_policy_ref(resource_id, &policy).unwrap(), previous);
+    }
+
+    #[test]
+    fn geo_activation_rotates_children_preserves_mount_root_and_restores_failed_swap() {
+        let root = std::env::temp_dir().join(format!("candy-geo-rotate-{}", Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("legacy-marker"), "preserve mount contents").unwrap();
+        let first = root.join(".stage-first");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::write(first.join("VERSION"), "first").unwrap();
+        let current = activate_geo_provider(&root, &first).unwrap();
+        assert_eq!(current, root.join("current"));
+        assert_eq!(
+            std::fs::read_to_string(current.join("VERSION")).unwrap(),
+            "first"
+        );
+        assert!(activate_geo_provider(&root, &root.join("missing-stage")).is_err());
+        assert_eq!(
+            std::fs::read_to_string(current.join("VERSION")).unwrap(),
+            "first"
+        );
+        let second = root.join(".stage-second");
+        std::fs::create_dir(&second).unwrap();
+        std::fs::write(second.join("VERSION"), "second").unwrap();
+        activate_geo_provider(&root, &second).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(current.join("VERSION")).unwrap(),
+            "second"
+        );
+        assert!(root.join("legacy-marker").is_file());
+        assert!(!root.join(".previous").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn geo_cache_contention_retries_without_occupying_a_publication_lane() {
+        let root = std::env::temp_dir().join(format!("candy-geo-lock-{}", Uuid::new_v4()));
+        let first = lock_geo_provider(&root).await.unwrap();
+        let progress = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            true
+        });
+        let busy = lock_geo_provider(&root).await.unwrap_err();
+        assert!(
+            matches!(classify_input_error(busy), PublicationFailure::Retryable { code, .. } if code == "ROUTE_INPUT_GEO_PROVIDER_BUSY")
+        );
+        assert!(progress.await.unwrap());
+        drop(first);
+        let recovered = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            lock_geo_provider(&root),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(recovered);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn fresh_geo_cache_reuses_legacy_files_and_current_generation_without_download() {
+        let root = std::env::temp_dir().join(format!("candy-geo-fresh-{}", Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let settings = cloud_db::geo_provider::GeoProviderSettings {
+            provider: GEO_PROVIDER_KIND.into(),
+            source_url: "https://provider.example".into(),
+            countries: vec!["CN".into()],
+            refresh_interval_seconds: 3600,
+            enabled: true,
+            version: Some("test".into()),
+            digest: None,
+            generation: 1,
+            updated_at: String::new(),
+        };
+        std::fs::write(root.join("SOURCE_URL"), "https://provider.example\n").unwrap();
+        std::fs::write(root.join("VERSION"), "test\n").unwrap();
+        std::fs::write(root.join("cn-ip.cidr"), "1.0.1.0/24\n").unwrap();
+        let guard = lock_geo_provider(&root).await.unwrap();
+        assert_eq!(refresh_geo_provider(&settings, &root).await.unwrap(), root);
+        let stage = root.join(".stage-test");
+        std::fs::create_dir(&stage).unwrap();
+        for file in ["SOURCE_URL", "VERSION", "cn-ip.cidr"] {
+            std::fs::copy(root.join(file), stage.join(file)).unwrap();
+        }
+        activate_geo_provider(&root, &stage).unwrap();
+        assert_eq!(
+            refresh_geo_provider(&settings, &root).await.unwrap(),
+            root.join("current")
+        );
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

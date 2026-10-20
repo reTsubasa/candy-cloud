@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { RuntimeTelemetry } from './types';
+import type { RuntimePathTelemetry, RuntimeStreamTelemetry, RuntimeTelemetry } from './types';
 import { dataplanePhaseLabel, pathHealth, runtimeDataPlaneReady, runtimeAttention, streamHealth } from './runtime-observability';
 
 const base = (overrides: Partial<RuntimeTelemetry> = {}): RuntimeTelemetry => ({
@@ -47,9 +47,37 @@ describe('runtime observability contract', () => {
   it('classifies stream pressure and stream faults consistently', () => {
     const stream = { slot: 0, stream_id: 1, state: 'ready', generation: 1, tx_packets: 0, rx_packets: 0, tx_bytes: 0, rx_bytes: 0, tx_frames: 0, rx_frames: 0, active_flows: 0, queue_depth: 90, queue_limit: 100, queue_peak: 90, last_ack_seq: null, ack_rtt_ms: null, rx_bps: null, tx_bps: null, reset_count: 0, decode_errors: 0, high_watermark_hits: 1, low_watermark_hits: 0, blocked_ms: 2, send_window_bytes: 10, last_tx_monotonic_ms: null, last_rx_monotonic_ms: null, last_error_code: null };
     expect(streamHealth(stream)).toBe('backpressured');
-    expect(streamHealth({ ...stream, last_error_code: 'peer_stream_write_failed' })).toBe('fault');
+    expect(streamHealth({ ...stream, state: 'closed', last_error_code: 'peer_stream_write_failed' })).toBe('fault');
     expect(pathHealth({ peer_attachment_id: 'peer', candidate_id: null, path_kind: 'direct', transport: 'quic_udp', connection_epoch: 1, rtt_ms: 1, jitter_ms: 1, packet_loss_ppm: 0, rx_bps: 1, tx_bps: 1, reconnects: 0, path_changes: 0, streams: [stream] })).toBe('backpressured');
-    expect(pathHealth({ peer_attachment_id: 'peer', candidate_id: null, path_kind: 'direct', transport: 'quic_udp', connection_epoch: 1, rtt_ms: 1, jitter_ms: 1, packet_loss_ppm: 0, rx_bps: 1, tx_bps: 1, reconnects: 0, path_changes: 0, streams: [{ ...stream, last_error_code: 'peer_stream_closed' }] })).toBe('fault');
+    expect(pathHealth({ peer_attachment_id: 'peer', candidate_id: null, path_kind: 'direct', transport: 'quic_udp', connection_epoch: 1, rtt_ms: 1, jitter_ms: 1, packet_loss_ppm: 0, rx_bps: 1, tx_bps: 1, reconnects: 0, path_changes: 0, streams: [{ ...stream, state: 'closed', last_error_code: 'peer_stream_closed' }] })).toBe('fault');
+  });
+
+  it('separates current stream faults, historical counters, and partial path capacity', () => {
+    const stream: RuntimeStreamTelemetry = {
+      slot: 0, stream_id: 1, state: 'ready', generation: 2, tx_packets: 1, rx_packets: 1,
+      tx_bytes: 1, rx_bytes: 1, tx_frames: 1, rx_frames: 1, active_flows: 0,
+      queue_depth: 0, queue_limit: 100, queue_peak: 0, last_ack_seq: 1, ack_rtt_ms: 10,
+      rx_bps: 1, tx_bps: 1, reset_count: 5, decode_errors: 9, high_watermark_hits: 0,
+      low_watermark_hits: 0, blocked_ms: 0, send_window_bytes: 100, last_tx_monotonic_ms: 1,
+      last_rx_monotonic_ms: 1, last_error_code: null,
+    };
+    const path: RuntimePathTelemetry = {
+      peer_attachment_id: 'peer', candidate_id: null, path_kind: 'direct', transport: 'quic_udp',
+      connection_epoch: 1, rtt_ms: 10, jitter_ms: 0, packet_loss_ppm: 0,
+      rx_bps: 1, tx_bps: 1, reconnects: 0, path_changes: 0,
+    };
+    expect(streamHealth(stream)).toBe('ready');
+    expect(streamHealth({ ...stream, last_error_code: 'peer_stream_receive_congestion_drop' })).toBe('ready');
+    expect(streamHealth({ ...stream, state: 'failed' })).toBe('fault');
+    expect(pathHealth(path)).toBe('unknown');
+    expect(pathHealth({ ...path, stream_count: 2, ready_streams: 1 })).toBe('degraded');
+    expect(pathHealth({ ...path, stream_count: 1, ready_streams: 0 })).toBe('starting');
+    expect(pathHealth({ ...path, streams: [stream] })).toBe('ready');
+    expect(pathHealth({ ...path, streams: [stream], probe_misses: 1 })).toBe('degraded');
+    expect(pathHealth({ ...path, streams: [stream, { ...stream, slot: 1, state: 'reset', last_error_code: 'stream_reset' }] })).toBe('degraded');
+    expect(pathHealth({ ...path, streams: [{ ...stream, last_error_code: 'peer_stream_receive_congestion_drop' }] })).toBe('ready');
+    expect(pathHealth({ ...path, streams: [{ ...stream, state: 'failed' }] })).toBe('fault');
+    expect(runtimeAttention(base({ paths: [path] }))).toContain('缺少当前 Peer');
   });
 
   it('does not hide unknown wire phases', () => {

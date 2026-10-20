@@ -22,15 +22,6 @@ async fn main() -> anyhow::Result<()> {
     let owner_id = std::env::var("CLOUD_WORKER_ID")
         .unwrap_or_else(|_| format!("cloud-worker-{}", uuid::Uuid::now_v7()));
     let repository = cloud_db::control::GenerationJobRepository::new(pool.clone());
-    let recovered = repository.recover_route_input_head_failures().await?;
-    if recovered > 0 {
-        tracing::warn!(
-            event = "route_jobs_recovered",
-            job_count = recovered,
-            reason = "topology_materialization_available",
-            "requeued route jobs that are recoverable after the Cloud upgrade"
-        );
-    }
     let key_id = std::env::var("CANDY_ROUTE_SIGNING_KEY_ID")
         .context("CANDY_ROUTE_SIGNING_KEY_ID is required")?;
     let key_hex = std::env::var("CANDY_ROUTE_SIGNING_KEY_HEX")
@@ -52,16 +43,47 @@ async fn main() -> anyhow::Result<()> {
     );
     anyhow::ensure!(publisher.ready(), "CANDY_ROUTE_SIGNING_KEY_ID is invalid");
     let adapter = SegmentGenerationAdapter { control, publisher };
-    let worker = GenerationWorker::new(repository, adapter, owner_id, Duration::from_secs(60))?;
+    let worker = GenerationWorker::new(
+        repository,
+        adapter,
+        owner_id.clone(),
+        Duration::from_secs(60),
+    )?;
+    let concurrency = std::env::var("CLOUD_WORKER_CONCURRENCY")
+        .unwrap_or_else(|_| "4".into())
+        .parse::<usize>()
+        .context("CLOUD_WORKER_CONCURRENCY must be an integer from 1 to 32")?;
+    anyhow::ensure!(
+        (1..=32).contains(&concurrency),
+        "CLOUD_WORKER_CONCURRENCY must be from 1 to 32"
+    );
+    tracing::info!(event = "generation_worker_ready", concurrency, owner = %owner_id,
+        "independent segment publication lanes are ready");
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let run = worker.run_with_concurrency(Duration::from_secs(2), concurrency, shutdown_rx);
+    tokio::pin!(run);
     tokio::select! {
-        result = worker.run(Duration::from_secs(2), shutdown_rx) => result.map_err(Into::into),
-        signal = tokio::signal::ctrl_c() => {
+        result = &mut run => result.map_err(Into::into),
+        signal = shutdown_signal() => {
             signal?;
             let _ = shutdown_tx.send(true);
-            Ok(())
+            run.await.map_err(Into::into)
         }
     }
+}
+
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
 }
 
 fn load_core_module() -> anyhow::Result<CoreModule> {

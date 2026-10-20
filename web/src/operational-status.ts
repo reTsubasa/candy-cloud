@@ -25,7 +25,10 @@ export type LinkOperationalCode =
   | 'one_way'
   | 'telemetry_stale'
   | 'active'
-  | 'endpoint_failed';
+  | 'endpoint_failed'
+  | 'path_failed'
+  | 'degraded'
+  | 'evidence_unknown';
 
 export type NodeOperationalInput = {
   registered: boolean;
@@ -56,6 +59,8 @@ export type LinkOperationalInput = {
   staleDirectionLabels?: readonly string[];
   failedEndpointLabels?: readonly string[];
   degradedPathLabels?: readonly string[];
+  failedPathLabels?: readonly string[];
+  unknownPathLabels?: readonly string[];
 };
 
 export const NODE_STATUS_BOUNDARIES = [
@@ -76,7 +81,8 @@ export const LINK_STATUS_BOUNDARIES = [
   { tone: 'gray' as const, label: '链路断开', detail: '端点没有在线节点，或遥测已过期。' },
   { tone: 'orange' as const, label: '链路协商中', detail: '双向路径尚未全部建立。' },
   { tone: 'green' as const, label: '链路正常', detail: '双向数据面已建立，遥测持续更新。' },
-  { tone: 'orange' as const, label: '链路性能降级', detail: '链路可达，但 Stream 背压影响吞吐或时延。' },
+  { tone: 'orange' as const, label: '链路性能降级', detail: '链路部分可用，Stream 背压、部分 Stream 故障或探测丢失影响容量。' },
+  { tone: 'gray' as const, label: '证据不足', detail: '节点在线，但缺少当前 Peer 的就绪证据，不能确认链路可达。' },
   { tone: 'red' as const, label: '链路故障', detail: '端点或配置明确失败，当前不可转发。' },
 ];
 
@@ -105,7 +111,17 @@ export function linkOperationalStatus(input: LinkOperationalInput): OperationalS
   if (input.endpointOffline) return { code: 'endpoint_offline', label: '链路断开', detail: '至少一个端点站点没有在线节点，当前没有可用链路', tone: 'gray' };
   if (input.configuredPathCount === 0) return { code: 'not_configured', label: '线路未配置', detail: '互联关系已建立，但尚未设置候选线路', tone: 'orange' };
   if (input.endpointFailed) return { code: 'endpoint_failed', label: '链路故障', detail: input.failedEndpointLabels?.length ? `${input.failedEndpointLabels.join('、')}没有可工作的节点` : '至少一端没有可工作的节点', tone: 'red' };
-  if (input.degradedPathLabels?.length) return { code: 'telemetry_stale', label: '链路性能降级', detail: `${input.degradedPathLabels.join('、')} 出现 Stream 背压，链路仍可达但吞吐或时延可能受影响`, tone: 'orange' };
+  if (input.failedPathLabels?.length) return {
+    code: input.activeDirectionCount > 0 ? 'degraded' : 'path_failed',
+    label: input.activeDirectionCount > 0 ? '链路部分可用' : 'Peer 路径故障',
+    detail: `${input.failedPathLabels.join('、')} Stream 故障；${input.activeDirectionCount > 0 ? '其余就绪路径仍可转发' : '当前没有就绪路径'}${input.degradedPathLabels?.length ? `；${input.degradedPathLabels.join('、')} 容量或探测异常` : ''}`,
+    tone: input.activeDirectionCount > 0 ? 'orange' : 'red',
+  };
+  if (input.unknownPathLabels?.length && input.activeDirectionCount < 2) return {
+    code: 'evidence_unknown', label: '链路状态待确认',
+    detail: `${input.unknownPathLabels.join('、')} 缺少该 Peer 的 Stream 就绪证据，不能用其他 Peer 的活跃数量判定`, tone: 'gray',
+  };
+  if (input.degradedPathLabels?.length) return { code: 'degraded', label: '链路性能降级', detail: `${input.degradedPathLabels.join('、')} 存在 Stream 容量或探测异常，可用 Stream 仍可转发，但吞吐或时延可能受影响`, tone: 'orange' };
   if (input.activeDirectionCount === 2) return { code: 'active', label: '链路正常', detail: '双向数据面已建立，链路遥测持续更新', tone: 'green' };
   if (input.activeDirectionCount === 1) return { code: 'one_way', label: '链路协商中', detail: input.missingDirectionLabels?.length ? `${input.missingDirectionLabels.join('、')} 尚未建立；正在等待另一方向完成协商` : '一侧路径已建立，正在等待另一方向完成协商', tone: 'orange' };
   if (input.staleDirectionCount > 0) return { code: 'telemetry_stale', label: '链路断开', detail: input.staleDirectionLabels?.length ? `${input.staleDirectionLabels.join('、')} 的链路遥测已过期，当前无法确认可达性` : '链路遥测已过期，当前无法确认可达性', tone: 'orange' };

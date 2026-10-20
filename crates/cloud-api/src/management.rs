@@ -991,6 +991,7 @@ pub struct RuntimeConfigurationStatusItem {
     pub error_code: Option<String>,
     pub reported_at: chrono::DateTime<Utc>,
     pub current: bool,
+    pub running_current: bool,
     pub activation_mode: Option<String>,
 }
 
@@ -1319,6 +1320,7 @@ pub async fn runtime_configuration_statuses(
             error_code: record.error_code,
             reported_at: record.reported_at,
             current: record.current,
+            running_current: record.running_current,
             activation_mode: record.activation_mode,
         })
         .collect();

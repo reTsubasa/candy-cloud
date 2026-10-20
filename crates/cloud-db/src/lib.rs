@@ -40,3 +40,38 @@ pub async fn connect(database_url: &str) -> Result<DbPool, sqlx::Error> {
 pub async fn migrate(pool: &DbPool) -> Result<(), sqlx::migrate::MigrateError> {
     sqlx::migrate!("./migrations").run(pool).await
 }
+
+/// Read-only deployment gate. Rolling replacement is safe only when the new
+/// executable embeds exactly the schema already installed in the database.
+pub async fn schema_is_current(pool: &DbPool) -> Result<bool, sqlx::migrate::MigrateError> {
+    let exists: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '_sqlx_migrations'",
+    ).fetch_one(pool).await?;
+    if exists == 0 {
+        return Ok(false);
+    }
+    let installed: Vec<(i64, bool, Vec<u8>)> =
+        sqlx::query_as("SELECT version, success, checksum FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(pool)
+            .await?;
+    let migrator = sqlx::migrate!("./migrations");
+    let expected: Vec<_> = migrator
+        .iter()
+        .filter(|migration| !migration.migration_type.is_down_migration())
+        .collect();
+    for (index, (version, success, checksum)) in installed.iter().enumerate() {
+        if !success {
+            return Err(sqlx::migrate::MigrateError::Dirty(*version));
+        }
+        let Some(migration) = expected.get(index) else {
+            return Err(sqlx::migrate::MigrateError::VersionMissing(*version));
+        };
+        if *version != migration.version {
+            return Err(sqlx::migrate::MigrateError::VersionMissing(*version));
+        }
+        if checksum.as_slice() != migration.checksum.as_ref() {
+            return Err(sqlx::migrate::MigrateError::VersionMismatch(*version));
+        }
+    }
+    Ok(installed.len() == expected.len())
+}

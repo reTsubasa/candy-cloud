@@ -228,6 +228,7 @@ mod tests {
             node_pool_id: value.node_pool_id,
             service_class: ServiceClass::Private,
             service_permission: "private.tun.connect".into(),
+            route_policy: None,
         };
         let material = private_material_from_record(value).unwrap();
 

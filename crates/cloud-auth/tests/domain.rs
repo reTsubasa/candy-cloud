@@ -100,6 +100,7 @@ fn authorization_snapshot_allows_only_matching_active_device_and_entitlement() {
         node_pool_id,
         service_class: ServiceClass::CandyShared,
         service_permission: "shared.accelerator.connect".into(),
+        route_policy: None,
     };
 
     assert!(snapshot.authorize(&request).is_ok());
@@ -115,6 +116,7 @@ fn authorization_snapshot_rejects_cross_service_class_use() {
         node_pool_id,
         service_class: ServiceClass::Private,
         service_permission: "shared.accelerator.connect".into(),
+        route_policy: None,
     };
 
     let error = snapshot

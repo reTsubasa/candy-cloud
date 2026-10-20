@@ -858,7 +858,7 @@ impl GrantIssuanceCoordinator {
         };
         let record = self
             .authorization
-            .load(&lookup)
+            .load_for_policy(&lookup, command.request.route_policy.as_ref())
             .await?
             .ok_or(GrantCoordinatorError::Denied)?;
         let material = private_material_from_record(record)?;
@@ -966,6 +966,7 @@ mod tests {
             node_pool_id,
             service_class: ServiceClass::Private,
             service_permission: "private.connect".into(),
+            route_policy: None,
         };
         let command = GrantIssueCommand {
             actor: AuthenticatedDevice::new(

@@ -153,8 +153,17 @@ sudo scripts/deploy-arm64-release.sh \
 ```
 
 The script verifies the checksum and manifest, checks all six images are ARM64,
-applies least-privilege secret ownership for the container UID, runs migrations,
-starts Compose, and waits for every application health check. The installer
+and takes a deployment lock and rollback snapshots. The new migrator first
+checks the installed schema without writing to it. An exact match starts ready
+HTTP candidates, reloads the existing Caddy upstreams, and retires the old
+processes after a bounded overlap (`CANDY_CLOUD_DRAIN_SECONDS`, default 30).
+Schema changes stop writers, take a final database snapshot, and run a backed-up
+maintenance transaction. A probe error aborts before replacing services.
+Both paths verify application health and restore the previous image mapping
+on failure; the rolling path preserves accepted database writes. Worker
+publication concurrency is bounded by `CLOUD_WORKER_CONCURRENCY` (default 4,
+range 1–32), with same-segment ordering enforced by the database.
+The installer
 accepts only the signed `release_kind=candy-core` shared-library manifest from
 the central `candy-release` repository. Historical standalone Core-module
 releases are not compatibility inputs and are never consumed. IPv6 remains

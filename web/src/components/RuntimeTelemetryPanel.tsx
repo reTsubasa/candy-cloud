@@ -14,8 +14,8 @@ function number(value: number | null | undefined): string {
 
 function tone(state: string): 'green' | 'orange' | 'red' | 'gray' {
   if (state === 'ready' || state === 'active' || state === 'succeeded') return 'green';
-  if (state === 'starting' || state === 'backpressured' || state === 'pending' || state === 'reconciling') return 'orange';
-  if (state === 'fault' || state === 'failed' || state === 'degraded') return 'red';
+  if (state === 'starting' || state === 'backpressured' || state === 'pending' || state === 'reconciling' || state === 'degraded') return 'orange';
+  if (state === 'fault' || state === 'failed') return 'red';
   return 'gray';
 }
 
@@ -32,7 +32,7 @@ const probeLabel: Record<string, string> = {
 };
 
 const stateLabel: Record<string, string> = {
-  ready: '就绪', starting: '建立中', backpressured: '背压', fault: '故障',
+  ready: '就绪', starting: '建立中', backpressured: '背压', degraded: '部分可用', fault: '故障', unknown: '证据不足',
   active: '运行中', succeeded: '通过', pending: '等待', reconciling: '自愈中',
 };
 
@@ -54,6 +54,11 @@ export function RuntimeTelemetryPanel({ node }: { node: OperationalNode }) {
       { label: 'Runtime 状态', value: <Tag color={tone(telemetry.lifecycle)}>{lifecycleLabel[telemetry.lifecycle] ?? telemetry.lifecycle}</Tag> },
       { label: '数据面阶段', value: <Tag color={tone(telemetry.dataplane_phase ?? '')}>{dataplanePhaseLabel(telemetry.dataplane_phase)}</Tag> },
       { label: '最后上报', value: timestamp(telemetry.reported_at) },
+      { label: '目标配置结果', value: <Tag color={node.applyStatus.tone}>{node.applyStatus.label}</Tag> },
+      { label: '最近配置回执错误', value: node.errorCode ?? '无' },
+      { label: '回执版本', value: node.reportedPublicationId ?? '未上报' },
+      { label: '已确认运行版本', value: node.runningPublicationId ?? '尚无 ACTIVE 回执' },
+      { label: '运行版本与目标', value: node.runningCurrent === null ? '未知' : node.runningCurrent ? '已应用目标版本' : node.runningPublicationId ? '保留此前活动版本，目标尚未生效' : '尚无活动版本确认' },
       { label: 'Peer', value: `${number(telemetry.active_peers)} / ${number(telemetry.configured_peers)} 活跃` },
       { label: '路由 owner', value: `${number(telemetry.ready_route_owners)} / ${number(telemetry.required_route_owners)} 就绪` },
       { label: '隧道 / 策略代际', value: `${number(telemetry.tunnel_generation)} / ${number(telemetry.policy_generation ?? telemetry.runtime_generation)}` },
@@ -111,7 +116,7 @@ export function RuntimeTelemetryPanel({ node }: { node: OperationalNode }) {
           { title: '状态', render: (_: unknown, stream: typeof streams[number]) => <Tag color={tone(streamHealth(stream))}>{stateLabel[streamHealth(stream)] ?? stream.state}</Tag> },
           { title: '队列 / 上限', render: (_: unknown, stream: typeof streams[number]) => `${number(stream.queue_depth)} / ${number(stream.queue_limit)}` },
           { title: '窗口 / 阻塞', render: (_: unknown, stream: typeof streams[number]) => `${number(stream.send_window_bytes)} B / ${number(stream.blocked_ms)} ms` },
-          { title: '错误', render: (_: unknown, stream: typeof streams[number]) => stream.last_error_code ?? (stream.decode_errors ? `decode_errors=${stream.decode_errors}` : '无') },
+          { title: '错误记录', render: (_: unknown, stream: typeof streams[number]) => [stream.last_error_code ? `最后错误=${stream.last_error_code}` : '无错误记录', `累计解码错误=${stream.decode_errors}`, `累计重置=${stream.reset_count}`].join(' · ') },
         ]}
         data={streams}
       />

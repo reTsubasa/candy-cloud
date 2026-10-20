@@ -195,6 +195,7 @@ pub struct GrantRequest {
     pub node_pool_id: Uuid,
     pub service_class: ServiceClass,
     pub service_permission: String,
+    pub route_policy: Option<cloud_db::authorization::AuthorizationPolicyRef>,
 }
 
 impl AuthorizationSnapshot {

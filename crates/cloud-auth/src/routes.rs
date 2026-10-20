@@ -1132,6 +1132,19 @@ where
             node_pool_id: request.node_pool_id,
             service_class: request.service_class.into(),
             service_permission: request.service_permission,
+            route_policy: request
+                .route_policy
+                .map(|policy| {
+                    if policy.policy_id.is_nil() || policy.generation == 0 {
+                        return Err(ApiError::InvalidEncoding);
+                    }
+                    Ok(cloud_db::authorization::AuthorizationPolicyRef {
+                        policy_id: policy.policy_id,
+                        generation: policy.generation,
+                        content_hash: decode_policy_hash(&policy.content_hash)?,
+                    })
+                })
+                .transpose()?,
         },
         actor,
     };
@@ -1967,6 +1980,16 @@ struct GrantIssueHttpRequest {
     node_pool_id: Uuid,
     service_class: ServiceClassHttp,
     service_permission: String,
+    #[serde(default)]
+    route_policy: Option<GrantRoutePolicyHttpRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrantRoutePolicyHttpRequest {
+    policy_id: Uuid,
+    generation: u64,
+    content_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2344,6 +2367,31 @@ impl IntoResponse for ApiError {
         };
         (status, Json(ProblemResponse { code })).into_response()
     }
+}
+
+fn decode_policy_hash(value: &str) -> Result<[u8; 32], ApiError> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ApiError::InvalidEncoding);
+    }
+    let mut hash = [0_u8; 32];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |byte: u8| {
+            if byte.is_ascii_digit() {
+                byte - b'0'
+            } else {
+                byte - b'a' + 10
+            }
+        };
+        hash[index] = (nibble(chunk[0]) << 4) | nibble(chunk[1]);
+    }
+    if hash == [0; 32] {
+        return Err(ApiError::InvalidEncoding);
+    }
+    Ok(hash)
 }
 
 fn decode_fixed<const N: usize>(value: &str) -> Result<[u8; N], ApiError> {

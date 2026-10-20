@@ -14,6 +14,20 @@ for required in \
 	'sha256sum -c "$checksum"' \
 	'.architecture == "arm64"' \
 	'docker image inspect "$ref"' \
+	'flock -n 9' \
+	'.deployment-recovery-required' \
+	'mysql-quiesced.sql' \
+	'rollback.sha256.next' \
+	'Caddyfile.previous' \
+	'migrate --check-schema' \
+	'image: candy-cloud-migrate:arm64-$revision' \
+	'if [ "$schema_status" != 3 ]' \
+	'deployment_mode=rolling' \
+	'compose run -d --no-deps --name "$candidate"' \
+	'wait_container_healthy "$candidate"' \
+	'caddy validate --config /tmp/candy-deploy-Caddyfile' \
+	'caddy reload --config /tmp/candy-deploy-Caddyfile' \
+	'if [ "$canonical_mutated" = 1 ]' \
 	'compose.arm64.release.yml' \
 	'core_version=$(jq -r' \
 	'CANDY_CLOUD_REVISION: $revision' \
@@ -68,6 +82,8 @@ assert_before() {
 	}
 }
 
+assert_before 'wait_container_healthy "$candidate"' 'reload_proxy "$transaction_dir/Caddyfile.candidates"'
+assert_before 'reload_proxy "$transaction_dir/Caddyfile.candidates"' 'canonical_mutated=1'
 assert_before 'mysqldump -uroot' 'transaction_started=1'
 assert_before 'web-volume.tar.gz -C /srv' 'transaction_started=1'
 assert_before 'sha256sum compose.arm64.release.yml.previous' 'transaction_started=1'
@@ -101,5 +117,7 @@ if grep -Eq 'docker volume rm|rm -rf .*secrets|docker compose down.*-v' "$script
 	echo "deploy_arm64_release: rollback path may delete persistent data or secrets" >&2
 	exit 1
 fi
+
+python3 "$root/tests/deploy_arm64_transaction.py"
 
 echo "deploy_arm64_release: ok"

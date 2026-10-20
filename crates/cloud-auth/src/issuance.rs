@@ -207,6 +207,13 @@ pub fn prepare_private_grant_with_id(
         {
             return Err(PrepareGrantError::RoutePolicyMismatch);
         }
+        if request.route_policy.as_ref().is_some_and(|requested| {
+            requested.policy_id != binding.projection_id
+                || requested.generation != binding.projection_generation
+                || requested.content_hash != binding.projection_content_hash
+        }) {
+            return Err(PrepareGrantError::RoutePolicyMismatch);
+        }
         if material.quota.allowed_features & REQUIRED_TUN_FEATURES != REQUIRED_TUN_FEATURES {
             return Err(PrepareGrantError::MissingTunnelFeatures);
         }
@@ -327,6 +334,12 @@ fn request_fingerprint(
     }]);
     hash.update((request.service_permission.len() as u64).to_be_bytes());
     hash.update(request.service_permission.as_bytes());
+    if let Some(policy) = &request.route_policy {
+        hash.update(b"signed-route-policy-v1\0");
+        hash.update(policy.policy_id.as_bytes());
+        hash.update(policy.generation.to_be_bytes());
+        hash.update(policy.content_hash);
+    }
     hash.update(authorization_generation.to_be_bytes());
     hash.finalize().into()
 }
@@ -351,6 +364,7 @@ mod tests {
             node_pool_id,
             service_class: ServiceClass::Private,
             service_permission: "private.connect".into(),
+            route_policy: None,
         };
         let material = PrivateGrantMaterial {
             organization_id: Uuid::new_v4(),

@@ -20,7 +20,7 @@ const node = (overrides: Partial<NodeOperationalInput> = {}): NodeOperationalInp
 describe('operational status boundaries', () => {
   it('uses user-facing status names in the topology legend', () => {
     expect(SITE_STATUS_BOUNDARIES.map((item) => item.label)).toEqual(['未上线', '在线', '处理中', '异常']);
-    expect(LINK_STATUS_BOUNDARIES.map((item) => item.label)).toEqual(['链路断开', '链路协商中', '链路正常', '链路性能降级', '链路故障']);
+    expect(LINK_STATUS_BOUNDARIES.map((item) => item.label)).toEqual(['链路断开', '链路协商中', '链路正常', '链路性能降级', '证据不足', '链路故障']);
   });
 
   it('keeps an authenticated but offline node gray, green only when online', () => {
@@ -102,8 +102,11 @@ describe('operational status boundaries', () => {
     ['one_way', { activeDirectionCount: 1 }, 'orange'],
     ['telemetry_stale', { staleDirectionCount: 1 }, 'orange'],
     ['active', { activeDirectionCount: 2 }, 'green'],
+    ['path_failed', { failedPathLabels: ['杭州 -> 香港'] }, 'red'],
+    ['degraded', { activeDirectionCount: 1, failedPathLabels: ['香港 -> 杭州'] }, 'orange'],
+    ['evidence_unknown', { unknownPathLabels: ['香港 -> 杭州'] }, 'gray'],
     ['endpoint_failed', { endpointFailed: true }, 'red'],
-    ['telemetry_stale', { activeDirectionCount: 2, degradedPathLabels: ['杭州 -> 美国'] }, 'orange'],
+    ['degraded', { activeDirectionCount: 2, degradedPathLabels: ['杭州 -> 美国'] }, 'orange'],
   ] as const)('classifies link state %s', (code, overrides, tone) => {
     expect(linkOperationalStatus({
       configuredPathCount: 2,

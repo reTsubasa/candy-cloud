@@ -12,7 +12,10 @@ use crate::DbPool;
 const MAX_SIGNED_ENVELOPE_LEN: usize = 1024 * 1024;
 const MAX_ACTOR_ID_LEN: usize = 120;
 const MAX_PROJECTIONS: usize = 4096;
-const MAX_COMPATIBILITY_GENERATIONS: usize = 1;
+// Each peer contributes at most one retained version. The group limit bounds
+// repeated signed segment envelopes without coupling normal policy publication
+// to every site's receipt. These bounds are shared with Runtime and Core.
+const MAX_COMPATIBILITY_GENERATIONS: usize = 32;
 const MAX_EXPANSION_OBJECTS: usize = 4096;
 const MAX_RUNTIME_PATHS: usize = 256;
 const MAX_RUNTIME_LOCAL_NETWORKS: usize = 64;
@@ -165,7 +168,7 @@ impl RuntimeConfigurationRecord {
             })
             || self.compatibility_generations.iter().any(|generation| {
                 generation.segment_generation == 0
-                    || generation.segment_generation.checked_add(1) != Some(self.segment_generation)
+                    || generation.segment_generation >= self.segment_generation
                     || generation.segment_content_hash == [0; 32]
                     || generation.signed_segment_envelope.is_empty()
                     || generation.signed_segment_envelope.len() > MAX_SIGNED_ENVELOPE_LEN
@@ -180,6 +183,26 @@ impl RuntimeConfigurationRecord {
                             || projection.signed_projection_envelope.len() > MAX_SIGNED_ENVELOPE_LEN
                     })
             })
+        {
+            return Err(RuntimeConfigurationError::InvalidRecord);
+        }
+        let mut previous_generation = 0;
+        let mut compatible_peers = HashSet::new();
+        for generation in &self.compatibility_generations {
+            if generation.segment_generation <= previous_generation {
+                return Err(RuntimeConfigurationError::InvalidRecord);
+            }
+            previous_generation = generation.segment_generation;
+            for peer in &generation.peer_projection_catalog {
+                if !compatible_peers.insert(peer.projection_id) {
+                    return Err(RuntimeConfigurationError::InvalidRecord);
+                }
+            }
+        }
+        if compatible_peers
+            .len()
+            .saturating_add(self.peer_projection_catalog.len())
+            > MAX_PROJECTIONS
         {
             return Err(RuntimeConfigurationError::InvalidRecord);
         }
@@ -261,6 +284,14 @@ mod runtime_configuration_tests {
         compatible.compatibility_generations[0].peer_projection_catalog = vec![peer(1)];
 
         compatible.segment_generation = 3;
+        assert!(compatible
+            .validate(&RuntimeConfigurationLookup {
+                tenant_id: compatible.tenant_id,
+                device_id: compatible.device_id,
+                device_key_id: compatible.device_key_id,
+            })
+            .is_ok());
+        compatible.compatibility_generations[0].segment_generation = 3;
         assert!(matches!(
             compatible.validate(&RuntimeConfigurationLookup {
                 tenant_id: compatible.tenant_id,
@@ -269,6 +300,44 @@ mod runtime_configuration_tests {
             }),
             Err(RuntimeConfigurationError::InvalidRecord)
         ));
+    }
+
+    #[test]
+    fn compatibility_groups_are_bounded_ordered_and_have_one_version_per_peer() {
+        let mut configuration = record(Vec::new());
+        configuration.segment_generation = 40;
+        configuration.compatibility_generations = (1..=32)
+            .map(|generation| RuntimeCompatibilityGeneration {
+                segment_generation: generation,
+                segment_content_hash: [13; 32],
+                signed_segment_envelope: vec![14],
+                peer_projection_catalog: vec![peer(u8::try_from(generation + 10).unwrap())],
+            })
+            .collect();
+        let lookup = RuntimeConfigurationLookup {
+            tenant_id: configuration.tenant_id,
+            device_id: configuration.device_id,
+            device_key_id: configuration.device_key_id,
+        };
+        assert!(configuration.validate(&lookup).is_ok());
+        let mut duplicate = configuration.clone();
+        duplicate.compatibility_generations[1].peer_projection_catalog = duplicate
+            .compatibility_generations[0]
+            .peer_projection_catalog
+            .clone();
+        assert!(duplicate.validate(&lookup).is_err());
+        let mut reordered = configuration.clone();
+        reordered.compatibility_generations.swap(0, 1);
+        assert!(reordered.validate(&lookup).is_err());
+        configuration
+            .compatibility_generations
+            .push(RuntimeCompatibilityGeneration {
+                segment_generation: 33,
+                segment_content_hash: [13; 32],
+                signed_segment_envelope: vec![14],
+                peer_projection_catalog: vec![peer(50)],
+            });
+        assert!(configuration.validate(&lookup).is_err());
     }
 
     #[test]
@@ -1620,11 +1689,24 @@ fn decode_hash(value: &[u8]) -> Result<[u8; 32], SdwanError> {
 #[derive(Clone)]
 pub struct SdwanRepository {
     pool: DbPool,
+    policy_isolation: bool,
 }
 
 impl SdwanRepository {
     pub fn new(pool: DbPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            policy_isolation: std::env::var("CANDY_ENABLE_MULTI_GENERATION_POLICY_ISOLATION")
+                .as_deref()
+                == Ok("1"),
+        }
+    }
+
+    /// Enable only after every Core/Runtime implements bounded catalogs and
+    /// signed current-permission intersection. Kept explicit for rollout gates.
+    pub fn with_policy_isolation(mut self, enabled: bool) -> Self {
+        self.policy_isolation = enabled;
+        self
     }
 
     pub async fn current_runtime_configuration(
@@ -1633,7 +1715,13 @@ impl SdwanRepository {
     ) -> Result<RuntimeConfigurationState, RuntimeConfigurationError> {
         lookup.validate()?;
         let mut transaction = self.pool.begin().await?;
-        let result = load_current_runtime_configuration(&mut transaction, lookup, false).await;
+        let result = load_current_runtime_configuration(
+            &mut transaction,
+            lookup,
+            false,
+            self.policy_isolation,
+        )
+        .await;
         match result {
             Ok(configuration) => {
                 transaction.commit().await?;
@@ -1715,8 +1803,13 @@ impl SdwanRepository {
     ) -> Result<(), RuntimeConfigurationError> {
         status.validate()?;
         let mut transaction = self.pool.begin().await?;
-        let configuration =
-            load_current_runtime_configuration(&mut transaction, &status.lookup, true).await?;
+        let configuration = load_current_runtime_configuration(
+            &mut transaction,
+            &status.lookup,
+            true,
+            self.policy_isolation,
+        )
+        .await?;
         let RuntimeConfigurationState::Current(configuration) = configuration else {
             transaction.rollback().await?;
             return Err(RuntimeConfigurationError::StaleConfiguration);
@@ -1724,6 +1817,45 @@ impl SdwanRepository {
         if configuration.projection_publication_id != status.projection_publication_id
             || configuration.projection_content_hash != status.projection_content_hash
         {
+            // A publication may be superseded while its authenticated ACTIVE
+            // receipt is in flight. Keep the precise running identity monotonic
+            // without overwriting the newer target's PREPARED/REJECTED receipt.
+            if self.policy_isolation && status.apply_state == RuntimeConfigurationApplyState::Active
+            {
+                let historical: Option<u64> = sqlx::query_scalar(
+                    "SELECT p.segment_generation FROM site_route_projection_publications p JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash WHERE p.id = ? AND p.tenant_id = ? AND p.device_id = ? AND p.device_key_id = ? AND p.attachment_id = ? AND p.projection_id = ? AND p.content_hash = ? AND p.segment_generation < ? AND publication.stale_until >= UNIX_TIMESTAMP() AND NOT EXISTS(SELECT 1 FROM segment_route_publications changed WHERE changed.tenant_id = p.tenant_id AND changed.segment_id = p.segment_id AND changed.generation > p.segment_generation AND changed.generation <= ? AND changed.activation_mode <> 'POLICY_ONLY') FOR SHARE",
+                ).bind(status.projection_publication_id).bind(status.lookup.tenant_id)
+                    .bind(status.lookup.device_id).bind(status.lookup.device_key_id)
+                    .bind(configuration.attachment_id).bind(configuration.projection_id)
+                    .bind(status.projection_content_hash.as_slice()).bind(configuration.segment_generation)
+                    .bind(configuration.segment_generation).fetch_optional(&mut *transaction).await?;
+                if let Some(generation) = historical.filter(|generation| {
+                    configuration.segment_generation.saturating_sub(*generation)
+                        <= MAX_COMPATIBILITY_GENERATIONS as u64
+                }) {
+                    let active_generation: Option<Option<u64>> = sqlx::query_scalar(
+                        "SELECT p.segment_generation FROM runtime_configuration_status status LEFT JOIN site_route_projection_publications p ON p.id = status.active_projection_publication_id AND p.tenant_id = status.tenant_id WHERE status.tenant_id = ? AND status.device_id = ? AND status.device_key_id = ? FOR UPDATE",
+                    ).bind(status.lookup.tenant_id).bind(status.lookup.device_id)
+                        .bind(status.lookup.device_key_id).fetch_optional(&mut *transaction).await?;
+                    if active_generation
+                        .flatten()
+                        .is_none_or(|active| active < generation)
+                    {
+                        // The caller's device certificate authenticates this
+                        // receipt. Exact publication/hash ownership above is
+                        // authoritative; an old aggregate envelope digest is not
+                        // reconstructible once peer catalogs have advanced.
+                        sqlx::query(
+                            "INSERT INTO runtime_configuration_status (tenant_id, device_id, device_key_id, projection_publication_id, active_projection_publication_id, envelope_sha256, apply_state, reported_at) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?) ON DUPLICATE KEY UPDATE active_projection_publication_id = VALUES(active_projection_publication_id)",
+                        ).bind(status.lookup.tenant_id).bind(status.lookup.device_id)
+                            .bind(status.lookup.device_key_id).bind(status.projection_publication_id)
+                            .bind(status.projection_publication_id).bind(status.envelope_sha256.as_slice())
+                            .bind(Utc::now()).execute(&mut *transaction).await?;
+                    }
+                    transaction.commit().await?;
+                    return Ok(());
+                }
+            }
             transaction.rollback().await?;
             return Err(RuntimeConfigurationError::StaleConfiguration);
         }
@@ -2521,15 +2653,60 @@ impl SdwanRepository {
             return Err(SdwanError::GenerationGap);
         }
         if write.policy_only {
-            let previous_rollout: Option<String> = sqlx::query_scalar(
-                "SELECT state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? FOR UPDATE",
+            if !self.policy_isolation {
+                let previous_state: Option<String> = sqlx::query_scalar(
+                    "SELECT state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND segment_generation = ? FOR UPDATE",
+                ).bind(write.tenant_id).bind(write.segment_id).bind(current_generation)
+                    .fetch_optional(&mut *transaction).await?;
+                if previous_state.as_deref() != Some("COMPLETE") {
+                    return Err(SdwanError::RolloutPending);
+                }
+            }
+            // Policy generations can overtake a slow policy receipt, but must
+            // never bypass a transport prepare/commit transaction. Look through
+            // policy generations to the most recent actual transport rollout.
+            let transport_state: Option<String> = sqlx::query_scalar(
+                "SELECT state FROM runtime_configuration_rollouts WHERE tenant_id = ? AND segment_id = ? AND activation_mode = 'TUNNEL' AND segment_generation = (SELECT MAX(transport.generation) FROM segment_route_publications transport WHERE transport.tenant_id = ? AND transport.segment_id = ? AND transport.activation_mode = 'TUNNEL' AND transport.generation <= ?)",
             )
+            .bind(write.tenant_id)
+            .bind(write.segment_id)
             .bind(write.tenant_id)
             .bind(write.segment_id)
             .bind(current_generation)
             .fetch_optional(&mut *transaction)
             .await?;
-            if previous_rollout.as_deref() != Some("COMPLETE") {
+            // With no baseline publication/rollout, POLICY_ONLY has no prepared
+            // tunnel to preserve. The first publication must use TUNNEL.
+            if current_generation == 0 || transport_state.as_deref() != Some("COMPLETE") {
+                transaction.rollback().await?;
+                return Err(SdwanError::RolloutPending);
+            }
+            let retained_generations: i64 = sqlx::query_scalar(
+                "SELECT COUNT(DISTINCT retained.generation) FROM (SELECT active.segment_generation AS generation FROM runtime_configuration_status status JOIN site_route_projection_publications active ON active.id = status.active_projection_publication_id AND active.tenant_id = status.tenant_id JOIN segment_attachments attachment ON attachment.tenant_id = active.tenant_id AND attachment.id = active.attachment_id AND attachment.device_id = active.device_id AND attachment.device_key_id = active.device_key_id AND attachment.state IN ('ACTIVE','STANDBY') JOIN segment_route_publications publication ON publication.id = active.publication_id AND publication.stale_until >= UNIX_TIMESTAMP() WHERE active.tenant_id = ? AND active.segment_id = ? UNION ALL SELECT ? AS generation FROM segment_attachments attachment LEFT JOIN runtime_configuration_status status ON status.tenant_id = attachment.tenant_id AND status.device_id = attachment.device_id AND status.device_key_id = attachment.device_key_id WHERE attachment.tenant_id = ? AND attachment.segment_id = ? AND attachment.state IN ('ACTIVE','STANDBY') AND status.active_projection_publication_id IS NULL) retained",
+            )
+            .bind(write.tenant_id)
+            .bind(write.segment_id)
+            .bind(current_generation)
+            .bind(write.tenant_id)
+            .bind(write.segment_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+            if retained_generations > MAX_COMPATIBILITY_GENERATIONS as i64 {
+                transaction.rollback().await?;
+                return Err(SdwanError::RolloutPending);
+            }
+            // Count alone is not closed under later ACTIVE receipts: a peer
+            // advancing to current introduces an N-1 drain identity while
+            // another peer can retain its old group. Bound the generation
+            // interval too, reserving every possible late receipt/fallback
+            // within it. Never evict a running identity to fit the response.
+            let oldest_active: Option<u64> = sqlx::query_scalar(
+                "SELECT MIN(active.segment_generation) FROM runtime_configuration_status status JOIN site_route_projection_publications active ON active.id = status.active_projection_publication_id AND active.tenant_id = status.tenant_id JOIN segment_attachments attachment ON attachment.tenant_id = active.tenant_id AND attachment.id = active.attachment_id AND attachment.device_id = active.device_id AND attachment.device_key_id = active.device_key_id AND attachment.state IN ('ACTIVE','STANDBY') JOIN sites site ON site.id = attachment.site_id AND site.tenant_id = attachment.tenant_id AND site.state = 'ACTIVE' JOIN devices device ON device.id = attachment.device_id AND device.tenant_id = attachment.tenant_id AND device.status = 'ACTIVE' JOIN device_keys device_key ON device_key.id = attachment.device_key_id AND device_key.device_id = device.id AND device_key.tenant_id = attachment.tenant_id AND device_key.status = 'ACTIVE' JOIN segment_route_publications publication ON publication.id = active.publication_id AND publication.stale_until >= UNIX_TIMESTAMP() WHERE active.tenant_id = ? AND active.segment_id = ? AND NOT EXISTS(SELECT 1 FROM segment_route_publications changed WHERE changed.tenant_id = active.tenant_id AND changed.segment_id = active.segment_id AND changed.generation > active.segment_generation AND changed.generation <= ? AND changed.activation_mode <> 'POLICY_ONLY')",
+            ).bind(write.tenant_id).bind(write.segment_id).bind(current_generation)
+                .fetch_one(&mut *transaction).await?;
+            if oldest_active.is_some_and(|oldest| {
+                write.generation.saturating_sub(oldest) > MAX_COMPATIBILITY_GENERATIONS as u64
+            }) {
                 transaction.rollback().await?;
                 return Err(SdwanError::RolloutPending);
             }
@@ -2640,6 +2817,7 @@ async fn load_current_runtime_configuration(
     transaction: &mut Transaction<'_, MySql>,
     lookup: &RuntimeConfigurationLookup,
     lock: bool,
+    policy_isolation: bool,
 ) -> Result<RuntimeConfigurationState, RuntimeConfigurationError> {
     let suffix = if lock { " FOR UPDATE" } else { "" };
     let attachment_query = format!(
@@ -2761,49 +2939,68 @@ async fn load_current_runtime_configuration(
             signed_projection_envelope: catalog.try_get("signed_envelope")?,
         });
     }
-    let previous_generation = segment_generation.checked_sub(1);
-    // A server may have been enrolled after the previous Segment generation
-    // was published. Its transport node therefore has no row in the
-    // previous-generation transport catalog, even though the peer
-    // projections are still valid during the compatibility window. Select
-    // the previous Segment publication independently; Core will validate that
-    // each returned peer projection has a path to this server's current
-    // transport identity.
-    let compatibility_publication = sqlx::query(
-        "SELECT publication.generation AS segment_generation, publication.content_hash AS segment_content_hash, publication.signed_envelope AS signed_segment_envelope FROM nodes n JOIN runtime_projection_transport_catalog current_catalog ON current_catalog.transport_node_id = n.id AND current_catalog.transport_node_key_id = n.device_key_id AND current_catalog.tenant_id = n.tenant_id AND current_catalog.segment_id = ? AND current_catalog.segment_generation = ? AND current_catalog.projection_id <> ? JOIN node_endpoints endpoint ON endpoint.node_id = n.id AND endpoint.status = 'ACTIVE' AND endpoint.transport = 'CANDY_QUIC_UDP' JOIN segment_route_publications publication ON publication.tenant_id = current_catalog.tenant_id AND publication.segment_id = current_catalog.segment_id WHERE n.tenant_id = ? AND n.device_id = ? AND n.device_key_id = ? AND n.status = 'ACTIVE' AND publication.generation = ? AND publication.stale_until >= UNIX_TIMESTAMP() LIMIT 1",
+    // Retain the exact version each authenticated peer is still running,
+    // rather than assuming all peers advanced to N-1. Policy publication may
+    // overtake unrelated slow sites. No old generation crosses a transport
+    // change, and expiry/revoked device/site/attachment checks remain mandatory.
+    // A current/no-receipt peer keeps the bounded N-1 drain fallback.
+    let compatible_catalog_rows = sqlx::query(
+        "SELECT p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope, publication.generation AS segment_generation, publication.content_hash AS segment_content_hash, publication.signed_envelope AS signed_segment_envelope FROM segment_attachments a JOIN sites site ON site.id = a.site_id AND site.tenant_id = a.tenant_id AND site.state = 'ACTIVE' JOIN devices device ON device.id = a.device_id AND device.tenant_id = a.tenant_id AND device.status = 'ACTIVE' JOIN device_keys device_key ON device_key.id = a.device_key_id AND device_key.tenant_id = a.tenant_id AND device_key.device_id = device.id AND device_key.status = 'ACTIVE' JOIN site_route_projection_publications target ON target.tenant_id = a.tenant_id AND target.segment_id = a.segment_id AND target.attachment_id = a.id AND target.device_id = a.device_id AND target.device_key_id = a.device_key_id AND target.segment_generation = ? LEFT JOIN runtime_configuration_status status ON status.tenant_id = a.tenant_id AND status.device_id = a.device_id AND status.device_key_id = a.device_key_id LEFT JOIN site_route_projection_publications active ON active.id = status.active_projection_publication_id AND active.tenant_id = status.tenant_id JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND (p.id = active.id OR ((active.id IS NULL OR active.segment_generation = ?) AND p.segment_generation = ?)) JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.stale_until >= UNIX_TIMESTAMP() JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id WHERE a.tenant_id = ? AND a.segment_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY') AND p.projection_id <> ? AND p.segment_generation < ? AND (p.segment_generation = ? OR (? AND NOT EXISTS(SELECT 1 FROM segment_route_publications changed WHERE changed.tenant_id = p.tenant_id AND changed.segment_id = p.segment_id AND changed.generation > p.segment_generation AND changed.generation <= ? AND changed.activation_mode <> 'POLICY_ONLY'))) AND EXISTS(SELECT 1 FROM nodes local_node JOIN node_endpoints endpoint ON endpoint.node_id = local_node.id AND endpoint.status = 'ACTIVE' AND endpoint.transport = 'CANDY_QUIC_UDP' JOIN runtime_projection_transport_catalog local_catalog ON local_catalog.transport_node_id = local_node.id AND local_catalog.transport_node_key_id = local_node.device_key_id AND local_catalog.tenant_id = local_node.tenant_id AND local_catalog.segment_id = p.segment_id AND local_catalog.segment_generation = ? AND local_catalog.projection_id <> ? WHERE local_node.tenant_id = ? AND local_node.device_id = ? AND local_node.device_key_id = ? AND local_node.status = 'ACTIVE') ORDER BY publication.generation, p.projection_id, p.projection_generation",
     )
+    .bind(segment_generation)
+    .bind(segment_generation)
+    .bind(segment_generation.saturating_sub(1))
+    .bind(lookup.tenant_id)
     .bind(segment_id)
+    .bind(projection_id)
+    .bind(segment_generation)
+    .bind(segment_generation.saturating_sub(1))
+    .bind(policy_isolation)
+    .bind(segment_generation)
     .bind(segment_generation)
     .bind(projection_id)
     .bind(lookup.tenant_id)
     .bind(lookup.device_id)
     .bind(lookup.device_key_id)
-    .bind(previous_generation.unwrap_or_default())
-    .fetch_optional(&mut **transaction)
+    .fetch_all(&mut **transaction)
     .await?;
-    let mut compatibility_generations = Vec::new();
-    if let Some(publication) = compatibility_publication {
-        let compatible_generation: u64 = publication.try_get("segment_generation")?;
-        let compatible_catalog_rows = sqlx::query(
-            "SELECT p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope FROM segment_attachments a JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id AND s.state = 'ACTIVE' JOIN devices d ON d.id = a.device_id AND d.tenant_id = a.tenant_id AND d.status = 'ACTIVE' JOIN device_keys dk ON dk.id = a.device_key_id AND dk.tenant_id = a.tenant_id AND dk.device_id = d.id AND dk.status = 'ACTIVE' JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND p.segment_generation = ? JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.stale_until >= UNIX_TIMESTAMP() JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id WHERE a.tenant_id = ? AND a.segment_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY') AND p.projection_id <> ? ORDER BY p.projection_id, p.projection_generation",
-        )
-        .bind(compatible_generation)
-        .bind(lookup.tenant_id)
-        .bind(segment_id)
-        .bind(projection_id)
-        .fetch_all(&mut **transaction)
-        .await?;
-        if compatible_catalog_rows.len() > MAX_PROJECTIONS {
+    if compatible_catalog_rows
+        .len()
+        .saturating_add(peer_projection_catalog.len())
+        > MAX_PROJECTIONS
+    {
+        return Err(RuntimeConfigurationError::AmbiguousConfiguration);
+    }
+    let mut compatibility_generations: Vec<RuntimeCompatibilityGeneration> = Vec::new();
+    let mut compatible_ids = HashSet::with_capacity(compatible_catalog_rows.len());
+    for catalog in compatible_catalog_rows {
+        let compatible_projection_id: Uuid = catalog.try_get("projection_id")?;
+        if !compatible_ids.insert(compatible_projection_id) {
             return Err(RuntimeConfigurationError::AmbiguousConfiguration);
         }
-        let mut compatible_catalog = Vec::with_capacity(compatible_catalog_rows.len());
-        let mut compatible_ids = HashSet::with_capacity(compatible_catalog_rows.len());
-        for catalog in compatible_catalog_rows {
-            let compatible_projection_id: Uuid = catalog.try_get("projection_id")?;
-            if !compatible_ids.insert(compatible_projection_id) {
+        let generation: u64 = catalog.try_get("segment_generation")?;
+        if compatibility_generations
+            .last()
+            .is_none_or(|last| last.segment_generation != generation)
+        {
+            if compatibility_generations.len() == MAX_COMPATIBILITY_GENERATIONS {
                 return Err(RuntimeConfigurationError::AmbiguousConfiguration);
             }
-            compatible_catalog.push(RuntimePeerProjection {
+            compatibility_generations.push(RuntimeCompatibilityGeneration {
+                segment_generation: generation,
+                segment_content_hash: decode_hash(
+                    &catalog.try_get::<Vec<u8>, _>("segment_content_hash")?,
+                )
+                .map_err(|_| RuntimeConfigurationError::InvalidRecord)?,
+                signed_segment_envelope: catalog.try_get("signed_segment_envelope")?,
+                peer_projection_catalog: Vec::new(),
+            });
+        }
+        compatibility_generations
+            .last_mut()
+            .expect("created compatibility group")
+            .peer_projection_catalog
+            .push(RuntimePeerProjection {
                 projection_id: compatible_projection_id,
                 projection_generation: catalog.try_get("projection_generation")?,
                 projection_content_hash: decode_hash(
@@ -2812,18 +3009,6 @@ async fn load_current_runtime_configuration(
                 .map_err(|_| RuntimeConfigurationError::InvalidRecord)?,
                 signed_projection_envelope: catalog.try_get("signed_envelope")?,
             });
-        }
-        if !compatible_catalog.is_empty() {
-            compatibility_generations.push(RuntimeCompatibilityGeneration {
-                segment_generation: compatible_generation,
-                segment_content_hash: decode_hash(
-                    &publication.try_get::<Vec<u8>, _>("segment_content_hash")?,
-                )
-                .map_err(|_| RuntimeConfigurationError::InvalidRecord)?,
-                signed_segment_envelope: publication.try_get("signed_segment_envelope")?,
-                peer_projection_catalog: compatible_catalog,
-            });
-        }
     }
     let record = RuntimeConfigurationRecord {
         projection_publication_id: row.try_get("projection_publication_id")?,

@@ -815,7 +815,12 @@ paths:
         Device, device-key, tenant, and organization scope come exclusively from
         the verified client certificate. Supplying those fields in JSON is rejected.
         The current issuer supports `service_class: private` with
-        `private.connect` or `private.tun.connect`.
+        `private.connect` or `private.tun.connect`. Optional `route_policy` binds
+        issuance to the exact current target or acknowledged active projection.
+        N-1 retains transport migration semantics; older active projections
+        require the disabled-by-default multi-generation policy-isolation gate,
+        a policy-only chain, and unexpired signed authorization. Deploy this
+        Cloud version before Runtime starts sending `route_policy`.
       requestBody:
         required: true
         content:
@@ -2295,6 +2300,17 @@ components:
           enum: [private, candy_shared, candy_dedicated, partner]
           description: Only `private` is currently accepted by the issuer.
         service_permission: { type: string, enum: [private.connect, private.tun.connect] }
+        route_policy:
+          type: object
+          additionalProperties: false
+          required: [policy_id, generation, content_hash]
+          properties:
+            policy_id: { type: string, format: uuid, description: Exact signed projection policy UUID. }
+            generation: { type: integer, minimum: 1 }
+            content_hash:
+              type: string
+              pattern: '^[0-9a-f]{64}$'
+              description: Nonzero lowercase SHA-256 of the signed projection; exact match required.
     GrantResponse:
       type: object
       additionalProperties: false
@@ -2557,7 +2573,7 @@ components:
       properties:
         projection_publication_id: { $ref: "#/components/schemas/Uuid" }
         projection_content_hash: { $ref: "#/components/schemas/Sha256Hex" }
-        state: { type: string, enum: [active, rejected] }
+        state: { type: string, enum: [prepared, active, rejected] }
         error_code: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }
     RuntimeConfigurationStatusInventory:
       type: object
@@ -2572,15 +2588,19 @@ components:
     RuntimeConfigurationStatusItem:
       type: object
       additionalProperties: false
-      required: [device_id, device_key_id, projection_publication_id, state, error_code, reported_at, current, activation_mode]
+      required: [device_id, device_key_id, projection_publication_id, state, error_code, reported_at, current, running_current, active_projection_publication_id, activation_mode]
       properties:
         device_id: { $ref: "#/components/schemas/Uuid" }
         device_key_id: { $ref: "#/components/schemas/Uuid" }
         projection_publication_id: { $ref: "#/components/schemas/Uuid" }
-        state: { type: string, enum: [active, rejected] }
+        state: { type: string, enum: [prepared, active, rejected] }
         error_code: { oneOf: [{ type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_.-]+$' }, { type: "null" }] }
         reported_at: { type: string, format: date-time }
-        current: { type: boolean, description: True only when this report names the device's current Cloud projection. }
+        active_projection_publication_id:
+          oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }]
+          description: Last projection acknowledged ACTIVE; preserved when a newer target is prepared or rejected. This is configuration acknowledgement, not live tunnel health.
+        current: { type: boolean, description: True when the reported projection is the latest target for its attachment. PREPARED and REJECTED receipts can be current; unrelated attachment updates do not invalidate it. }
+        running_current: { type: boolean, description: True when the last acknowledged ACTIVE projection is the latest target for its attachment. False can mean the previous active configuration is preserved while a new target is pending or rejected. }
         activation_mode: { type: [string, "null"], enum: [TUNNEL, POLICY_ONLY, null], description: Rollout mode of the reported publication; independent of live Peer health. }
     RuntimeTelemetry:
       type: object
