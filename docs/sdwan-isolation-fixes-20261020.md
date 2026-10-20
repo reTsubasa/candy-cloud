@@ -114,6 +114,6 @@ Runtime 在编译与确认期间续保原 owner 的 30 秒短租约，但仍受�
 - Runtime `ac63469`：完整 signed inbound closure；cloud-sync 116 项通过、1 项沿用原条件忽略。`785857c`：Netd 原 owner 原位策略事务及真实 Linux 内核门禁。`f53119e`：managed policy 事务、租约恢复与注册；Linux agent 157/157，最终 managed-policy 定向 4/4、registration 2/2，all-target 严格 Clippy 通过。
 - Cloud `0aa4df3`、`3d00dd9`、`98727a7`：发布 fencing、独立恢复和落后 Peer 精确重同步；上述隔离 MySQL、UI、Caddy 和部署事务证据保持有效。
 
-完整 Runtime → 实际 Core master/worker → Netd → 新 OPEN 的 MBB 组合连续流量门禁仍未完成；本轮通过的是真实 Core server/client 基础转发和各组件分层故障门禁，不据此宣称 MBB 端到端稳定性或吞吐达标。两小时持续测试按用户要求延期。本轮未修改、重启或压测生产节点，多代开关继续默认关闭；上线前须按 Cloud → Core → Runtime 顺序完成组合门禁。
+隔离冻结制品的 MBB 组合门禁已有通过证据：`registered-mbb-release-v16` 上 bilateral candidate reload、四域 shared-pool 扩缩容和 successor server restart 均通过，相关结果在 Runtime `docs/artifacts/sdwan-20261016/{bilateral-mbb-final-v16,shared-pool-negotiated-final-v16,successor-server-restart-v16}/result.json`。这些测试覆盖实际 Core/Runtime/Netd 测试边界，但仍是隔离制品，不是线上发布制品；不能替代生产节点验收、平台架构门禁、吞吐测试或两小时持续测试。两小时持续测试按用户要求延期。本轮未修改、重启或压测生产节点，多代开关继续默认关闭；上线前仍须按 Cloud → Core → Runtime 顺序完成组合门禁。
 
 详细事务与故障注入证据分别见 Runtime `docs/SDWAN_MANAGED_POLICY_HOT_UPDATE_20261020.md` 和 `docs/SDWAN_NETD_LIVE_POLICY_20261020.md`。
