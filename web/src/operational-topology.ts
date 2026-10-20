@@ -30,6 +30,10 @@ export type OperationalNode = {
   reportedPublicationId: string | null;
   runningPublicationId: string | null;
   runningCurrent: boolean | null;
+  policyResyncRequired: boolean;
+  policyResyncReason: string | null;
+  activeSegmentGeneration: number | null;
+  targetSegmentGeneration: number | null;
   telemetryState: 'online' | 'stale' | 'unreported';
   lifecycle: RuntimeTelemetry['lifecycle'] | null;
   dataPlaneActive: boolean;
@@ -153,8 +157,9 @@ function readinessLabel(readiness: RuntimeActivationReadiness | null): string {
   return '等待配置';
 }
 
-function configurationApplyStatus(state: OperationalNode['applyState'], mode: RuntimeConfigurationStatus['activation_mode']): OperationalNode['applyStatus'] {
+function configurationApplyStatus(state: OperationalNode['applyState'], mode: RuntimeConfigurationStatus['activation_mode'], resyncRequired = false): OperationalNode['applyStatus'] {
   const item = mode === 'POLICY_ONLY' ? '路由策略' : '网络配置';
+  if (resyncRequired && state !== 'rejected') return { code: 'pending', label: '路由策略需重同步', detail: '此节点旧策略已超出兼容保留窗口，等待重新获取最新配置；隧道状态按实时 Peer 遥测独立显示', tone: 'orange' };
   if (state === 'active') return { code: 'active', label: `${item}已应用`, detail: '当前配置回执已确认', tone: 'green' };
   if (state === 'pending') return { code: 'pending', label: `${item}更新中`, detail: `等待 Cloud 发布或节点确认当前${item}`, tone: 'orange' };
   if (state === 'rejected') return { code: 'rejected', label: `${item}应用失败`, detail: `节点拒绝了当前${item}`, tone: 'red' };
@@ -277,13 +282,17 @@ export function buildOperationalTopology(
       siteId: value(item, 'site_id'),
       registered,
       applyState,
-      applyStatus: configurationApplyStatus(applyState, status?.activation_mode),
+      applyStatus: configurationApplyStatus(applyState, status?.activation_mode, status?.policy_resync_required),
       routeStatus: routeStatus(runtime, telemetryState === 'online'),
       errorCode: status?.error_code ?? null,
       reportedAt: status?.reported_at ?? null,
       reportedPublicationId: status?.projection_publication_id ?? null,
       runningPublicationId: status?.active_projection_publication_id ?? (status?.state === 'active' ? status.projection_publication_id : null),
       runningCurrent: status?.running_current ?? null,
+      policyResyncRequired: status?.policy_resync_required ?? false,
+      policyResyncReason: status?.policy_resync_reason ?? null,
+      activeSegmentGeneration: status?.active_segment_generation ?? null,
+      targetSegmentGeneration: status?.target_segment_generation ?? null,
       telemetryState,
       lifecycle: runtime?.lifecycle ?? null,
       dataPlaneActive,

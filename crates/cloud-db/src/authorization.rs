@@ -122,14 +122,15 @@ impl AuthorizationRepository {
                     ag.generation AS authorization_generation, \
                     CAST(e.quota_json AS CHAR) AS quota_json \
              FROM tenants t \
+             JOIN organizations org ON org.id = t.organization_id AND org.status = 'ACTIVE' \
              JOIN devices d ON d.tenant_id = t.id AND d.id = ? \
              JOIN device_keys dk ON dk.tenant_id = t.id AND dk.device_id = d.id AND dk.id = ? AND dk.status = 'ACTIVE' \
              JOIN entitlements e ON e.tenant_id = t.id AND e.node_pool_id = ? \
              JOIN subscriptions s ON s.tenant_id = t.id AND s.id = e.subscription_id \
-             JOIN node_pools np ON np.id = e.node_pool_id \
+             JOIN node_pools np ON np.id = e.node_pool_id AND np.status = 'ACTIVE' \
              JOIN authorization_generations ag ON ag.tenant_id = t.id \
              LEFT JOIN revocation_generations r ON r.tenant_id = t.id \
-             WHERE t.id = ? FOR SHARE",
+             WHERE t.id = ? AND t.status = 'ACTIVE' FOR SHARE",
         )
         .bind(lookup.device_id)
         .bind(lookup.device_key_id)
@@ -142,6 +143,16 @@ impl AuthorizationRepository {
             return Ok(None);
         };
         let mut record = record_from_row(row)?;
+        if record.device_status != "ACTIVE"
+            || record.entitlement_status != "ACTIVE"
+            || !matches!(
+                record.subscription_status.as_str(),
+                "TRIAL" | "ACTIVE" | "GRACE"
+            )
+        {
+            transaction.commit().await?;
+            return Ok(None);
+        }
         if record.service_permission == "private.tun.connect" {
             let policies = if let Some(requested) = requested {
                 // A signed request for the current target is needed during
@@ -149,7 +160,7 @@ impl AuthorizationRepository {
                 // acknowledged active version, across policy-only updates;
                 // arbitrary historical generations cannot acquire a Grant.
                 sqlx::query(
-                    "SELECT seg.id AS segment_id, a.id AS attachment_id, a.site_id, p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, publication.generation AS segment_generation, publication.content_hash AS segment_content_hash FROM segment_attachments a JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN sites site ON site.id = a.site_id AND site.tenant_id = a.tenant_id AND site.state = 'ACTIVE' JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = seg.tenant_id AND rollout.segment_id = seg.id AND rollout.segment_generation = seg.current_generation JOIN site_route_projection_publications target ON target.tenant_id = a.tenant_id AND target.segment_id = a.segment_id AND target.attachment_id = a.id AND target.device_id = a.device_id AND target.device_key_id = a.device_key_id AND target.segment_generation = seg.current_generation JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.projection_publication_id = p.id AND member.attachment_id = p.attachment_id AND member.projection_id = p.projection_id JOIN segment_route_publications publication ON publication.id = member.segment_publication_id AND publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash LEFT JOIN runtime_configuration_status status ON status.tenant_id = a.tenant_id AND status.device_id = a.device_id AND status.device_key_id = a.device_key_id WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY') AND p.projection_id = ? AND p.projection_generation = ? AND p.content_hash = ? AND publication.expires_at >= UNIX_TIMESTAMP() AND publication.stale_until >= UNIX_TIMESTAMP() AND ((p.id = target.id AND member.rollout_ordinal <= rollout.allowed_ordinal) OR (p.id = status.active_projection_publication_id AND p.segment_generation < seg.current_generation AND (p.segment_generation = seg.current_generation - 1 OR (? AND NOT EXISTS(SELECT 1 FROM segment_route_publications changed WHERE changed.tenant_id = p.tenant_id AND changed.segment_id = p.segment_id AND changed.generation > p.segment_generation AND changed.generation <= seg.current_generation AND changed.activation_mode <> 'POLICY_ONLY'))))) FOR SHARE",
+                    "SELECT seg.id AS segment_id, a.id AS attachment_id, a.site_id, p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, publication.generation AS segment_generation, publication.content_hash AS segment_content_hash FROM segment_attachments a JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN sites site ON site.id = a.site_id AND site.tenant_id = a.tenant_id AND site.state = 'ACTIVE' JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = seg.tenant_id AND rollout.segment_id = seg.id AND rollout.segment_generation = seg.current_generation JOIN site_route_projection_publications target ON target.tenant_id = a.tenant_id AND target.segment_id = a.segment_id AND target.attachment_id = a.id AND target.device_id = a.device_id AND target.device_key_id = a.device_key_id AND target.segment_generation = seg.current_generation JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.projection_publication_id = p.id AND member.attachment_id = p.attachment_id AND member.projection_id = p.projection_id JOIN segment_route_publications publication ON publication.id = member.segment_publication_id AND publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.content_hash = p.segment_content_hash LEFT JOIN runtime_configuration_status status ON status.tenant_id = a.tenant_id AND status.device_id = a.device_id AND status.device_key_id = a.device_key_id WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY') AND p.projection_id = ? AND p.projection_generation = ? AND p.content_hash = ? AND publication.expires_at >= UNIX_TIMESTAMP() AND publication.stale_until >= UNIX_TIMESTAMP() AND ((p.id = target.id AND member.rollout_ordinal <= rollout.allowed_ordinal) OR (p.id = status.active_projection_publication_id AND p.segment_generation < seg.current_generation AND (p.segment_generation = seg.current_generation - 1 OR (? AND p.segment_generation >= seg.current_generation - LEAST(seg.current_generation, 32) AND NOT EXISTS(SELECT 1 FROM segment_route_publications changed WHERE changed.tenant_id = p.tenant_id AND changed.segment_id = p.segment_id AND changed.generation > p.segment_generation AND changed.generation <= seg.current_generation AND changed.activation_mode <> 'POLICY_ONLY'))))) FOR SHARE",
                 ).bind(lookup.tenant_id).bind(lookup.device_id).bind(lookup.device_key_id)
                     .bind(requested.policy_id).bind(requested.generation).bind(requested.content_hash.as_slice())
                     .bind(self.policy_isolation)
@@ -159,6 +170,7 @@ impl AuthorizationRepository {
                 "SELECT seg.id AS segment_id, a.id AS attachment_id, a.site_id, p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, publication.generation AS segment_generation, publication.content_hash AS segment_content_hash \
                  FROM segment_attachments a \
                  JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' \
+                 JOIN sites site ON site.id = a.site_id AND site.tenant_id = a.tenant_id AND site.state = 'ACTIVE' \
                  JOIN runtime_configuration_rollouts rollout ON rollout.tenant_id = seg.tenant_id AND rollout.segment_id = seg.id AND rollout.segment_generation = seg.current_generation \
                  JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id \
                  JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.projection_publication_id = p.id AND member.attachment_id = p.attachment_id AND member.projection_id = p.projection_id \
@@ -180,6 +192,18 @@ impl AuthorizationRepository {
             .await?
             };
             if policies.len() != 1 {
+                if self.policy_isolation {
+                    if let Some(requested) = requested {
+                        let resync: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segment_attachments a JOIN segments seg ON seg.id = a.segment_id AND seg.tenant_id = a.tenant_id AND seg.state = 'ACTIVE' JOIN sites site ON site.id = a.site_id AND site.tenant_id = a.tenant_id AND site.state = 'ACTIVE' JOIN runtime_configuration_status status ON status.tenant_id = a.tenant_id AND status.device_id = a.device_id AND status.device_key_id = a.device_key_id JOIN site_route_projection_publications p ON p.id = status.active_projection_publication_id AND p.tenant_id = a.tenant_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id WHERE a.tenant_id = ? AND a.device_id = ? AND a.device_key_id = ? AND a.state IN ('ACTIVE','STANDBY') AND p.projection_id = ? AND p.projection_generation = ? AND p.content_hash = ? AND p.segment_generation < seg.current_generation - LEAST(seg.current_generation, 32)")
+                            .bind(lookup.tenant_id).bind(lookup.device_id).bind(lookup.device_key_id)
+                            .bind(requested.policy_id).bind(requested.generation).bind(requested.content_hash.as_slice())
+                            .fetch_one(&mut *transaction).await?;
+                        if resync == 1 {
+                            transaction.rollback().await?;
+                            return Err(RepositoryError::RoutePolicyResyncRequired);
+                        }
+                    }
+                }
                 transaction.rollback().await?;
                 return Err(RepositoryError::InvalidAuthorizationScope);
             }

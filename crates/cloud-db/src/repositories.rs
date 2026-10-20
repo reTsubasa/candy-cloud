@@ -45,6 +45,8 @@ pub enum RepositoryError {
     InvalidGrantScope,
     #[error("authorization snapshot requires tenant, device, key and node pool scope")]
     InvalidAuthorizationScope,
+    #[error("code=route_policy_resync_required module=sdwan_policy reason=compatibility_window_exceeded action=fetch_latest_policy")]
+    RoutePolicyResyncRequired,
     #[error("invalid persisted Grant record")]
     InvalidGrantRecord,
     #[error("enrollment requires tenant, device, key and actor scope")]

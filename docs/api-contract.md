@@ -400,22 +400,29 @@ rolling activation. Each entry is an independent object with this shape:
 ```
 
 Cloud returns the current generation and, when the isolation gate is enabled,
-up to 32 exact retained generations, including N-1 drain fallback identities
-in this bound. A retained generation is returned only before its signed
-`stale_until` boundary, its peer/device/key/attachment
-scope still matches, and every intervening publication is `POLICY_ONLY`.
-Without the gate the compatibility response remains the existing exact `N-1`
-behavior. A generation past `stale_until`, an empty or duplicate catalog, a malformed
-hash, or a generation outside the bounded interval fails closed. If the bound
-would be exceeded, publication is back-pressured; Cloud never drops a running
-identity merely to make the response fit.
+up to 32 exact retained generations in `[N-32, N-1]`, including N-1 drain fallback
+identities. Each peer contributes at most one retained identity. A retained
+generation must remain before its signed `stale_until` boundary, match the current
+peer/device/key/attachment scope, and have only `POLICY_ONLY` publications between
+it and the current target. Without the gate the existing exact N-1 behavior
+remains.
 
-Publication also reserves the complete 32-generation interval so later ACTIVE
-receipts cannot split old groups into a 33rd compatibility group. This bounded
-bridge can still back-pressure a Segment after 32 policy revisions when a peer
-has not advanced; complete per-site publication isolation remains unfinished.
-New Grants always require `expires_at` validity even while existing connections
-retain compatibility material through `stale_until`.
+A peer older than this interval is marked `policy_resync_required` with reason
+`compatibility_window_exceeded`. Cloud emits `SDWAN_PEER_POLICY_RESYNC_REQUIRED`
+once for that running projection, preserves its actual active pointer, and
+continues publishing healthy peers. New Grants for its exact retired reference
+return HTTP 409 `{"code":"route_policy_resync_required"}`; arbitrary historical
+or wrong-hash references remain denied. Fetching and applying the latest target
+clears the derived resync state when that peer reports ACTIVE. Existing authorized
+connections remain governed by the latest packet pump; retiring an admission
+catalog must never rebuild the TUN or disconnect unrelated peers.
+
+Current and retained identity sets each have a 4096-entry bound; their combined
+budget is 8192 because a peer can legitimately appear once in each. The 32-group
+bound and existing signed-object/document byte limits remain unchanged. These are
+parser bounds, not a tested 4096-peer capacity promise. New Grants require
+`expires_at` validity; already authorized connections may retain compatibility
+through `stale_until`.
 
 Runtime must verify the compatibility Segment snapshot and every projection as
 a separate catalog. It selects an inbound catalog only by the Grant's exact

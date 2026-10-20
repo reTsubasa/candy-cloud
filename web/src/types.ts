@@ -151,6 +151,10 @@ export type RuntimeConfigurationStatus = {
   reported_at: string;
   current: boolean;
   running_current?: boolean;
+  policy_resync_required?: boolean;
+  policy_resync_reason?: string | null;
+  active_segment_generation?: number | null;
+  target_segment_generation?: number | null;
   activation_mode?: 'TUNNEL' | 'POLICY_ONLY' | null;
 };
 

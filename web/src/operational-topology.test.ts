@@ -217,6 +217,24 @@ describe('operational topology', () => {
     expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)?.status.code).toBe('active');
   });
 
+  it('keeps a local policy resync separate from healthy tunnel evidence', () => {
+    const { resources, telemetry } = threeSiteFixture();
+    const lagging = { ...configurationStatus('wrt'), current: false, running_current: false,
+      policy_resync_required: true, policy_resync_reason: 'compatibility_window_exceeded',
+      active_segment_generation: 1, target_segment_generation: 35 };
+    const snapshot = buildOperationalTopology(resources, [lagging, configurationStatus('us'), configurationStatus('hk')], {}, threeSiteIds.segment, telemetry, 90, Date.parse('2026-08-26T06:00:00Z'));
+    expect(snapshot.nodes.find((node) => node.id === threeSiteIds.nodes.wrt)).toMatchObject({
+      policyResyncRequired: true, policyResyncReason: 'compatibility_window_exceeded',
+      applyStatus: { code: 'pending', label: '路由策略需重同步', tone: 'orange' },
+      activeSegmentGeneration: 1, targetSegmentGeneration: 35,
+      status: { code: 'healthy', tone: 'green' },
+    });
+    expect(snapshot.nodes.filter((node) => node.policyResyncRequired)).toHaveLength(1);
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.wrtHk)?.status.code).toBe('active');
+    expect(snapshot.links.find((link) => link.id === threeSiteIds.peers.hkUs)?.status.code).toBe('active');
+    expect(snapshot.nodes.find((node) => node.id === threeSiteIds.nodes.hk)?.policyResyncRequired).toBe(false);
+  });
+
   it('keeps a Peer with one failed Stream partially available and exposes its fault', () => {
     const { resources, telemetry } = threeSiteFixture();
     telemetry[0].paths[0] = {

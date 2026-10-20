@@ -992,6 +992,10 @@ pub struct RuntimeConfigurationStatusItem {
     pub reported_at: chrono::DateTime<Utc>,
     pub current: bool,
     pub running_current: bool,
+    pub policy_resync_required: bool,
+    pub policy_resync_reason: Option<String>,
+    pub active_segment_generation: Option<u64>,
+    pub target_segment_generation: Option<u64>,
     pub activation_mode: Option<String>,
 }
 
@@ -1321,6 +1325,10 @@ pub async fn runtime_configuration_statuses(
             reported_at: record.reported_at,
             current: record.current,
             running_current: record.running_current,
+            policy_resync_required: record.policy_resync_required,
+            policy_resync_reason: record.policy_resync_reason,
+            active_segment_generation: record.active_segment_generation,
+            target_segment_generation: record.target_segment_generation,
             activation_mode: record.activation_mode,
         })
         .collect();

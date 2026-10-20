@@ -109,6 +109,10 @@ pub struct RuntimeConfigurationStatusRecord {
     pub current: bool,
     /// Whether the acknowledged active projection is also the latest target.
     pub running_current: bool,
+    pub policy_resync_required: bool,
+    pub policy_resync_reason: Option<String>,
+    pub active_segment_generation: Option<u64>,
+    pub target_segment_generation: Option<u64>,
     /// Publication that acts as the rollout handoff identity for this node.
     pub handoff_id: Uuid,
     pub segment_generation: Option<u64>,
@@ -506,6 +510,9 @@ impl ControlRepository {
                projection.segment_generation, member.rollout_ordinal,
                rollout.member_count AS rollout_member_count, rollout.activation_mode,
                rollout.state AS rollout_phase,
+               active_projection.segment_generation AS active_segment_generation,
+               active_segment.current_generation AS target_segment_generation,
+               COALESCE(active_projection.segment_generation < active_segment.current_generation - LEAST(active_segment.current_generation, 32), FALSE) AS policy_resync_required,
                EXISTS(
                  SELECT 1 FROM segment_attachments attachment
                  WHERE attachment.id = projection.attachment_id
@@ -549,6 +556,14 @@ impl ControlRepository {
              LEFT JOIN site_route_projection_publications projection
                ON projection.id = status.projection_publication_id
                AND projection.tenant_id = status.tenant_id
+             LEFT JOIN site_route_projection_publications active_projection
+               ON active_projection.id = status.active_projection_publication_id
+               AND active_projection.tenant_id = status.tenant_id
+               AND active_projection.device_id = status.device_id
+               AND active_projection.device_key_id = status.device_key_id
+             LEFT JOIN segments active_segment
+               ON active_segment.id = active_projection.segment_id
+               AND active_segment.tenant_id = active_projection.tenant_id
              LEFT JOIN segment_route_publication_members member
                ON member.tenant_id = projection.tenant_id
                AND member.projection_publication_id = projection.id
@@ -579,6 +594,14 @@ impl ControlRepository {
                     reported_at: row.try_get("reported_at")?,
                     current: row.try_get("current_configuration")?,
                     running_current: row.try_get("running_current")?,
+                    policy_resync_required: row.try_get("policy_resync_required")?,
+                    policy_resync_reason: if row.try_get("policy_resync_required")? {
+                        Some("compatibility_window_exceeded".into())
+                    } else {
+                        None
+                    },
+                    active_segment_generation: row.try_get("active_segment_generation")?,
+                    target_segment_generation: row.try_get("target_segment_generation")?,
                     handoff_id: row.try_get("projection_publication_id")?,
                     segment_generation: row.try_get("segment_generation")?,
                     activation_mode: row.try_get("activation_mode")?,

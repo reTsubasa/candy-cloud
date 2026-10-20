@@ -1334,3 +1334,17 @@ async fn exact_route_policy_request_preserves_hash_and_rejects_invalid_bindings(
     }
     assert!(service.grants.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn retired_policy_grant_returns_explicit_resync_conflict() {
+    use axum::response::IntoResponse;
+    let response =
+        cloud_auth::routes::ApiError::Service(GrantServiceError::RoutePolicyResyncRequired)
+            .into_response();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+        serde_json::json!({"code":"route_policy_resync_required"})
+    );
+}

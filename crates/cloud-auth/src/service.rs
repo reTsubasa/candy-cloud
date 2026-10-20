@@ -117,6 +117,12 @@ impl TenantAuthService for DatabaseTenantAuthService {
                             | PrepareGrantError::MissingTunnelFeatures,
                         ) => GrantServiceError::Denied,
                         GrantCoordinatorError::Conflict => GrantServiceError::Conflict,
+                        GrantCoordinatorError::Database(
+                            cloud_db::RepositoryError::RoutePolicyResyncRequired,
+                        ) => GrantServiceError::RoutePolicyResyncRequired,
+                        GrantCoordinatorError::Database(
+                            cloud_db::RepositoryError::InvalidAuthorizationScope,
+                        ) => GrantServiceError::Denied,
                         GrantCoordinatorError::Database(_)
                         | GrantCoordinatorError::SigningKeyUnavailable
                         | GrantCoordinatorError::CoreModuleUnavailable => {

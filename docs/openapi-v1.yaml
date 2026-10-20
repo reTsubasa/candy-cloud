@@ -819,7 +819,10 @@ paths:
         issuance to the exact current target or acknowledged active projection.
         N-1 retains transport migration semantics; older active projections
         require the disabled-by-default multi-generation policy-isolation gate,
-        a policy-only chain, and unexpired signed authorization. Deploy this
+        a policy-only chain, an active reference inside `[N-32,N-1]`, and unexpired
+        signed authorization. An older acknowledged active reference returns HTTP
+        409 with `{"code":"route_policy_resync_required"}`; refresh the latest
+        configuration without stopping existing forwarding. Deploy this
         Cloud version before Runtime starts sending `route_policy`.
       requestBody:
         required: true
@@ -2588,7 +2591,7 @@ components:
     RuntimeConfigurationStatusItem:
       type: object
       additionalProperties: false
-      required: [device_id, device_key_id, projection_publication_id, state, error_code, reported_at, current, running_current, active_projection_publication_id, activation_mode]
+      required: [device_id, device_key_id, projection_publication_id, state, error_code, reported_at, current, running_current, active_projection_publication_id, activation_mode, policy_resync_required, policy_resync_reason, active_segment_generation, target_segment_generation]
       properties:
         device_id: { $ref: "#/components/schemas/Uuid" }
         device_key_id: { $ref: "#/components/schemas/Uuid" }
@@ -2601,6 +2604,10 @@ components:
           description: Last projection acknowledged ACTIVE; preserved when a newer target is prepared or rejected. This is configuration acknowledgement, not live tunnel health.
         current: { type: boolean, description: True when the reported projection is the latest target for its attachment. PREPARED and REJECTED receipts can be current; unrelated attachment updates do not invalidate it. }
         running_current: { type: boolean, description: True when the last acknowledged ACTIVE projection is the latest target for its attachment. False can mean the previous active configuration is preserved while a new target is pending or rejected. }
+        policy_resync_required: { type: boolean, description: True when the acknowledged active reference is older than the bounded admission window. Only that peer needs latest-policy recovery; this is not a live tunnel-down signal. }
+        policy_resync_reason: { type: [string, "null"], enum: [compatibility_window_exceeded, null] }
+        active_segment_generation: { type: [integer, "null"], minimum: 1 }
+        target_segment_generation: { type: [integer, "null"], minimum: 1 }
         activation_mode: { type: [string, "null"], enum: [TUNNEL, POLICY_ONLY, null], description: Rollout mode of the reported publication; independent of live Peer health. }
     RuntimeTelemetry:
       type: object

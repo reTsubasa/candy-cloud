@@ -12,6 +12,7 @@ use crate::DbPool;
 const MAX_SIGNED_ENVELOPE_LEN: usize = 1024 * 1024;
 const MAX_ACTOR_ID_LEN: usize = 120;
 const MAX_PROJECTIONS: usize = 4096;
+const MAX_CATALOG_ENTRIES: usize = 2 * MAX_PROJECTIONS;
 // Each peer contributes at most one retained version. The group limit bounds
 // repeated signed segment envelopes without coupling normal policy publication
 // to every site's receipt. These bounds are shared with Runtime and Core.
@@ -169,6 +170,10 @@ impl RuntimeConfigurationRecord {
             || self.compatibility_generations.iter().any(|generation| {
                 generation.segment_generation == 0
                     || generation.segment_generation >= self.segment_generation
+                    || generation
+                        .segment_generation
+                        .saturating_add(MAX_COMPATIBILITY_GENERATIONS as u64)
+                        < self.segment_generation
                     || generation.segment_content_hash == [0; 32]
                     || generation.signed_segment_envelope.is_empty()
                     || generation.signed_segment_envelope.len() > MAX_SIGNED_ENVELOPE_LEN
@@ -199,10 +204,11 @@ impl RuntimeConfigurationRecord {
                 }
             }
         }
-        if compatible_peers
-            .len()
-            .saturating_add(self.peer_projection_catalog.len())
-            > MAX_PROJECTIONS
+        if compatible_peers.len() > MAX_PROJECTIONS
+            || compatible_peers
+                .len()
+                .saturating_add(self.peer_projection_catalog.len())
+                > MAX_CATALOG_ENTRIES
         {
             return Err(RuntimeConfigurationError::InvalidRecord);
         }
@@ -305,7 +311,7 @@ mod runtime_configuration_tests {
     #[test]
     fn compatibility_groups_are_bounded_ordered_and_have_one_version_per_peer() {
         let mut configuration = record(Vec::new());
-        configuration.segment_generation = 40;
+        configuration.segment_generation = 33;
         configuration.compatibility_generations = (1..=32)
             .map(|generation| RuntimeCompatibilityGeneration {
                 segment_generation: generation,
@@ -320,6 +326,9 @@ mod runtime_configuration_tests {
             device_key_id: configuration.device_key_id,
         };
         assert!(configuration.validate(&lookup).is_ok());
+        let mut out_of_window = configuration.clone();
+        out_of_window.segment_generation = 34;
+        assert!(out_of_window.validate(&lookup).is_err());
         let mut duplicate = configuration.clone();
         duplicate.compatibility_generations[1].peer_projection_catalog = duplicate
             .compatibility_generations[0]
@@ -356,7 +365,7 @@ mod runtime_configuration_tests {
             segment_generation: 1,
             segment_content_hash: [13; 32],
             signed_segment_envelope: vec![14],
-            peer_projection_catalog: remote_peers,
+            peer_projection_catalog: remote_peers.clone(),
         }];
         let lookup = RuntimeConfigurationLookup {
             tenant_id: configuration.tenant_id,
@@ -364,6 +373,11 @@ mod runtime_configuration_tests {
             device_key_id: configuration.device_key_id,
         };
         assert!(configuration.validate(&lookup).is_ok());
+        configuration.peer_projection_catalog = remote_peers;
+        assert!(
+            configuration.validate(&lookup).is_ok(),
+            "current and retained have separate bounded identity sets"
+        );
 
         configuration.compatibility_generations[0]
             .peer_projection_catalog
@@ -2681,34 +2695,51 @@ impl SdwanRepository {
                 transaction.rollback().await?;
                 return Err(SdwanError::RolloutPending);
             }
-            let retained_generations: i64 = sqlx::query_scalar(
-                "SELECT COUNT(DISTINCT retained.generation) FROM (SELECT active.segment_generation AS generation FROM runtime_configuration_status status JOIN site_route_projection_publications active ON active.id = status.active_projection_publication_id AND active.tenant_id = status.tenant_id JOIN segment_attachments attachment ON attachment.tenant_id = active.tenant_id AND attachment.id = active.attachment_id AND attachment.device_id = active.device_id AND attachment.device_key_id = active.device_key_id AND attachment.state IN ('ACTIVE','STANDBY') JOIN segment_route_publications publication ON publication.id = active.publication_id AND publication.stale_until >= UNIX_TIMESTAMP() WHERE active.tenant_id = ? AND active.segment_id = ? UNION ALL SELECT ? AS generation FROM segment_attachments attachment LEFT JOIN runtime_configuration_status status ON status.tenant_id = attachment.tenant_id AND status.device_id = attachment.device_id AND status.device_key_id = attachment.device_key_id WHERE attachment.tenant_id = ? AND attachment.segment_id = ? AND attachment.state IN ('ACTIVE','STANDBY') AND status.active_projection_publication_id IS NULL) retained",
-            )
-            .bind(write.tenant_id)
-            .bind(write.segment_id)
-            .bind(current_generation)
-            .bind(write.tenant_id)
-            .bind(write.segment_id)
-            .fetch_one(&mut *transaction)
-            .await?;
-            if retained_generations > MAX_COMPATIBILITY_GENERATIONS as i64 {
-                transaction.rollback().await?;
-                return Err(SdwanError::RolloutPending);
-            }
-            // Count alone is not closed under later ACTIVE receipts: a peer
-            // advancing to current introduces an N-1 drain identity while
-            // another peer can retain its old group. Bound the generation
-            // interval too, reserving every possible late receipt/fallback
-            // within it. Never evict a running identity to fit the response.
-            let oldest_active: Option<u64> = sqlx::query_scalar(
-                "SELECT MIN(active.segment_generation) FROM runtime_configuration_status status JOIN site_route_projection_publications active ON active.id = status.active_projection_publication_id AND active.tenant_id = status.tenant_id JOIN segment_attachments attachment ON attachment.tenant_id = active.tenant_id AND attachment.id = active.attachment_id AND attachment.device_id = active.device_id AND attachment.device_key_id = active.device_key_id AND attachment.state IN ('ACTIVE','STANDBY') JOIN sites site ON site.id = attachment.site_id AND site.tenant_id = attachment.tenant_id AND site.state = 'ACTIVE' JOIN devices device ON device.id = attachment.device_id AND device.tenant_id = attachment.tenant_id AND device.status = 'ACTIVE' JOIN device_keys device_key ON device_key.id = attachment.device_key_id AND device_key.device_id = device.id AND device_key.tenant_id = attachment.tenant_id AND device_key.status = 'ACTIVE' JOIN segment_route_publications publication ON publication.id = active.publication_id AND publication.stale_until >= UNIX_TIMESTAMP() WHERE active.tenant_id = ? AND active.segment_id = ? AND NOT EXISTS(SELECT 1 FROM segment_route_publications changed WHERE changed.tenant_id = active.tenant_id AND changed.segment_id = active.segment_id AND changed.generation > active.segment_generation AND changed.generation <= ? AND changed.activation_mode <> 'POLICY_ONLY')",
-            ).bind(write.tenant_id).bind(write.segment_id).bind(current_generation)
-                .fetch_one(&mut *transaction).await?;
-            if oldest_active.is_some_and(|oldest| {
-                write.generation.saturating_sub(oldest) > MAX_COMPATIBILITY_GENERATIONS as u64
-            }) {
-                transaction.rollback().await?;
-                return Err(SdwanError::RolloutPending);
+            if self.policy_isolation {
+                // Only the lagging peer loses permission to open its retired
+                // reference. Keep its real active pointer for observability;
+                // healthy policy publication and current-target recovery run on.
+                let lagging = sqlx::query(
+                    "SELECT active.device_id, active.id AS active_publication_id, active.segment_generation FROM runtime_configuration_status status JOIN site_route_projection_publications active ON active.id = status.active_projection_publication_id AND active.tenant_id = status.tenant_id JOIN segment_attachments attachment ON attachment.id = active.attachment_id AND attachment.tenant_id = active.tenant_id AND attachment.device_id = active.device_id AND attachment.device_key_id = active.device_key_id AND attachment.state IN ('ACTIVE','STANDBY') WHERE active.tenant_id = ? AND active.segment_id = ? AND active.segment_generation < ?",
+                ).bind(write.tenant_id).bind(write.segment_id)
+                    .bind(write.generation.saturating_sub(MAX_COMPATIBILITY_GENERATIONS as u64))
+                    .fetch_all(&mut *transaction).await?;
+                let mut events = Vec::with_capacity(lagging.len());
+                for peer in lagging {
+                    let device: Uuid = peer.try_get("device_id")?;
+                    let active: Uuid = peer.try_get("active_publication_id")?;
+                    let generation: u64 = peer.try_get("segment_generation")?;
+                    let mut id = Sha256::new();
+                    id.update(b"candy/sdwan/peer-policy-resync/v1\0");
+                    id.update(write.tenant_id.as_bytes());
+                    id.update(active.as_bytes());
+                    let digest = id.finalize();
+                    let mut bytes = [0; 16];
+                    bytes.copy_from_slice(&digest[..16]);
+                    events.push((Uuid::from_bytes(bytes), device, serde_json::json!({
+                        "code":"route_policy_resync_required", "module":"sdwan_policy",
+                        "reason":"compatibility_window_exceeded", "active_projection_publication_id":active,
+                        "active_segment_generation":generation, "target_segment_generation":write.generation,
+                        "action":"fetch_latest_policy_preserve_existing_connections",
+                    }).to_string()));
+                }
+                if !events.is_empty() {
+                    // Stable event IDs deduplicate by the primary key. No
+                    // unindexed JSON scan of tenant audit history on publish.
+                    let mut query = sqlx::QueryBuilder::<MySql>::new("INSERT INTO audit_events (id, tenant_id, actor_type, actor_id, action, object_type, object_id, metadata_json) ");
+                    query.push_values(events, |mut row, (id, device, metadata)| {
+                        row.push_bind(id)
+                            .push_bind(write.tenant_id)
+                            .push_bind("WORKER")
+                            .push_bind(&write.actor_id)
+                            .push_bind("SDWAN_PEER_POLICY_RESYNC_REQUIRED")
+                            .push_bind("DEVICE")
+                            .push_bind(device.to_string())
+                            .push_bind(metadata);
+                    });
+                    query.push(" ON DUPLICATE KEY UPDATE id = id");
+                    query.build().execute(&mut *transaction).await?;
+                }
             }
         }
 
@@ -2945,7 +2976,7 @@ async fn load_current_runtime_configuration(
     // change, and expiry/revoked device/site/attachment checks remain mandatory.
     // A current/no-receipt peer keeps the bounded N-1 drain fallback.
     let compatible_catalog_rows = sqlx::query(
-        "SELECT p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope, publication.generation AS segment_generation, publication.content_hash AS segment_content_hash, publication.signed_envelope AS signed_segment_envelope FROM segment_attachments a JOIN sites site ON site.id = a.site_id AND site.tenant_id = a.tenant_id AND site.state = 'ACTIVE' JOIN devices device ON device.id = a.device_id AND device.tenant_id = a.tenant_id AND device.status = 'ACTIVE' JOIN device_keys device_key ON device_key.id = a.device_key_id AND device_key.tenant_id = a.tenant_id AND device_key.device_id = device.id AND device_key.status = 'ACTIVE' JOIN site_route_projection_publications target ON target.tenant_id = a.tenant_id AND target.segment_id = a.segment_id AND target.attachment_id = a.id AND target.device_id = a.device_id AND target.device_key_id = a.device_key_id AND target.segment_generation = ? LEFT JOIN runtime_configuration_status status ON status.tenant_id = a.tenant_id AND status.device_id = a.device_id AND status.device_key_id = a.device_key_id LEFT JOIN site_route_projection_publications active ON active.id = status.active_projection_publication_id AND active.tenant_id = status.tenant_id JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND (p.id = active.id OR ((active.id IS NULL OR active.segment_generation = ?) AND p.segment_generation = ?)) JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.stale_until >= UNIX_TIMESTAMP() JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id WHERE a.tenant_id = ? AND a.segment_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY') AND p.projection_id <> ? AND p.segment_generation < ? AND (p.segment_generation = ? OR (? AND NOT EXISTS(SELECT 1 FROM segment_route_publications changed WHERE changed.tenant_id = p.tenant_id AND changed.segment_id = p.segment_id AND changed.generation > p.segment_generation AND changed.generation <= ? AND changed.activation_mode <> 'POLICY_ONLY'))) AND EXISTS(SELECT 1 FROM nodes local_node JOIN node_endpoints endpoint ON endpoint.node_id = local_node.id AND endpoint.status = 'ACTIVE' AND endpoint.transport = 'CANDY_QUIC_UDP' JOIN runtime_projection_transport_catalog local_catalog ON local_catalog.transport_node_id = local_node.id AND local_catalog.transport_node_key_id = local_node.device_key_id AND local_catalog.tenant_id = local_node.tenant_id AND local_catalog.segment_id = p.segment_id AND local_catalog.segment_generation = ? AND local_catalog.projection_id <> ? WHERE local_node.tenant_id = ? AND local_node.device_id = ? AND local_node.device_key_id = ? AND local_node.status = 'ACTIVE') ORDER BY publication.generation, p.projection_id, p.projection_generation",
+        "SELECT p.projection_id, p.projection_generation, p.content_hash AS projection_content_hash, p.signed_envelope, publication.generation AS segment_generation, publication.content_hash AS segment_content_hash, publication.signed_envelope AS signed_segment_envelope FROM segment_attachments a JOIN sites site ON site.id = a.site_id AND site.tenant_id = a.tenant_id AND site.state = 'ACTIVE' JOIN devices device ON device.id = a.device_id AND device.tenant_id = a.tenant_id AND device.status = 'ACTIVE' JOIN device_keys device_key ON device_key.id = a.device_key_id AND device_key.tenant_id = a.tenant_id AND device_key.device_id = device.id AND device_key.status = 'ACTIVE' JOIN site_route_projection_publications target ON target.tenant_id = a.tenant_id AND target.segment_id = a.segment_id AND target.attachment_id = a.id AND target.device_id = a.device_id AND target.device_key_id = a.device_key_id AND target.segment_generation = ? LEFT JOIN runtime_configuration_status status ON status.tenant_id = a.tenant_id AND status.device_id = a.device_id AND status.device_key_id = a.device_key_id LEFT JOIN site_route_projection_publications active ON active.id = status.active_projection_publication_id AND active.tenant_id = status.tenant_id JOIN site_route_projection_publications p ON p.tenant_id = a.tenant_id AND p.segment_id = a.segment_id AND p.site_id = a.site_id AND p.attachment_id = a.id AND p.device_id = a.device_id AND p.device_key_id = a.device_key_id AND (p.id = active.id OR ((active.id IS NULL OR active.segment_generation = ?) AND p.segment_generation = ?)) JOIN segment_route_publications publication ON publication.id = p.publication_id AND publication.tenant_id = p.tenant_id AND publication.segment_id = p.segment_id AND publication.generation = p.segment_generation AND publication.stale_until >= UNIX_TIMESTAMP() JOIN segment_route_publication_members member ON member.tenant_id = p.tenant_id AND member.segment_publication_id = publication.id AND member.projection_publication_id = p.id AND member.projection_id = p.projection_id AND member.attachment_id = p.attachment_id WHERE a.tenant_id = ? AND a.segment_id = ? AND a.principal_kind = 'DEVICE' AND a.state IN ('ACTIVE','STANDBY') AND p.projection_id <> ? AND p.segment_generation < ? AND (NOT ? OR p.segment_generation >= ?) AND (p.segment_generation = ? OR (? AND NOT EXISTS(SELECT 1 FROM segment_route_publications changed WHERE changed.tenant_id = p.tenant_id AND changed.segment_id = p.segment_id AND changed.generation > p.segment_generation AND changed.generation <= ? AND changed.activation_mode <> 'POLICY_ONLY'))) AND EXISTS(SELECT 1 FROM nodes local_node JOIN node_endpoints endpoint ON endpoint.node_id = local_node.id AND endpoint.status = 'ACTIVE' AND endpoint.transport = 'CANDY_QUIC_UDP' JOIN runtime_projection_transport_catalog local_catalog ON local_catalog.transport_node_id = local_node.id AND local_catalog.transport_node_key_id = local_node.device_key_id AND local_catalog.tenant_id = local_node.tenant_id AND local_catalog.segment_id = p.segment_id AND local_catalog.segment_generation = ? AND local_catalog.projection_id <> ? WHERE local_node.tenant_id = ? AND local_node.device_id = ? AND local_node.device_key_id = ? AND local_node.status = 'ACTIVE') ORDER BY publication.generation, p.projection_id, p.projection_generation",
     )
     .bind(segment_generation)
     .bind(segment_generation)
@@ -2954,6 +2985,8 @@ async fn load_current_runtime_configuration(
     .bind(segment_id)
     .bind(projection_id)
     .bind(segment_generation)
+    .bind(policy_isolation)
+    .bind(segment_generation.saturating_sub(MAX_COMPATIBILITY_GENERATIONS as u64))
     .bind(segment_generation.saturating_sub(1))
     .bind(policy_isolation)
     .bind(segment_generation)
@@ -2967,7 +3000,7 @@ async fn load_current_runtime_configuration(
     if compatible_catalog_rows
         .len()
         .saturating_add(peer_projection_catalog.len())
-        > MAX_PROJECTIONS
+        > MAX_CATALOG_ENTRIES
     {
         return Err(RuntimeConfigurationError::AmbiguousConfiguration);
     }

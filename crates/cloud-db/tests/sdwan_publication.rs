@@ -587,29 +587,166 @@ async fn tunnel_host_catalog_contains_remote_route_owners_and_excludes_local_pro
         .compatibility_generations
         .iter()
         .all(|group| group.segment_generation != 2));
-    // Reserving the entire interval makes the bound safe under any later
-    // ACTIVE split or N-1 fallback, not just the groups observed at publish.
+    // A peer that cannot advance leaves the bounded admission window, not
+    // a global publication barrier. Healthy peers keep applying every target.
     sqlx::query("UPDATE runtime_configuration_rollouts SET state = 'COMPLETE', activation_mode = 'POLICY_ONLY' WHERE tenant_id = ? AND segment_id = ? AND segment_generation = 4")
         .bind(tenant_id).bind(segment_id).execute(&pool).await.unwrap();
     let mut last = fourth.clone();
-    for generation in 5..=33 {
+    for generation in 5..=35 {
         let next = next_policy(&last, u8::try_from(generation + 60).unwrap());
         assert_eq!(next.generation, generation);
         isolated.publish(&next).await.unwrap();
+        let RuntimeConfigurationState::Current(healthy) = isolated
+            .current_runtime_configuration(&second_lookup)
+            .await
+            .unwrap()
+        else {
+            panic!("healthy target disappeared")
+        };
+        isolated
+            .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+                lookup: second_lookup.clone(),
+                projection_publication_id: healthy.projection_publication_id,
+                projection_content_hash: healthy.projection_content_hash,
+                envelope_sha256: healthy.envelope_sha256(),
+                apply_state: RuntimeConfigurationApplyState::Active,
+                error_code: None,
+            })
+            .await
+            .unwrap();
         last = next;
     }
-    assert_eq!(
-        isolated.publish(&next_policy(&last, 100)).await,
-        Err(SdwanError::RolloutPending),
-        "generation 1 still active: generation 34 must reserve a 33rd slot"
-    );
+    let RuntimeConfigurationState::Current(recovery) = isolated
+        .current_runtime_configuration(&local_lookup)
+        .await
+        .unwrap()
+    else {
+        panic!("lagging peer must receive latest recovery target")
+    };
+    assert_eq!(recovery.segment_generation, 35);
+    assert!(recovery
+        .compatibility_generations
+        .iter()
+        .all(|group| group.segment_generation >= 3));
+    assert!(matches!(
+        authorization
+            .load_for_policy(&auth_lookup, Some(&exact(&second.projections[0])))
+            .await,
+        Err(cloud_db::RepositoryError::RoutePolicyResyncRequired)
+    ));
+    let mut forged_retired = exact(&second.projections[0]);
+    forged_retired.content_hash[0] ^= 1;
+    assert!(matches!(
+        authorization
+            .load_for_policy(&auth_lookup, Some(&forged_retired))
+            .await,
+        Err(cloud_db::RepositoryError::InvalidAuthorizationScope)
+    ));
     assert!(
-        isolated
-            .current_runtime_configuration(&local_lookup)
+        authorization
+            .load_for_policy(&auth_lookup, Some(&exact(&last.projections[0])))
             .await
-            .is_ok(),
-        "bounded publication backpressure must preserve readable current configuration"
+            .unwrap()
+            .is_some(),
+        "current recovery target remains authorized"
     );
+    // Revocation takes precedence over recoverable resync hints. Omitting
+    // the exact binding cannot bypass disabled-site authorization either.
+    sqlx::query("UPDATE sites SET state = 'DISABLED' WHERE id = ?")
+        .bind(local.site_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        authorization.load(&auth_lookup).await,
+        Err(cloud_db::RepositoryError::InvalidAuthorizationScope)
+    ));
+    assert!(matches!(
+        authorization
+            .load_for_policy(&auth_lookup, Some(&exact(&second.projections[0])))
+            .await,
+        Err(cloud_db::RepositoryError::InvalidAuthorizationScope)
+    ));
+    sqlx::query("UPDATE sites SET state = 'ACTIVE' WHERE id = ?")
+        .bind(local.site_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE devices SET status = 'SUSPENDED' WHERE id = ?")
+        .bind(local.device_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(authorization
+        .load_for_policy(&auth_lookup, Some(&exact(&second.projections[0])))
+        .await
+        .unwrap()
+        .is_none());
+    sqlx::query("UPDATE devices SET status = 'ACTIVE' WHERE id = ?")
+        .bind(local.device_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE entitlements SET status = 'SUSPENDED' WHERE tenant_id = ?")
+        .bind(tenant_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(authorization
+        .load_for_policy(&auth_lookup, Some(&exact(&second.projections[0])))
+        .await
+        .unwrap()
+        .is_none());
+    sqlx::query("UPDATE entitlements SET status = 'ACTIVE' WHERE tenant_id = ?")
+        .bind(tenant_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let statuses = cloud_db::control::ControlRepository::new(pool.clone())
+        .runtime_configuration_statuses(tenant_id)
+        .await
+        .unwrap();
+    let lagging = statuses
+        .iter()
+        .find(|status| status.device_id == local.device_id)
+        .unwrap();
+    assert!(lagging.policy_resync_required);
+    assert_eq!(lagging.active_segment_generation, Some(2));
+    assert_eq!(lagging.target_segment_generation, Some(35));
+    let healthy = statuses
+        .iter()
+        .find(|status| status.device_id == sites[1].device_id)
+        .unwrap();
+    assert!(!healthy.policy_resync_required);
+    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_events WHERE tenant_id = ? AND action = 'SDWAN_PEER_POLICY_RESYNC_REQUIRED' AND object_id = ?")
+        .bind(tenant_id).bind(local.device_id.to_string()).fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        events, 1,
+        "lagging peer receives one explicit resync transition"
+    );
+    isolated
+        .record_runtime_configuration_status(&RuntimeConfigurationStatusWrite {
+            lookup: local_lookup.clone(),
+            projection_publication_id: recovery.projection_publication_id,
+            projection_content_hash: recovery.projection_content_hash,
+            envelope_sha256: recovery.envelope_sha256(),
+            apply_state: RuntimeConfigurationApplyState::Active,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    let statuses = cloud_db::control::ControlRepository::new(pool.clone())
+        .runtime_configuration_statuses(tenant_id)
+        .await
+        .unwrap();
+    assert!(
+        !statuses
+            .iter()
+            .find(|status| status.device_id == local.device_id)
+            .unwrap()
+            .policy_resync_required
+    );
+    isolated.publish(&next_policy(&last, 100)).await.unwrap();
 }
 
 fn control_resource(

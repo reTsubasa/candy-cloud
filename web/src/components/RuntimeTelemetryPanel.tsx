@@ -38,7 +38,8 @@ const stateLabel: Record<string, string> = {
 
 export function RuntimeTelemetryPanel({ node }: { node: OperationalNode }) {
   const telemetry = node.telemetry;
-  if (!telemetry) return <Alert type="warning" showIcon content="节点尚未上报 Runtime 遥测，无法确认当前数据面状态。" />;
+  const resyncNotice = node.policyResyncRequired && <Alert type="warning" showIcon content={`此节点需要重同步策略：已确认运行代际 ${number(node.activeSegmentGeneration)}，目标代际 ${number(node.targetSegmentGeneration)}。${node.policyResyncReason === 'compatibility_window_exceeded' ? '旧策略已超出兼容保留窗口，Runtime 将重新获取最新配置。' : `原因：${node.policyResyncReason ?? '未知'}。`}隧道状态以实时 Peer 遥测为准。`} />;
+  if (!telemetry) return <Space direction="vertical" size={16} style={{ width: '100%' }}>{resyncNotice}<Alert type="warning" showIcon content="节点尚未上报 Runtime 遥测，无法确认当前数据面状态。" /></Space>;
   const ready = runtimeDataPlaneReady(telemetry);
   const diagnostics = telemetry.route_diagnostics;
   const paths = telemetry.paths ?? [];
@@ -48,6 +49,7 @@ export function RuntimeTelemetryPanel({ node }: { node: OperationalNode }) {
     ...diagnostics.last_recovered_issues.map((issue) => ({ ...issue, evidenceState: 'recovered' as const })),
   ] : [];
   return <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    {resyncNotice}
     {node.telemetryState !== 'online' && <Alert type="warning" showIcon content={`以下是 ${timestamp(telemetry.reported_at)} 的历史快照，当前遥测${node.telemetryState === 'stale' ? '已过期' : '尚未在线'}，不能代表现场实时状态。`} />}
     {node.telemetryState === 'online' && !ready && <Alert type={node.status.tone === 'orange' ? 'warning' : 'error'} showIcon content={node.status.detail} />}
     <Descriptions column={2} data={[
@@ -59,6 +61,7 @@ export function RuntimeTelemetryPanel({ node }: { node: OperationalNode }) {
       { label: '回执版本', value: node.reportedPublicationId ?? '未上报' },
       { label: '已确认运行版本', value: node.runningPublicationId ?? '尚无 ACTIVE 回执' },
       { label: '运行版本与目标', value: node.runningCurrent === null ? '未知' : node.runningCurrent ? '已应用目标版本' : node.runningPublicationId ? '保留此前活动版本，目标尚未生效' : '尚无活动版本确认' },
+      { label: '运行 / 目标策略代际', value: `${number(node.activeSegmentGeneration)} / ${number(node.targetSegmentGeneration)}` },
       { label: 'Peer', value: `${number(telemetry.active_peers)} / ${number(telemetry.configured_peers)} 活跃` },
       { label: '路由 owner', value: `${number(telemetry.ready_route_owners)} / ${number(telemetry.required_route_owners)} 就绪` },
       { label: '隧道 / 策略代际', value: `${number(telemetry.tunnel_generation)} / ${number(telemetry.policy_generation ?? telemetry.runtime_generation)}` },

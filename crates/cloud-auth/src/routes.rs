@@ -209,6 +209,7 @@ pub struct GrantIssuanceReceipt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GrantServiceError {
     Denied,
+    RoutePolicyResyncRequired,
     Conflict,
     Unavailable,
     Internal,
@@ -2338,6 +2339,9 @@ impl IntoResponse for ApiError {
                 "certificate_renewal_unavailable",
             ),
             Self::Service(GrantServiceError::Denied) => (StatusCode::FORBIDDEN, "denied"),
+            Self::Service(GrantServiceError::RoutePolicyResyncRequired) => {
+                (StatusCode::CONFLICT, "route_policy_resync_required")
+            }
             Self::Service(GrantServiceError::Conflict) => (StatusCode::CONFLICT, "conflict"),
             Self::Service(GrantServiceError::Unavailable) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
